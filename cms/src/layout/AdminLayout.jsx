@@ -119,6 +119,16 @@ export default function AdminLayout() {
           })}>
             <span>🧠 Knowledge Base</span>
           </NavLink>
+          <NavLink to="/monitor" style={(props) => ({
+            ...linkStyle(props),
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingLeft: 24,
+            fontSize: 13,
+          })}>
+            <span>📡 Monitoreo de Medios</span>
+          </NavLink>
           <NavLink to="/reels" style={linkStyle}>Reels</NavLink>
           <NavLink to="/media" style={linkStyle}>Medios</NavLink>
           <NavLink to="/categories" style={linkStyle}>Categorías</NavLink>

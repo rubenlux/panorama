@@ -1,11 +1,11 @@
 # DATABASE_MAP.md
 
 > Mapa completo de la base de datos. Actualizar ante cualquier migración.
-> Última actualización: 2026-06-09 (Sprint 2) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
+> Última actualización: 2026-06-09 (Sprint 3) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
 
 ---
 
-## Tablas del Sistema (26 tablas)
+## Tablas del Sistema (30 tablas)
 
 ### `articles`
 Tabla principal del contenido editorial.
@@ -541,6 +541,81 @@ Eventos vinculados a entidades (lanzamientos, anuncios, controversias).
 
 ---
 
+---
+
+### `tracked_sources`
+Fuentes RSS monitoreadas por el News Intelligence Engine.
+
+| Columna | Tipo | Default |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| name | varchar NOT NULL | — |
+| type | varchar | `'news'` |
+| rss_url | text NOT NULL | — |
+| homepage | text | — |
+| enabled | boolean | true |
+| check_interval | integer | 60 (segundos) |
+| last_checked | timestamptz | — |
+| created_at | timestamptz | now() |
+
+**type values:** `news` | `blog` | `company` | `government`
+
+**Seeds iniciales (8):** Infobae, La Nación, Clarín, Télam, Perfil, BBC Mundo, DW Español, TechCrunch
+
+---
+
+### `monitored_articles`
+Artículos detectados por el monitor RSS. Deduplicados por hash SHA-256 de URL.
+
+| Columna | Tipo | Default |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| source_id | uuid FK → tracked_sources | — |
+| external_id | text | — |
+| title | text NOT NULL | — |
+| url | text NOT NULL | — |
+| summary | text | — |
+| published_at | timestamptz | — |
+| detected_at | timestamptz | now() |
+| hash | varchar NOT NULL UNIQUE | SHA-256 de URL |
+
+**UNIQUE:** `(hash)` — deduplicación por URL normalizada en lowercase.
+
+---
+
+### `article_entity_matches`
+Matches entre artículos monitoreados y entidades del Knowledge Base (matching string, sin IA).
+
+| Columna | Tipo |
+|---|---|
+| id | uuid PK |
+| article_id | uuid FK → monitored_articles |
+| entity_id | uuid FK → knowledge_entities |
+| matched_at | timestamptz |
+
+**UNIQUE:** `(article_id, entity_id)` — un match por par artículo-entidad.
+
+---
+
+### `trending_topics`
+Entidades tendencia detectadas en la ventana de 30 minutos.
+
+| Columna | Tipo | Default |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| entity_id | uuid FK → knowledge_entities UNIQUE | — |
+| mention_count | integer | 0 |
+| source_count | integer | 0 |
+| last_seen_at | timestamptz | now() |
+| auto_researched | boolean | false |
+| updated_at | timestamptz | now() |
+
+**UNIQUE:** `(entity_id)` — una fila por entidad, actualizada en cada ciclo del monitor.
+
+**auto_researched:** Se resetea a `false` automáticamente cuando la entidad lleva `AUTO_RESEARCH_COOLDOWN` (120 min) sin actividad, para permitir re-trigger.
+
+---
+
 ## Migraciones Conocidas
 
 | Script | Propósito |
@@ -553,6 +628,8 @@ Eventos vinculados a entidades (lanzamientos, anuncios, controversias).
 | `scripts/migrate_community.js` | Funcionalidades de comunidad |
 | `scripts/migrate_pixel_geo.js` | Campos geo en pixel_events |
 | `scripts/migrate_productivity.js` | Tablas de productividad |
+| `scripts/migrate_knowledge_base.js` | Sprint 2: `knowledge_entities`, `entity_mentions`, `knowledge_events` |
+| `scripts/migrate_news_intelligence.js` | Sprint 3: `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics` |
 
 ## Estado de Índices
 > Pendiente de documentar. Ejecutar: `SELECT indexname, tablename, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename`

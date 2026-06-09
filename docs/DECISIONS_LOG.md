@@ -7,6 +7,29 @@
 
 ## 2026-06-09
 
+**Decisión:** Sprint 3 — News Intelligence Engine: monitoreo proactivo de medios.
+
+**Motivo:** El sistema era reactivo — alguien debía crear manualmente un topic de investigación. El objetivo del Sprint 3 es hacerlo proactivo: el sistema detecta oportunidades editoriales solo, sin intervención humana, monitoreando 8 fuentes RSS argentinas e internacionales cada 60 segundos.
+
+**Decisiones específicas:**
+
+- **Matching string-based en lugar de IA** — El motor matchea entidades contra títulos de artículos por comparación de strings (case-insensitive), sin llamar a Claude. Las entidades a matchear ya existen en `knowledge_entities` (creadas en Sprint 2 por investigaciones previas). Esto es O(n×m) pero n≤50 entidades en el MVP, suficiente y gratuito.
+
+- **SHA-256 de URL como hash de deduplicación** — El mismo artículo puede aparecer en múltiples feeds (sindicación). `ON CONFLICT (hash) DO NOTHING RETURNING id` solo retorna IDs de filas efectivamente insertadas, evitando re-procesar el mismo artículo.
+
+- **`trending_topics` con UNIQUE en `entity_id`** — Una sola fila por entidad que se actualiza en cada ciclo, en lugar de log histórico. El campo `auto_researched` se resetea automáticamente tras 2h de inactividad (cooldown), permitiendo re-trigger si la entidad vuelve a trender.
+
+- **Umbrales conservadores** — Auto-research se dispara solo con ≥5 menciones de ≥3 fuentes distintas. Intencionalmente alto para evitar spam de topics de investigación.
+
+- **Worker como proceso único** — El mismo `npm run worker` ahora corre el revenue job (00:05 AM) y el news monitor (cada 60s). No se creó un proceso separado para evitar complejidad operativa innecesaria en esta etapa.
+
+**Impacto:**
+- Nuevos archivos: `src/jobs/newsMonitor.js`, `src/routes/monitor.js`, `scripts/migrate_news_intelligence.js`, `cms/src/pages/MediaMonitor.jsx`
+- Archivos modificados: `src/worker.js` (agrega monitor job), `src/app.js` (registra /monitor), `cms/src/App.jsx` (ruta /monitor), `cms/src/layout/AdminLayout.jsx` (nav item), `docs/*`
+- NO implementado: generación de artículos automáticos, publicación automática, posting en redes sociales, TikTok
+
+---
+
 **Decisión:** Branding Panorama — título y favicon del sitio.
 
 **Motivo:** El sitio mostraba "El Espectador" en la pestaña del browser y el favicon era el logo de Vite (artefacto del scaffolding inicial). Ambos necesitaban reflejar la identidad real del producto.

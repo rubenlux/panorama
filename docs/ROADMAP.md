@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Estado del producto y próximos pasos.
-> Última actualización: 2026-06-09 (Sprint 2 completado)
+> Última actualización: 2026-06-09 (Sprint 3 completado)
 
 ---
 
@@ -13,11 +13,12 @@
 - [x] PKS (Project Knowledge System) creado en `/docs`
 - [x] **Sprint 1 — Centro de Investigación AI** (tablas + backend + conectores RSS + UI CMS)
 - [x] **Sprint 2 — Knowledge Base** (`knowledge_entities`, `entity_mentions`, `knowledge_events` + extracción automática con Claude + UI CMS)
+- [x] **Sprint 3 — News Intelligence Engine** (monitor RSS proactivo: `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics` + worker 60s + panel `MediaMonitor.jsx`)
 - [x] Branding: título "PANORAMA" + favicon P/punto rojo en DB y `web/index.html`
 - [x] Repositorio GitHub conectado (`panorama.git`) + `.gitignore` raíz
 - [x] Docker-compose: `restart: unless-stopped` (fix CPU spike VmmemWSL)
-- [ ] Sprint 3 — Generación de artículos desde brief (PostEditor prefill desde ResearchCenter)
-- [ ] Sprint 4 — Distribución (`article_distributions` — generación para redes sociales)
+- [ ] Sprint 4 — Generación de artículos desde brief (PostEditor prefill desde ResearchCenter)
+- [ ] Sprint 5 — Distribución (`article_distributions` — generación para redes sociales)
 - [ ] Diseño Panorama en página de Artículo (`Article.jsx`)
 - [ ] Diseño Panorama en página de Categoría (`Category.jsx`)
 
@@ -70,3 +71,4 @@
 - [x] Branding Panorama — título y favicon (P + punto rojo) en `web/public/favicon.svg` + DB settings
 - [x] Repositorio GitHub — `https://github.com/rubenlux/panorama` (branch `main`, 200 archivos)
 - [x] Docker fix — `restart: unless-stopped` en `docker-compose.yml`
+- [x] News Intelligence Engine — monitoreo proactivo RSS, trending por entidad, auto-research triggers, panel CMS completo (4 tabs)

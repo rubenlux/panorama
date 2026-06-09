@@ -1,7 +1,7 @@
 # MODULE_REGISTRY.md
 
 > Inventario completo de módulos. Actualizar cuando se agregue, elimine o cambie un módulo.
-> Última actualización: 2026-06-09
+> Última actualización: 2026-06-09 (Sprint 3)
 
 ---
 
@@ -336,14 +336,59 @@
 
 ---
 
-## MÓDULO 18 — Worker de Revenue
+## MÓDULO 17 — News Intelligence Engine (Sprint 3)
 
-**Estado:** Activo | **Ubicación:** `src/worker.js`, `src/jobs/calculateAdRevenue.js`
+**Estado:** Activo | **Ubicación:** `src/jobs/newsMonitor.js`, `src/routes/monitor.js`, `cms/src/pages/MediaMonitor.jsx`
 
-**Propósito:** Proceso separado con cron jobs. Calcula revenue publicitario diariamente.
+**Propósito:** Monitoreo proactivo de medios de comunicación. Detecta artículos nuevos vía RSS, los matchea contra entidades del Knowledge Base usando comparación string, calcula tendencias en ventana de 30 minutos y crea automáticamente `research_topics` cuando una entidad supera los umbrales de trending.
 
-**Schedule:** `5 0 * * *` — 00:05 AM todos los días
+**Pipeline (cada 60s):**
+1. `processSource(source)` — Fetch RSS, parse items, INSERT artículos nuevos deduplicados por hash SHA-256
+2. `matchEntities(newIds)` — Carga `knowledge_entities` (más largas primero), busca en título de cada artículo nuevo
+3. `refreshTrendingTopics()` — Cuenta menciones/fuentes en ventana 30min, upsert en `trending_topics`
+4. `checkAutoResearchTriggers()` — Si entidad ≥5 menciones de ≥3 fuentes, crea `research_topic` como `pending`
 
-**Lógica:** Agrega eventos del día anterior → calcula revenue por modelo CPM/CPC/FIXED → upsert en `ad_revenue`
+**Constantes de umbral:**
+- `TRENDING_WINDOW_MIN=30` — ventana sliding en minutos
+- `AUTO_RESEARCH_MENTIONS=5` — menciones mínimas para auto-trigger
+- `AUTO_RESEARCH_SOURCES=3` — fuentes distintas mínimas
+- `AUTO_RESEARCH_COOLDOWN=120` — minutos de cooldown para evitar spam
+
+**Endpoints API (`/monitor/*`, todos con `requireAuth`):**
+- `GET /monitor/stats` — 5 contadores (sources_active, sources_total, articles_today, trending_now, opportunities)
+- `GET /monitor/sources` — Listado con `seconds_since_check`
+- `POST /monitor/sources` — Agregar fuente
+- `PUT /monitor/sources/:id` — Actualización parcial con COALESCE
+- `DELETE /monitor/sources/:id` — Eliminar fuente
+- `GET /monitor/articles` — Feed con `?hours=&source_id=&entity_id=&limit=` + entities[] como json_agg
+- `GET /monitor/trending` — Tendencias con `?min_mentions=&min_sources=`, ventana 6h
+- `POST /monitor/research` — Crea research_topic desde una tendencia, marca como auto_researched
+
+**Tablas:** `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics`
+
+**UI CMS (`MediaMonitor.jsx`):**
+- Tab **Feed** — artículos recientes con entity badges, auto-refresh 30s
+- Tab **Tendencias** — entidades trending con mention_count, botón "Investigar" → `POST /monitor/research`
+- Tab **Oportunidades** — filtro: source_count ≥ 3 AND mention_count ≥ 5, resaltadas con borde rojo
+- Tab **Fuentes** — gestión de tracked_sources: toggle enable/disable, add form, delete
+
+**Notas importantes:**
+- El matching es string-based (gratis, sin IA) — solo funciona si la entidad ya existe en `knowledge_entities`
+- Las entidades se crean en la KB cuando se investiga un topic (pipeline de Sprint 2)
+- El engine es proactivo pero NO publica artículos ni postea en redes automáticamente
+
+---
+
+## MÓDULO 18 — Worker de Background
+
+**Estado:** Activo | **Ubicación:** `src/worker.js`, `src/jobs/calculateAdRevenue.js`, `src/jobs/newsMonitor.js`
+
+**Propósito:** Proceso separado con cron jobs. Orquesta tareas de background sin bloquear el servidor HTTP.
+
+**Jobs activos:**
+- `runNewsMonitor()` — ejecuta inmediatamente al iniciar y luego cada `* * * * *` (60s)
+- `calculateAdRevenue()` — schedule `5 0 * * *` (00:05 AM todos los días)
+
+**Lógica de revenue:** Agrega eventos del día anterior → calcula revenue por modelo CPM/CPC/FIXED → upsert en `ad_revenue`
 
 **Comando:** `npm run worker` (proceso independiente, no parte del API server)

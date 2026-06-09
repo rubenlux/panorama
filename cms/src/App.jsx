@@ -27,6 +27,7 @@ import EditorialStudio from "./pages/EditorialStudio.jsx";
 import ResearchCenter from "./pages/ResearchCenter.jsx";
 import KnowledgeBase from "./pages/KnowledgeBase.jsx";
 import EntityDetail from "./pages/EntityDetail.jsx";
+import MediaMonitor from "./pages/MediaMonitor.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -66,6 +67,7 @@ export default function App() {
         <Route path="research" element={<ResearchCenter />} />
         <Route path="knowledge" element={<KnowledgeBase />} />
         <Route path="knowledge/entities/:id" element={<EntityDetail />} />
+        <Route path="monitor" element={<MediaMonitor />} />
 
 
         <Route path="ads" element={<AdsDashboardV2 />} /> {/* Replaced V1 with V2 default */}
