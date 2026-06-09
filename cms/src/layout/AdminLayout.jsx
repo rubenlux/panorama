@@ -139,6 +139,14 @@ export default function AdminLayout() {
           })}>
             <span>📡 Monitoreo de Medios</span>
           </NavLink>
+          <NavLink to="/topics" style={(props) => ({
+            ...linkStyle(props),
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+          })}>
+            <span>🗂️ Topic Intelligence</span>
+          </NavLink>
           <NavLink to="/reels" style={linkStyle}>Reels</NavLink>
           <NavLink to="/media" style={linkStyle}>Medios</NavLink>
           <NavLink to="/categories" style={linkStyle}>Categorías</NavLink>

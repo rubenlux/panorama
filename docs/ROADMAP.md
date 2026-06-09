@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Estado del producto y próximos pasos.
-> Última actualización: 2026-06-09 (Sprint 4 completado)
+> Última actualización: 2026-06-09 (Sprint 5 completado)
 
 ---
 
@@ -15,10 +15,12 @@
 - [x] **Sprint 2 — Knowledge Base** (`knowledge_entities`, `entity_mentions`, `knowledge_events` + extracción automática con Claude + UI CMS)
 - [x] **Sprint 3 — News Intelligence Engine** (monitor RSS proactivo: `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics` + worker 60s + panel `MediaMonitor.jsx`)
 - [x] **Sprint 4 — Editorial Workflow Engine** (`editorial_dossiers` + Story Builder + Article Generator + PostEditor prefill con SEO completo + métricas por origen)
+- [x] **Sprint 5 — Topic Intelligence Engine** (`topics` + 4 relation tables + hubs regionales NEA + `/topic/:slug` + `/region/:slug` en web público + coverage_scope/region en articles)
 - [x] Branding: título "PANORAMA" + favicon P/punto rojo en DB y `web/index.html`
 - [x] Repositorio GitHub conectado (`panorama.git`) + `.gitignore` raíz
 - [x] Docker-compose: `restart: unless-stopped` (fix CPU spike VmmemWSL)
-- [ ] Sprint 5 — Distribución (`article_distributions` — generación para redes sociales)
+- [ ] Sprint 6 — Distribución (`article_distributions` — generación para redes sociales)
+- [ ] Sprint 5.5 — Auto-clustering: asignación automática de artículos a topics al publicar (matching por categoría/tags/entidades sin IA adicional)
 - [ ] Diseño Panorama en página de Artículo (`Article.jsx`)
 - [ ] Diseño Panorama en página de Categoría (`Category.jsx`)
 
@@ -73,3 +75,4 @@
 - [x] Docker fix — `restart: unless-stopped` en `docker-compose.yml`
 - [x] News Intelligence Engine — monitoreo proactivo RSS, trending por entidad, auto-research triggers, panel CMS completo (4 tabs)
 - [x] Editorial Workflow Engine — pipeline Research → Dossier → Story Builder → Article Generator → PostEditor (origin tracking, SEO prefill completo)
+- [x] Topic Intelligence Engine — temas periodísticos con relaciones a artículos/investigaciones/entidades/eventos, hubs regionales NEA, páginas públicas /topic/:slug y /region/:slug

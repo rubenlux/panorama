@@ -10,7 +10,7 @@ export class AiService {
     this.openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
     });
-    this.model = "claude-sonnet-4-5-20250929";
+    this.model = "claude-sonnet-4-6";
   }
 
   async transcribeAudio(filePath) {
@@ -193,7 +193,7 @@ CONSTRAINTS:
 
     try {
       const msg = await this.anthropic.messages.create({
-        model: "claude-sonnet-4-5-20250929", // Keeping consistent model
+        model: this.model,
         max_tokens: 4000,
         temperature: 0.25, // Slightly higher for creativity in rewriting, but still controlled
         messages: [

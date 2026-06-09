@@ -1,7 +1,7 @@
 # MODULE_REGISTRY.md
 
 > Inventario completo de módulos. Actualizar cuando se agregue, elimine o cambie un módulo.
-> Última actualización: 2026-06-09 (Sprint 4)
+> Última actualización: 2026-06-09 (Sprint 5)
 
 ---
 
@@ -423,6 +423,63 @@ Research Topic (completed) → Dossier Editorial → Story Builder → Article D
 - El matching es string-based (gratis, sin IA) — solo funciona si la entidad ya existe en `knowledge_entities`
 - Las entidades se crean en la KB cuando se investiga un topic (pipeline de Sprint 2)
 - El engine es proactivo pero NO publica artículos ni postea en redes automáticamente
+
+---
+
+## MÓDULO 19 — Editorial Workflow Engine *(Sprint 4)*
+
+**Estado:** Activo | **Ubicación:** `src/routes/editorial_workflow.js`
+
+**Propósito:** Pipeline Research → Dossier → Article. Transforma briefs de investigación en artículos listos para publicar con SEO prefillado.
+
+**Endpoints:**
+- `POST /editorial-workflow/dossiers` — crear dossier desde research topic (genera en background con Claude)
+- `GET /editorial-workflow/dossiers` — listar con topic_title, status, drafts_count
+- `GET /editorial-workflow/dossiers/:id` — detalle con story builder (suggested_angles)
+- `POST /editorial-workflow/dossiers/:id/draft` — generar borrador de artículo para un ángulo (sync, retorna contenido sin crear en DB)
+- `GET /editorial-workflow/metrics` — métricas de conversión por origin
+
+**Tablas:** `editorial_dossiers`, `articles` (origin, dossier_id)
+**IA:** `AiService.generateDossier()` (background) + `AiService.generateArticleDraft()` (sync)
+
+---
+
+## MÓDULO 20 — Topic Intelligence Engine *(Sprint 5)*
+
+**Estado:** Activo | **Ubicación:** `src/routes/topics.js`
+
+**Propósito:** Agrupa artículos, investigaciones, entidades y eventos bajo temas periodísticos. Soporta cobertura geográfica (nacional/regional/local) y hubs por región NEA.
+
+**Endpoints:**
+- `GET /topics` — listar con conteos, filtros por region/category/coverage_scope/search
+- `GET /topics/trending` — ranking por volumen de artículos + velocidad de crecimiento (48h)
+- `GET /topics/regions` — lista de hubs regionales con conteos
+- `GET /topics/regions/:slug` — hub regional: topics + artículos recientes + entidades más mencionadas
+- `GET /topics/:id` — detalle con artículos, investigaciones, entidades, timeline de eventos
+- `POST /topics` — crear tema (auth)
+- `PATCH /topics/:id` — editar tema (auth)
+- `DELETE /topics/:id` — eliminar tema (auth)
+- `POST /topics/:id/articles` — vincular artículo (auth)
+- `DELETE /topics/:id/articles/:article_id` — desvincular (auth)
+- `POST /topics/:id/research` — vincular investigación (auth)
+- `POST /topics/:id/entities` — vincular entidad (auth)
+- `POST /topics/:id/events` — vincular evento (auth)
+
+**Tablas:** `topics`, `topic_articles`, `topic_research`, `topic_entities`, `topic_events`
+**Columnas nuevas en `articles`:** `coverage_scope`, `region`
+
+**UI CMS:**
+- `cms/src/pages/Topics.jsx` — lista con métricas, filtros, tabs Todos/Trending, modal de creación
+- `cms/src/pages/TopicDetail.jsx` — tabs Artículos/Investigaciones/Entidades/Timeline; vincular contenido desde el detalle
+- `cms/src/pages/Regions.jsx` — grid de hubs regionales
+
+**UI Web:**
+- `web/src/pages/Topic.jsx` — página pública `/topic/:slug`
+- `web/src/pages/Region.jsx` — hub regional `/region/:slug`
+
+**Regiones soportadas:** argentina | nea | formosa | chaco | corrientes | misiones
+
+**Preparado para (NO implementado):** pgvector embeddings, búsqueda semántica, knowledge graph
 
 ---
 

@@ -30,6 +30,9 @@ import EntityDetail from "./pages/EntityDetail.jsx";
 import MediaMonitor from "./pages/MediaMonitor.jsx";
 import Dossiers from "./pages/Dossiers.jsx";
 import DossierDetail from "./pages/DossierDetail.jsx";
+import Topics from "./pages/Topics.jsx";
+import TopicDetail from "./pages/TopicDetail.jsx";
+import Regions from "./pages/Regions.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -72,6 +75,10 @@ export default function App() {
         <Route path="monitor" element={<MediaMonitor />} />
         <Route path="dossiers" element={<Dossiers />} />
         <Route path="dossiers/:id" element={<DossierDetail />} />
+        <Route path="topics" element={<Topics />} />
+        <Route path="topics/regions" element={<Regions />} />
+        <Route path="topics/regions/:slug" element={<Regions />} />
+        <Route path="topics/:id" element={<TopicDetail />} />
 
 
         <Route path="ads" element={<AdsDashboardV2 />} /> {/* Replaced V1 with V2 default */}

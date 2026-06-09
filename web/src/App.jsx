@@ -8,6 +8,8 @@ import Ticker from './components/Ticker';
 import Footer from './components/Footer';
 import Home from './pages/Home';
 import Article from './pages/Article';
+import Topic from './pages/Topic';
+import Region from './pages/Region';
 import './panorama.css';
 import './App.css';
 
@@ -62,6 +64,8 @@ function App() {
         <Route path="/" element={<Home />} />
         <Route path="/article/:slug" element={<Article />} />
         <Route path="/category/:slug" element={<Home />} />
+        <Route path="/topic/:slug" element={<Topic />} />
+        <Route path="/region/:slug" element={<Region />} />
         <Route path="*" element={
           <div style={{ display: 'grid', placeItems: 'center', height: 320, fontFamily: 'var(--sans)', color: 'var(--muted)' }}>
             404 — Página no encontrada

@@ -1,7 +1,7 @@
 # AI_CORE.md
 
 > Documentación del sistema de IA integrado en Panorama.
-> Última actualización: 2026-06-09 (Sprint 4)
+> Última actualización: 2026-06-09 (Sprint 5) — Sprint 5 no agrega métodos de IA (trending y clustering son SQL-only)
 
 ---
 

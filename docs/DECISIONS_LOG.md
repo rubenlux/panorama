@@ -7,6 +7,31 @@
 
 ## 2026-06-09
 
+**Decisión:** Sprint 5 — Topic Intelligence Engine: temas periodísticos como capa de agregación.
+
+**Motivo:** El sistema tenía artículos, investigaciones y entidades en silos separados. Un editor no podía ver "todo lo que sabemos sobre X tema" en un solo lugar. El objetivo es crear una capa de temas que agrupe todo el conocimiento del sistema y lo proyecte en páginas públicas regionales.
+
+**Decisiones específicas:**
+
+- **Topics como entidad manual, no auto-clustering** — Los temas se crean manualmente y el editor vincula artículos/investigaciones desde el CMS. No hay auto-asignación automática en este sprint para evitar clustering ruidoso. El auto-clustering queda como Sprint 5.5 con matching por categoría/tags.
+
+- **Regiones NEA como primer ciudadano** — Las 6 regiones (argentina, nea, formosa, chaco, corrientes, misiones) están hardcodeadas en el backend. Esto permite hubs regionales funcionales desde el día uno sin configuración adicional. La lista puede expandirse sin cambiar el schema.
+
+- **coverage_scope en articles** — Se agrega `coverage_scope` (international/national/regional/local) y `region` a `articles` para permitir filtrado geográfico sin depender de categorías. Preparación para el hub regional.
+
+- **Trending sin IA** — El ranking de trending es puramente SQL: peso por artículos (×1), investigaciones (×2), artículos en últimas 48h (×3), importance_score. Sin llamadas a Claude. Suficiente para MVP.
+
+- **Schema preparado para pgvector** — Las tablas tienen campos que en el futuro podrán recibir un campo `embedding vector(1536)` para búsqueda semántica. No se implementa ahora porque requiere extensión pgvector y pipeline de embeddings.
+
+- **Páginas web públicas /topic/:slug y /region/:slug** — El web frontend expone los temas al lector. La página de región muestra artículos recientes, temas activos y entidades más mencionadas.
+
+**Impacto:**
+- Nuevos archivos: `scripts/migrate_topic_intelligence.js`, `src/routes/topics.js`, `cms/src/pages/Topics.jsx`, `cms/src/pages/TopicDetail.jsx`, `cms/src/pages/Regions.jsx`, `web/src/pages/Topic.jsx`, `web/src/pages/Region.jsx`
+- Archivos modificados: `src/app.js`, `cms/src/App.jsx`, `cms/src/layout/AdminLayout.jsx`, `web/src/App.jsx`, `docs/*`
+- NO implementado: auto-clustering, pgvector, embeddings, knowledge graph, búsqueda semántica
+
+---
+
 **Decisión:** Sprint 4 — Editorial Workflow Engine: pipeline de Research a Publicación.
 
 **Motivo:** El sistema tenía investigación y conocimiento pero el proceso editorial era discontinuo — el redactor debía leer el brief manualmente y empezar un artículo desde cero. El objetivo es crear una capa editorial que automatice el paso de "tengo información" a "tengo un artículo casi listo para publicar".
