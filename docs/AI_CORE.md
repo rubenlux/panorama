@@ -1,7 +1,7 @@
 # AI_CORE.md
 
 > Documentación del sistema de IA integrado en Panorama.
-> Última actualización: 2026-06-09
+> Última actualización: 2026-06-09 (Sprint 4)
 
 ---
 
@@ -29,6 +29,8 @@ CMS (PostEditor / EditorialStudio)
                         AiService.createDraftFromAudio()
   /research/         → AiService.generateResearchBrief()   (temp 0.2, max 2000 tokens)
                         AiService.extractEntities()         (temp 0.1, max 1500 tokens)
+  /editorial-workflow/ → AiService.generateDossier()        (temp 0.3, max 3000 tokens)
+                         AiService.generateArticleDraft()   (temp 0.4, max 4500 tokens)
          │
          ▼
   src/services/AiService.js
@@ -86,6 +88,18 @@ CMS (PostEditor / EditorialStudio)
 - **Output:** Borrador de artículo completo
 - **Endpoint:** `POST /editorial-studio/from-audio`
 
+### `generateDossier(topicTitle, brief, entities)` *(Sprint 4)*
+- **Input:** título del topic + brief object (executive_summary, key_facts, controversies, timeline, opportunities, risks) + entities array
+- **Modelo:** Claude Sonnet | **Temperatura:** 0.3 | **Max tokens:** 3000
+- **Output:** JSON con executive_summary, verified_facts, timeline, seo_keywords, suggested_categories, suggested_tags, suggested_headlines, suggested_angles (3-4 con angle_type/title/summary/target_audience/keywords), hero_image_prompt
+- **Endpoint:** `POST /editorial-workflow/dossiers` (async background)
+
+### `generateArticleDraft(topicTitle, dossier, angle, briefText)` *(Sprint 4)*
+- **Input:** título + dossier object + angle (uno de suggested_angles) + brief resumido
+- **Modelo:** Claude Sonnet | **Temperatura:** 0.4 | **Max tokens:** 4500
+- **Output:** JSON con volanta, title (50-60 chars), excerpt (150-160 chars), body (HTML ≥400 words), meta_title, meta_description, og_title, og_description, tags[], categoria, verification_notes[]
+- **Endpoint:** `POST /editorial-workflow/dossiers/:id/draft` (sync)
+
 ---
 
 ## Prompts del Sistema
@@ -114,6 +128,17 @@ Workflow de creación asistida:
 5. Opción: Analizar artículo (`analyze`) — Claude da feedback editorial
 6. Opción: Reformular sección seleccionada (`reformulate`)
 7. Publicar desde el editor
+
+### Editorial Workflow Engine (Sprint 4)
+**Ubicación:** `src/routes/editorial_workflow.js`, `cms/src/pages/Dossiers.jsx`, `cms/src/pages/DossierDetail.jsx`
+
+Pipeline completo:
+1. Se crea un Dossier desde un Research Topic completado → `POST /editorial-workflow/dossiers`
+2. Background: `generateDossier(topicTitle, brief, entities)` → executive_summary, verified_facts, timeline, seo_keywords, suggested_categories, suggested_tags, suggested_headlines, suggested_angles, hero_image_prompt
+3. Editor elige un ángulo en el Story Builder → `POST /editorial-workflow/dossiers/:id/draft`
+4. `generateArticleDraft(topicTitle, dossier, angle, briefText)` → artículo completo con SEO
+5. CMS navega a `/posts/new` con todo prefillado, incluyendo meta SEO
+6. Editor revisa, ajusta y publica
 
 ### Análisis en PostEditor (CMS)
 **Ubicación:** `cms/src/pages/PostEditor.jsx` + `cms/src/components/AiAnalysisPanel.jsx`

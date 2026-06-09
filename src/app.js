@@ -28,6 +28,7 @@ import productRoutes from "./routes/products.js";
 import researchRoutes from "./routes/research.js";
 import knowledgeRoutes from "./routes/knowledge.js";
 import monitorRoutes   from "./routes/monitor.js";
+import editorialWorkflowRoutes from "./routes/editorial_workflow.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,7 +71,8 @@ export function createApp() {
   app.use("/editorial-studio", editorialStudioRoutes);
   app.use("/research", researchRoutes);
   app.use("/knowledge", knowledgeRoutes);
-  app.use("/monitor",  monitorRoutes);
+  app.use("/monitor",   monitorRoutes);
+  app.use("/editorial-workflow", editorialWorkflowRoutes);
 
 
   app.use(commentsRoutes);

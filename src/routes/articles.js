@@ -227,8 +227,10 @@ router.get("/:slug", async (req, res, next) => {
 
 const createSchema = z.object({
   title: z.string().min(5).max(200),
-  epigraph: z.string().optional(), // New
+  epigraph: z.string().optional(),
   volanta: z.string().max(255).optional(),
+  origin: z.enum(['manual', 'research', 'dossier']).default('manual'),
+  dossier_id: z.string().uuid().optional().nullable(),
   image_url: z.string().optional(),
   excerpt: z.string().max(500).optional(),
   body: z.string().min(20),
@@ -273,9 +275,9 @@ router.post(
       const published_at = data.status === "published" ? new Date() : null;
 
       const r = await query(
-        `INSERT INTO articles(author_id, title, slug, volanta, image_url, excerpt, body, status, published_at, epigraph, word_count)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-       RETURNING id, title, slug, status, published_at, word_count`,
+        `INSERT INTO articles(author_id, title, slug, volanta, image_url, excerpt, body, status, published_at, epigraph, word_count, origin, dossier_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       RETURNING id, title, slug, status, published_at, word_count, origin, dossier_id`,
         [
           req.user.sub,
           data.title,
@@ -287,7 +289,9 @@ router.post(
           data.status,
           published_at,
           data.epigraph ?? null,
-          getWordCount(data.body)
+          getWordCount(data.body),
+          data.origin ?? 'manual',
+          data.dossier_id ?? null,
         ]
       );
 
@@ -456,6 +460,8 @@ const patchSchema = z.object({
   title: z.string().min(5).max(200).optional(),
   epigraph: z.string().optional(),
   volanta: z.string().max(255).optional(),
+  origin: z.enum(['manual', 'research', 'dossier']).optional(),
+  dossier_id: z.string().uuid().optional().nullable(),
   image_url: z.string().optional(),
   excerpt: z.string().max(500).optional().nullable(),
   body: z.string().min(20).optional(),
@@ -502,6 +508,8 @@ router.patch(
         fields.push(`${name}=$${params.push(value)}`);
 
       if (data.title) set("title", data.title);
+      if (data.origin)    set("origin",    data.origin);
+      if (data.dossier_id !== undefined) set("dossier_id", data.dossier_id);
       if (data.epigraph !== undefined) set("epigraph", data.epigraph);
       if (data.volanta !== undefined) set("volanta", data.volanta);
       if (data.image_url !== undefined) set("image_url", data.image_url);

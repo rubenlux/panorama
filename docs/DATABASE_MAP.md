@@ -1,11 +1,11 @@
 # DATABASE_MAP.md
 
 > Mapa completo de la base de datos. Actualizar ante cualquier migración.
-> Última actualización: 2026-06-09 (Sprint 3) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
+> Última actualización: 2026-06-09 (Sprint 4) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
 
 ---
 
-## Tablas del Sistema (30 tablas)
+## Tablas del Sistema (31 tablas)
 
 ### `articles`
 Tabla principal del contenido editorial.
@@ -616,6 +616,49 @@ Entidades tendencia detectadas en la ventana de 30 minutos.
 
 ---
 
+---
+
+### `editorial_dossiers`
+Guías editoriales generadas por Claude a partir de investigaciones. Centro del Editorial Workflow Engine.
+
+| Columna | Tipo | Default |
+|---|---|---|
+| id | uuid PK | gen_random_uuid() |
+| topic_id | uuid FK → research_topics (nullable) | — |
+| status | varchar NOT NULL | `'generating'` |
+| executive_summary | text | — |
+| verified_facts | jsonb | `[]` |
+| timeline | jsonb | `[]` |
+| entities | jsonb | `[]` (snapshot de entidades detectadas) |
+| seo_keywords | text[] | — |
+| suggested_categories | text[] | — |
+| suggested_tags | text[] | — |
+| suggested_headlines | text[] | — |
+| suggested_angles | jsonb | `[]` (Story Builder: ángulos editoriales) |
+| hero_image_prompt | text | — (prompt en inglés para generador de imágenes) |
+| created_by | uuid FK → users (nullable) | — |
+| created_at | timestamptz | now() |
+| updated_at | timestamptz | now() |
+
+**status values:** `generating` | `ready` | `failed`
+
+**`suggested_angles` structure:**
+```json
+[{
+  "angle_type": "informativo|analisis|impacto_social|economico|tecnologico|politico|cultural",
+  "title": "Título del enfoque",
+  "summary": "2-3 oraciones del enfoque",
+  "target_audience": "Audiencia objetivo",
+  "keywords": ["kw1", "kw2"]
+}]
+```
+
+**`articles` (columnas agregadas Sprint 4):**
+- `origin VARCHAR DEFAULT 'manual'` — `manual` | `research` | `dossier`
+- `dossier_id UUID FK → editorial_dossiers (nullable)` — referencia al dossier origen
+
+---
+
 ## Migraciones Conocidas
 
 | Script | Propósito |
@@ -630,6 +673,7 @@ Entidades tendencia detectadas en la ventana de 30 minutos.
 | `scripts/migrate_productivity.js` | Tablas de productividad |
 | `scripts/migrate_knowledge_base.js` | Sprint 2: `knowledge_entities`, `entity_mentions`, `knowledge_events` |
 | `scripts/migrate_news_intelligence.js` | Sprint 3: `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics` |
+| `scripts/migrate_editorial_workflow.js` | Sprint 4: `editorial_dossiers` + columnas `origin`/`dossier_id` en `articles` |
 
 ## Estado de Índices
 > Pendiente de documentar. Ejecutar: `SELECT indexname, tablename, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename`

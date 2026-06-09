@@ -1,7 +1,7 @@
 # MODULE_REGISTRY.md
 
 > Inventario completo de módulos. Actualizar cuando se agregue, elimine o cambie un módulo.
-> Última actualización: 2026-06-09 (Sprint 3)
+> Última actualización: 2026-06-09 (Sprint 4)
 
 ---
 
@@ -333,6 +333,53 @@
 - `KnowledgeBase.jsx` — Grid de entidades filtrable por tipo con stats globales
 - `EntityDetail.jsx` — Perfil de entidad con timeline de eventos e investigaciones vinculadas
 - `ResearchCenter.jsx` — Sección "Entidades detectadas" con badges clickeables post-brief
+
+---
+
+## MÓDULO 19 — Editorial Workflow Engine (Sprint 4)
+
+**Estado:** Activo | **Ubicación:** `src/routes/editorial_workflow.js`, `cms/src/pages/Dossiers.jsx`, `cms/src/pages/DossierDetail.jsx`
+
+**Propósito:** Capa editorial entre el Research Center y la publicación. Transforma un brief de investigación en guías editoriales accionables (dossiers), permite generar múltiples enfoques periodísticos (Story Builder) y genera automáticamente artículos completos desde un enfoque seleccionado (Article Generator). Integra con PostEditor pre-llenando todos los campos.
+
+**Pipeline:**
+```
+Research Topic (completed) → Dossier Editorial → Story Builder → Article Draft → PostEditor → Publicado
+```
+
+**Dossier Generation (async):**
+1. `POST /editorial-workflow/dossiers` crea fila con `status='generating'`, retorna inmediatamente
+2. Background: carga brief + entidades desde DB, llama `AiService.generateDossier()`
+3. Actualiza dossier con `status='ready'` y todos los campos generados
+
+**Article Draft Generation (sync):**
+1. `POST /editorial-workflow/dossiers/:id/draft` con `{angle_index: N}`
+2. Carga dossier + brief del topic, selecciona angle[N] de `suggested_angles`
+3. Llama `AiService.generateArticleDraft(topicTitle, dossier, angle, briefText)`
+4. Retorna el draft (NO crea el artículo en DB — lo crea PostEditor al guardar)
+5. CMS navega a `/posts/new` con `location.state.prefilled = {volanta, title, excerpt, body, seo, origin:'dossier', dossier_id}`
+
+**Endpoints (`/editorial-workflow/*`, todos con `requireAuth`):**
+- `POST /dossiers` — crea dossier desde `topic_id` (debe estar completed con brief)
+- `GET /dossiers` — lista con topic_title, status, drafts_count
+- `GET /dossiers/:id` — detalle con dossier + list de articles generados
+- `POST /dossiers/:id/draft` — genera artículo desde ángulo seleccionado
+- `GET /metrics` — métricas de conversión por origen
+
+**Origen del artículo (campo `articles.origin`):**
+- `manual` — creado manualmente en PostEditor
+- `research` — prefill básico desde Research Center
+- `dossier` — generado por Article Generator desde un dossier
+
+**AiService métodos nuevos:**
+- `generateDossier(topicTitle, brief, entities)` — temp 0.3, max 3000 tokens
+- `generateArticleDraft(topicTitle, dossier, angle, briefText)` — temp 0.4, max 4500 tokens
+
+**Tablas:** `editorial_dossiers`, `articles` (columnas: origin, dossier_id)
+
+**UI CMS:**
+- `Dossiers.jsx` — lista con métricas (total, ready, arts. generados), modal de creación con selector de investigaciones completadas, auto-polling mientras genera
+- `DossierDetail.jsx` — detalle completo: resumen, hechos, timeline, guía SEO, Story Builder (tarjetas por ángulo con botón "Generar artículo"), prompt de imagen hero
 
 ---
 

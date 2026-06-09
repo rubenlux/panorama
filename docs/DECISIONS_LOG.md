@@ -7,6 +7,31 @@
 
 ## 2026-06-09
 
+**Decisión:** Sprint 4 — Editorial Workflow Engine: pipeline de Research a Publicación.
+
+**Motivo:** El sistema tenía investigación y conocimiento pero el proceso editorial era discontinuo — el redactor debía leer el brief manualmente y empezar un artículo desde cero. El objetivo es crear una capa editorial que automatice el paso de "tengo información" a "tengo un artículo casi listo para publicar".
+
+**Decisiones específicas:**
+
+- **Dossier como capa intermedia** — El brief de investigación (executive_summary, key_facts, controversias) no es directamente editorial. El dossier reformula esa información en términos periodísticos: hechos verificados, ángulos, titulares, keywords, prompt de imagen. Esta separación permite que la IA sea investigadora en un paso y editora en otro, sin mezclar roles.
+
+- **Story Builder integrado en el dossier, no separado** — Los `suggested_angles` son parte del dossier generado. No hay un endpoint separado de "generar ángulos" porque ya se generan en el mismo paso. El Story Builder en la UI es solo una presentación de esos ángulos con un botón de acción.
+
+- **Article Generator retorna contenido, no crea artículo en DB** — `POST /dossiers/:id/draft` retorna el contenido generado y el CMS navega a PostEditor con `location.state.prefilled`. La creación en DB ocurre solo cuando el editor guarda. Esto evita borradores huérfanos y mantiene el editor en control del cuándo se crea.
+
+- **SEO prefill completo** — El Article Generator genera meta_title, meta_description, og_title, og_description además del contenido. PostEditor inicializa el estado SEO desde `prefilled.seo`, lo que significa que el editor llega al PostEditor con todo pre-llenado y solo necesita revisar.
+
+- **origin tracking transparente** — Los campos `origin` y `dossier_id` se agregan a `articles` pero no se muestran como selector editable en el PostEditor (el editor no necesita elegirlo, se asigna automáticamente). Son campos de métricas y trazabilidad.
+
+- **Temperatura 0.4 para Article Generator** — Mayor que los otros métodos (0.2-0.3) para permitir más variación en el estilo de escritura entre artículos del mismo tema.
+
+**Impacto:**
+- Nuevos archivos: `src/routes/editorial_workflow.js`, `scripts/migrate_editorial_workflow.js`, `cms/src/pages/Dossiers.jsx`, `cms/src/pages/DossierDetail.jsx`
+- Archivos modificados: `src/services/AiService.js` (+2 métodos), `src/routes/articles.js` (+origin/dossier_id en schemas), `src/app.js`, `cms/src/pages/PostEditor.jsx` (origin/dossier_id tracking + SEO prefill), `cms/src/App.jsx`, `cms/src/layout/AdminLayout.jsx`, `docs/*`
+- NO implementado: publicación automática, agentes múltiples, pgvector, redes sociales
+
+---
+
 **Decisión:** Sprint 3 — News Intelligence Engine: monitoreo proactivo de medios.
 
 **Motivo:** El sistema era reactivo — alguien debía crear manualmente un topic de investigación. El objetivo del Sprint 3 es hacerlo proactivo: el sistema detecta oportunidades editoriales solo, sin intervención humana, monitoreando 8 fuentes RSS argentinas e internacionales cada 60 segundos.

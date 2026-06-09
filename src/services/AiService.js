@@ -827,6 +827,140 @@ JSON ESTRICTO — sin markdown:
     return JSON.parse(text);
   }
 
+  // ============================================================
+  // EDITORIAL WORKFLOW METHODS (Sprint 4)
+  // ============================================================
+
+  async generateDossier(topicTitle, brief, entities = []) {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+
+    const entityList = entities.slice(0, 20).map(e => `${e.name} (${e.entity_type})`).join(', ') || 'No hay entidades detectadas';
+    const briefText = `
+Resumen ejecutivo: ${brief.executive_summary || ''}
+Hechos clave: ${(brief.key_facts || []).join(' | ')}
+Controversias: ${(brief.controversies || []).join(' | ')}
+Timeline: ${(brief.timeline || []).join(' | ')}
+Oportunidades: ${brief.opportunities || ''}
+Riesgos/vacíos: ${brief.risks || ''}`.trim();
+
+    const prompt = `Eres un editor estratégico senior de una redacción digital.
+Tu tarea: a partir de una investigación periodística, crear un DOSSIER EDITORIAL que guíe al equipo de redacción.
+
+REGLAS CRÍTICAS:
+🚫 NO inventes datos, citas, fechas o nombres que no estén en el brief
+🚫 NO agregues información de entrenamiento si no está explícitamente en el brief
+✅ Basa todas las recomendaciones en los hechos del brief
+✅ Genera 3-4 ángulos DISTINTOS (no variaciones del mismo enfoque)
+✅ El hero_image_prompt debe ser en inglés, fotorrealista, evocador
+
+TEMA: ${topicTitle}
+
+BRIEF DE INVESTIGACIÓN:
+${briefText}
+
+ENTIDADES DETECTADAS: ${entityList}
+
+Genera el dossier en JSON ESTRICTO sin markdown:
+{
+  "executive_summary": "Resumen editorial de 3-4 oraciones (reformular, no copiar del brief)",
+  "verified_facts": ["Hecho verificado y citable 1", "Hecho 2", "Hecho 3"],
+  "timeline": ["Evento más reciente — descripción breve", "Evento anterior — descripción"],
+  "seo_keywords": ["keyword principal", "variación semántica 1", "long-tail 1", "long-tail 2"],
+  "suggested_categories": ["Categoría Principal", "Categoría Secundaria"],
+  "suggested_tags": ["tag1", "tag2", "tag3", "tag4"],
+  "suggested_headlines": [
+    "Titular directo y noticioso (50-60 chars)",
+    "Titular con contexto o impacto",
+    "Titular SEO-first con keyword"
+  ],
+  "suggested_angles": [
+    {
+      "angle_type": "informativo",
+      "title": "Título del artículo desde este enfoque",
+      "summary": "2-3 oraciones describiendo qué cubriría y por qué es relevante",
+      "target_audience": "A quién está dirigido principalmente",
+      "keywords": ["kw1", "kw2", "kw3"]
+    }
+  ],
+  "hero_image_prompt": "Describe in English a photorealistic scene representing this story. Include: setting, mood, lighting, key visual elements. Avoid text in image. Professional news photography style."
+}`;
+
+    const msg = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 3000,
+      temperature: 0.3,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = msg.content[0].text;
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    return JSON.parse(text);
+  }
+
+  async generateArticleDraft(topicTitle, dossier, angle, briefText = '') {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+
+    const facts = (dossier.verified_facts || []).join('\n- ');
+    const timeline = (dossier.timeline || []).join('\n- ');
+    const seoKw = (dossier.seo_keywords || []).join(', ');
+
+    const prompt = `Eres un redactor periodístico senior. Genera un ARTÍCULO COMPLETO a partir de un dossier editorial.
+
+REGLAS CRÍTICAS:
+🚫 NO inventes datos, nombres, fechas o cifras que no estén en el dossier o brief
+🚫 NO uses conocimiento de entrenamiento como fuente primaria — solo los hechos dados
+✅ Marca con ⚠️ cualquier elemento que requiera verificación adicional
+✅ Mínimo 400 palabras en el body
+✅ Pirámide invertida: lo más importante primero
+✅ El título debe tener entre 50 y 60 caracteres ESTRICTAMENTE
+
+TEMA: ${topicTitle}
+
+HECHOS VERIFICADOS:
+- ${facts || '(sin hechos verificados — basarse en el brief)'}
+
+TIMELINE:
+- ${timeline || '(sin timeline)'}
+
+BRIEF ADICIONAL: ${briefText.slice(0, 500) || '—'}
+
+ENFOQUE SELECCIONADO:
+Tipo: ${angle.angle_type}
+Título sugerido: ${angle.title}
+Descripción del enfoque: ${angle.summary}
+Audiencia objetivo: ${angle.target_audience}
+Keywords del enfoque: ${(angle.keywords || []).join(', ')}
+Keywords SEO del dossier: ${seoKw}
+
+GENERA EL ARTÍCULO COMPLETO (JSON ONLY, sin markdown):
+{
+  "volanta": "Kicker contextual (3-6 palabras)",
+  "title": "Título SEO exacto (50-60 caracteres)",
+  "excerpt": "Copete: WHO+WHAT+WHEN+WHERE (150-160 chars, incluye keyword)",
+  "body": "<p>Primer párrafo con las 5W+H...</p><h2>Subtítulo descriptivo 1</h2><p>Desarrollo...</p><h2>Subtítulo descriptivo 2</h2><p>Contexto...</p>",
+  "meta_title": "Meta title (50-60 chars, puede = title o variante con keyword)",
+  "meta_description": "Meta description para Google (150-160 chars, incluye keyword + CTA implícito)",
+  "og_title": "Título para redes sociales (puede ser más largo o emocional)",
+  "og_description": "Descripción para redes (120-140 chars, atractivo para compartir)",
+  "tags": ["tag1", "tag2", "tag3"],
+  "categoria": "Categoría principal del artículo",
+  "verification_notes": ["⚠️ Verificar que..."]
+}`;
+
+    const msg = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 4500,
+      temperature: 0.4,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = msg.content[0].text;
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    return JSON.parse(text);
+  }
+
   async generateResearchBrief(topic, sources) {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error("Missing ANTHROPIC_API_KEY in environment");

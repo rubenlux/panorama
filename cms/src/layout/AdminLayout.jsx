@@ -109,6 +109,16 @@ export default function AdminLayout() {
           })}>
             <span>Investigación AI</span>
           </NavLink>
+          <NavLink to="/dossiers" style={(props) => ({
+            ...linkStyle(props),
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingLeft: 24,
+            fontSize: 13,
+          })}>
+            <span>📋 Dossiers</span>
+          </NavLink>
           <NavLink to="/knowledge" style={(props) => ({
             ...linkStyle(props),
             display: "flex",

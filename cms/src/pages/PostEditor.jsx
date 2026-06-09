@@ -54,12 +54,14 @@ export default function PostEditor({ mode }) {
   const [kicker, setKicker] = useState(prefilled?.volanta || "");
   const [title, setTitle] = useState(prefilled?.title || "");
   const [deck, setDeck] = useState(prefilled?.excerpt || "");
+  const [origin, setOrigin] = useState(prefilled?.origin || "manual");
+  const [dossierId, setDossierId] = useState(prefilled?.dossier_id || null);
   const [seo, setSeo] = useState({
-    meta_title: "",
-    meta_description: "",
-    canonical_url: "",
-    og_title: "",
-    og_description: "",
+    meta_title:      prefilled?.seo?.meta_title      || "",
+    meta_description: prefilled?.seo?.meta_description || "",
+    canonical_url:   prefilled?.seo?.canonical_url   || "",
+    og_title:        prefilled?.seo?.og_title        || "",
+    og_description:  prefilled?.seo?.og_description  || "",
   });
 
   const [status, setStatus] = useState("draft");
@@ -175,6 +177,8 @@ export default function PostEditor({ mode }) {
     setKicker(a.volanta || "");
     setDeck(a.excerpt || "");
     setStatus(a.status || "draft");
+    setOrigin(a.origin || "manual");
+    setDossierId(a.dossier_id || null);
     setFeaturedUrl(a.image_url || "");
     setFeaturedCaption(a.epigraph || ""); // Load epigraph
     setSeo({
@@ -406,6 +410,8 @@ export default function PostEditor({ mode }) {
         status: nextStatus,
         categorySlugs: selectedCats,
         seo: seo,
+        origin,
+        dossier_id: dossierId || undefined,
       };
 
       if (mode === "create") {
