@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiJson } from '../api.js';
 
+// ── Constants ─────────────────────────────────────────────────────────────────
 const SOURCE_TYPE_STYLE = {
   news:       { color: '#1d4ed8', bg: '#dbeafe',  label: 'Medio' },
   blog:       { color: '#065f46', bg: '#d1fae5',  label: 'Blog'  },
@@ -17,15 +18,160 @@ const ENTITY_TYPE_COLOR = {
   location:     '#be123c',
 };
 
+const VERIFY_STATUS = {
+  pending:  { label: 'Pendiente',              emoji: '⏳', color: '#6b7280', bg: '#f3f4f6' },
+  verified: { label: 'Verificada',             emoji: '✓',  color: '#1d4ed8', bg: '#dbeafe' },
+  failed:   { label: 'Fallida',                emoji: '✗',  color: '#dc2626', bg: '#fee2e2' },
+  approved: { label: 'Aprobada editorialmente',emoji: '★',  color: '#059669', bg: '#d1fae5' },
+};
+
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
   const secs = Math.floor((Date.now() - new Date(dateStr)) / 1000);
-  if (secs < 60)   return 'hace ' + secs + 's';
-  if (secs < 3600) return 'hace ' + Math.floor(secs / 60) + 'min';
+  if (secs < 60)    return 'hace ' + secs + 's';
+  if (secs < 3600)  return 'hace ' + Math.floor(secs / 60) + 'min';
   if (secs < 86400) return 'hace ' + Math.floor(secs / 3600) + 'h';
   return 'hace ' + Math.floor(secs / 86400) + 'd';
 }
 
+function TrustBar({ score }) {
+  const s = parseFloat(score || 0);
+  const pct = (s / 10) * 100;
+  const color = s >= 8 ? '#059669' : s >= 6 ? '#10b981' : s >= 4 ? '#f59e0b' : '#dc2626';
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11 }}>
+      <span style={{ width: 50, height: 5, background: '#e5e7eb', borderRadius: 3, overflow: 'hidden', display: 'inline-block' }}>
+        <span style={{ display: 'block', height: '100%', width: pct + '%', background: color, borderRadius: 3 }} />
+      </span>
+      <span style={{ color, fontWeight: 700 }}>{s.toFixed(1)}</span>
+    </span>
+  );
+}
+
+// ── Source row with verification controls ─────────────────────────────────────
+function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifying, approving }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [history, setHistory]         = useState([]);
+  const [histLoading, setHistLoading] = useState(false);
+
+  const st   = SOURCE_TYPE_STYLE[s.type] || SOURCE_TYPE_STYLE.news;
+  const vs   = VERIFY_STATUS[s.verification_status] || VERIFY_STATUS.pending;
+  const busy = verifying === s.id || approving === s.id;
+
+  async function loadHistory() {
+    if (histLoading) return;
+    setHistLoading(true);
+    try {
+      const rows = await apiJson(`/monitor/sources/${s.id}/verifications`, { auth: true });
+      setHistory(rows);
+    } catch {} finally { setHistLoading(false); }
+  }
+
+  function toggleHistory() {
+    if (!historyOpen) loadHistory();
+    setHistoryOpen(o => !o);
+  }
+
+  const canApprove = s.verification_status === 'verified' || s.verification_status === 'approved';
+
+  return (
+    <div style={{ background: '#fff', border: `1px solid ${s.verification_status === 'failed' ? '#fecaca' : s.verification_status === 'approved' ? '#a7f3d0' : '#e5e7eb'}`, borderRadius: 10, opacity: s.enabled ? 1 : 0.55, transition: 'opacity .2s' }}>
+      {/* Main row */}
+      <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
+
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4, flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>{s.name}</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: st.color, background: st.bg, padding: '1px 7px', borderRadius: 10 }}>{st.label}</span>
+            <span style={{ fontSize: 11, fontWeight: 700, color: vs.color, background: vs.bg, padding: '1px 8px', borderRadius: 10 }}>
+              {vs.emoji} {vs.label}
+            </span>
+            <TrustBar score={s.trust_score} />
+          </div>
+          <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <span title={s.rss_url} style={{ maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {s.rss_url}
+            </span>
+            {s.verified_at && (
+              <span style={{ color: '#9ca3af' }}>verificado {timeAgo(s.verified_at)}</span>
+            )}
+            {s.seconds_since_check != null && (
+              <span style={{ color: s.seconds_since_check < 120 ? '#10b981' : '#f59e0b' }}>
+                · RSS {s.seconds_since_check < 60 ? 'hace ' + s.seconds_since_check + 's' : 'hace ' + Math.floor(s.seconds_since_check / 60) + 'min'}
+              </span>
+            )}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <button onClick={() => onVerify(s.id)} disabled={busy}
+            style={{ padding: '5px 11px', borderRadius: 7, border: '1px solid #d1d5db', background: verifying === s.id ? '#eff6ff' : '#fff',
+              cursor: busy ? 'not-allowed' : 'pointer', fontSize: 12, fontWeight: 600, color: '#374151', whiteSpace: 'nowrap' }}>
+            {verifying === s.id ? '⟳ Verificando…' : '⟳ Verificar'}
+          </button>
+
+          {canApprove && (
+            <button onClick={() => onApprove(s.id)} disabled={busy || s.verification_status === 'approved'}
+              style={{ padding: '5px 11px', borderRadius: 7, border: 'none',
+                background: s.verification_status === 'approved' ? '#d1fae5' : '#059669',
+                cursor: (busy || s.verification_status === 'approved') ? 'default' : 'pointer',
+                fontSize: 12, fontWeight: 700, color: s.verification_status === 'approved' ? '#059669' : '#fff', whiteSpace: 'nowrap' }}>
+              {s.verification_status === 'approved' ? '★ Aprobada' : '★ Aprobar'}
+            </button>
+          )}
+
+          <button onClick={toggleHistory}
+            style={{ padding: '5px 8px', borderRadius: 7, border: '1px solid #e5e7eb', background: historyOpen ? '#f3f4f6' : '#fff',
+              cursor: 'pointer', fontSize: 12, color: '#6b7280', whiteSpace: 'nowrap' }}>
+            {historyOpen ? '▲' : '▼'} Historial
+          </button>
+
+          {/* Toggle enabled */}
+          <button onClick={() => onToggle(s)} title={s.enabled ? 'Desactivar' : 'Activar'}
+            style={{ width: 38, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer',
+              background: s.enabled ? '#10b981' : '#d1d5db', position: 'relative', transition: 'background .2s', flexShrink: 0 }}>
+            <span style={{ position: 'absolute', top: 2, left: s.enabled ? 18 : 2, width: 18, height: 18,
+              borderRadius: '50%', background: 'white', transition: 'left .2s' }} />
+          </button>
+
+          <button onClick={() => onDelete(s.id)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d1d5db', fontSize: 18, padding: 2 }} title="Eliminar">×</button>
+        </div>
+      </div>
+
+      {/* History panel */}
+      {historyOpen && (
+        <div style={{ borderTop: '1px solid #f3f4f6', padding: '10px 16px', background: '#fafafa' }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#9ca3af', marginBottom: 8, textTransform: 'uppercase' }}>Historial de verificaciones</div>
+          {histLoading && <div style={{ fontSize: 12, color: '#9ca3af' }}>Cargando…</div>}
+          {!histLoading && history.length === 0 && <div style={{ fontSize: 12, color: '#9ca3af' }}>Sin historial aún.</div>}
+          {!histLoading && history.map(h => {
+            const hv = VERIFY_STATUS[h.status] || VERIFY_STATUS.pending;
+            return (
+              <div key={h.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '6px 0', borderBottom: '1px solid #f3f4f6' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: hv.color, background: hv.bg, padding: '2px 7px', borderRadius: 10, flexShrink: 0 }}>
+                  {hv.emoji} {hv.label}
+                </span>
+                <div style={{ flex: 1 }}>
+                  {h.notes && <div style={{ fontSize: 12, color: '#374151' }}>{h.notes}</div>}
+                  <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2, display: 'flex', gap: 8 }}>
+                    <span>{timeAgo(h.created_at)}</span>
+                    {h.http_status && <span>HTTP {h.http_status}</span>}
+                    {h.response_ms && <span>{h.response_ms}ms</span>}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
 export default function MediaMonitor() {
   const navigate   = useNavigate();
   const [tab, setTab]       = useState('feed');
@@ -36,6 +182,8 @@ export default function MediaMonitor() {
   const [addForm, setAddForm]   = useState({ name: '', type: 'news', rss_url: '', homepage: '' });
   const [addOpen, setAddOpen]   = useState(false);
   const [researchingId, setResearchingId] = useState(null);
+  const [verifying,  setVerifying]  = useState(null);
+  const [approving,  setApproving]  = useState(null);
   const refreshRef = useRef(null);
 
   const loadStats    = useCallback(async () => {
@@ -65,8 +213,7 @@ export default function MediaMonitor() {
   async function handleToggle(source) {
     try {
       const d = await apiJson(`/monitor/sources/${source.id}`, {
-        method: 'PUT', auth: true,
-        body: { enabled: !source.enabled },
+        method: 'PUT', auth: true, body: { enabled: !source.enabled },
       });
       setSources(prev => prev.map(s => s.id === source.id ? d.source : s));
       loadStats();
@@ -92,6 +239,24 @@ export default function MediaMonitor() {
     } catch (err) { alert('Error: ' + err.message); }
   }
 
+  async function handleVerify(id) {
+    setVerifying(id);
+    try {
+      const { source } = await apiJson(`/monitor/sources/${id}/verify`, { method: 'POST', auth: true });
+      setSources(prev => prev.map(s => s.id === id ? source : s));
+    } catch (err) { alert('Error verificando: ' + err.message); }
+    finally { setVerifying(null); }
+  }
+
+  async function handleApprove(id) {
+    setApproving(id);
+    try {
+      const { source } = await apiJson(`/monitor/sources/${id}/approve`, { method: 'POST', auth: true });
+      setSources(prev => prev.map(s => s.id === id ? source : s));
+    } catch (err) { alert('Error aprobando: ' + err.message); }
+    finally { setApproving(null); }
+  }
+
   async function handleResearch(item) {
     setResearchingId(item.entity_id);
     try {
@@ -109,6 +274,14 @@ export default function MediaMonitor() {
   }
 
   const opportunities = trending.filter(t => t.source_count >= 3 && t.mention_count >= 5);
+
+  // Stats for sources tab
+  const srcStats = {
+    pending:  sources.filter(s => (s.verification_status || 'pending') === 'pending').length,
+    verified: sources.filter(s => s.verification_status === 'verified').length,
+    failed:   sources.filter(s => s.verification_status === 'failed').length,
+    approved: sources.filter(s => s.verification_status === 'approved').length,
+  };
 
   const TABS = [
     { id: 'feed',    label: '📰 Feed',         count: articles.length },
@@ -149,16 +322,12 @@ export default function MediaMonitor() {
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 4, marginTop: 14 }}>
           {TABS.map(t => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                padding: '7px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
-                background: tab === t.id ? '#1e1b4b' : 'transparent',
-                color:      tab === t.id ? 'white' : '#6b7280',
-                display: 'flex', alignItems: 'center', gap: 6, position: 'relative',
-              }}
-            >
+            <button key={t.id} onClick={() => setTab(t.id)} style={{
+              padding: '7px 14px', borderRadius: 8, border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
+              background: tab === t.id ? '#1e1b4b' : 'transparent',
+              color:      tab === t.id ? 'white' : '#6b7280',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
               {t.label}
               <span style={{
                 fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 10,
@@ -194,11 +363,8 @@ export default function MediaMonitor() {
                             {a.source_name}
                           </span>
                           {entities.map(e => e?.id && (
-                            <span
-                              key={e.id}
-                              onClick={() => navigate(`/knowledge/entities/${e.id}`)}
-                              style={{ fontSize: 11, fontWeight: 600, color: ENTITY_TYPE_COLOR[e.entity_type] || '#374151', background: '#f3f4f6', padding: '2px 7px', borderRadius: 10, cursor: 'pointer' }}
-                            >
+                            <span key={e.id} onClick={() => navigate(`/knowledge/entities/${e.id}`)}
+                              style={{ fontSize: 11, fontWeight: 600, color: ENTITY_TYPE_COLOR[e.entity_type] || '#374151', background: '#f3f4f6', padding: '2px 7px', borderRadius: 10, cursor: 'pointer' }}>
                               {e.name}
                             </span>
                           ))}
@@ -256,13 +422,25 @@ export default function MediaMonitor() {
         {/* ── FUENTES ───────────────────────────────────────────────────── */}
         {tab === 'sources' && (
           <div>
+            {/* Summary bar */}
+            {sources.length > 0 && (
+              <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+                {Object.entries(srcStats).map(([k, v]) => {
+                  const vs = VERIFY_STATUS[k];
+                  return (
+                    <div key={k} style={{ padding: '5px 12px', background: vs.bg, borderRadius: 20, fontSize: 12, fontWeight: 700, color: vs.color }}>
+                      {vs.emoji} {vs.label}: {v}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             {/* Add source */}
             <div style={{ marginBottom: 16 }}>
               {!addOpen ? (
-                <button
-                  onClick={() => setAddOpen(true)}
-                  style={{ padding: '8px 16px', borderRadius: 8, background: '#6366f1', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}
-                >
+                <button onClick={() => setAddOpen(true)}
+                  style={{ padding: '8px 16px', borderRadius: 8, background: '#6366f1', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
                   + Agregar fuente
                 </button>
               ) : (
@@ -284,49 +462,20 @@ export default function MediaMonitor() {
               )}
             </div>
 
-            {/* Sources table */}
+            {/* Sources list */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {sources.map(s => {
-                const st = SOURCE_TYPE_STYLE[s.type] || SOURCE_TYPE_STYLE.news;
-                return (
-                  <div key={s.id} style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12, opacity: s.enabled ? 1 : 0.5 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                        <span style={{ fontWeight: 700, fontSize: 14 }}>{s.name}</span>
-                        <span style={{ fontSize: 11, fontWeight: 600, color: st.color, background: st.bg, padding: '1px 7px', borderRadius: 10 }}>{st.label}</span>
-                      </div>
-                      <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', gap: 12 }}>
-                        <span title={s.rss_url} style={{ maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.rss_url}</span>
-                        {s.seconds_since_check != null && (
-                          <span style={{ color: s.seconds_since_check < 120 ? '#10b981' : '#f59e0b' }}>
-                            ✓ {s.seconds_since_check < 60 ? 'hace ' + s.seconds_since_check + 's' : 'hace ' + Math.floor(s.seconds_since_check / 60) + 'min'}
-                          </span>
-                        )}
-                        {s.last_checked == null && <span style={{ color: '#9ca3af' }}>Sin verificar</span>}
-                      </div>
-                    </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-                      {/* Toggle */}
-                      <button
-                        onClick={() => handleToggle(s)}
-                        title={s.enabled ? 'Desactivar' : 'Activar'}
-                        style={{
-                          width: 38, height: 22, borderRadius: 11, border: 'none', cursor: 'pointer',
-                          background: s.enabled ? '#10b981' : '#d1d5db',
-                          position: 'relative', transition: 'background .2s',
-                        }}
-                      >
-                        <span style={{
-                          position: 'absolute', top: 2, left: s.enabled ? 18 : 2,
-                          width: 18, height: 18, borderRadius: '50%', background: 'white',
-                          transition: 'left .2s',
-                        }} />
-                      </button>
-                      <button onClick={() => handleDelete(s.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#d1d5db', fontSize: 16, padding: 2 }} title="Eliminar">×</button>
-                    </div>
-                  </div>
-                );
-              })}
+              {sources.map(s => (
+                <SourceRow
+                  key={s.id}
+                  source={s}
+                  onToggle={handleToggle}
+                  onDelete={handleDelete}
+                  onVerify={handleVerify}
+                  onApprove={handleApprove}
+                  verifying={verifying}
+                  approving={approving}
+                />
+              ))}
             </div>
           </div>
         )}
@@ -335,51 +484,42 @@ export default function MediaMonitor() {
   );
 }
 
+// ── Sub-components ────────────────────────────────────────────────────────────
 function TrendingCard({ item, onResearch, researchingId, highlight }) {
   const color = ENTITY_TYPE_COLOR[item.entity_type] || '#374151';
   const busy  = researchingId === item.entity_id;
   return (
     <div style={{
-      background: 'white',
-      border: `1px solid ${highlight ? '#fca5a5' : '#e5e7eb'}`,
-      borderRadius: 14,
-      padding: '16px 18px',
-      boxShadow: highlight ? '0 0 0 3px rgba(239,68,68,.08)' : 'none',
+      background: 'white', borderRadius: 14, padding: '16px 18px',
+      border:     `1px solid ${highlight ? '#fca5a5' : '#e5e7eb'}`,
+      boxShadow:  highlight ? '0 0 0 3px rgba(239,68,68,.08)' : 'none',
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
         <div>
           <div style={{ fontWeight: 700, fontSize: 16, color: '#111827', marginBottom: 4 }}>{item.entity_name}</div>
-          <span style={{ fontSize: 11, fontWeight: 600, color, background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>
-            {item.entity_type}
-          </span>
+          <span style={{ fontSize: 11, fontWeight: 600, color, background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{item.entity_type}</span>
         </div>
         <div style={{ textAlign: 'right', flexShrink: 0 }}>
           <div style={{ fontSize: 28, fontWeight: 900, color: highlight ? '#ef4444' : '#6366f1', lineHeight: 1 }}>{item.mention_count}</div>
           <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>menciones</div>
         </div>
       </div>
-
       {item.entity_description && (
         <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.5, marginBottom: 10, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
           {item.entity_description}
         </div>
       )}
-
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ fontSize: 11, color: '#9ca3af', display: 'flex', gap: 10 }}>
           <span>📍 {item.source_count} {item.source_count === 1 ? 'fuente' : 'fuentes'}</span>
           <span>🕐 {timeAgo(item.last_seen_at)}</span>
         </div>
         {!item.auto_researched ? (
-          <button
-            onClick={() => onResearch(item)}
-            disabled={busy}
-            style={{
-              padding: '6px 12px', borderRadius: 8, border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
-              background: highlight ? '#ef4444' : '#6366f1',
-              color: 'white', fontSize: 12, fontWeight: 700, opacity: busy ? .6 : 1,
-            }}
-          >
+          <button onClick={() => onResearch(item)} disabled={busy} style={{
+            padding: '6px 12px', borderRadius: 8, border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
+            background: highlight ? '#ef4444' : '#6366f1',
+            color: 'white', fontSize: 12, fontWeight: 700, opacity: busy ? .6 : 1,
+          }}>
             {busy ? 'Creando…' : '🔬 Investigar'}
           </button>
         ) : (

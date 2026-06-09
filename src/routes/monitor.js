@@ -80,6 +80,105 @@ router.delete('/sources/:id', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// POST /monitor/sources/:id/verify — HTTP-probe the RSS URL, update status + trust_score
+router.post('/sources/:id/verify', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: [source] } = await query('SELECT * FROM tracked_sources WHERE id = $1', [req.params.id]);
+    if (!source) return res.status(404).json({ error: 'Source not found' });
+
+    const userId = req.user?.sub ? parseInt(req.user.sub) : null;
+    const start  = Date.now();
+    let http_status = null, response_ms = null;
+    let newStatus = 'failed', notes = null;
+    let trustScore = parseFloat(source.trust_score || 5);
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      const resp  = await fetch(source.rss_url, {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'PanoramaBot/1.0' },
+        redirect: 'follow',
+      });
+      clearTimeout(timer);
+      response_ms  = Date.now() - start;
+      http_status  = resp.status;
+
+      if (resp.ok) {
+        const ct   = resp.headers.get('content-type') || '';
+        const text = await resp.text();
+        const isXml = ct.includes('xml') || ct.includes('rss') || ct.includes('atom') || text.trimStart().startsWith('<');
+        if (isXml) {
+          newStatus  = 'verified';
+          trustScore = Math.min(10, 5 + (response_ms < 800 ? 2 : 1) + (response_ms < 300 ? 1 : 0) + 1);
+          notes = `OK ${http_status} · ${response_ms}ms · ${ct || 'text/xml'}`;
+        } else {
+          notes = `HTTP ${http_status} pero sin XML · ${ct}`;
+          trustScore = Math.max(0, trustScore - 0.5);
+        }
+      } else {
+        notes = `HTTP ${http_status}`;
+        trustScore = Math.max(0, trustScore - 2);
+      }
+    } catch (fetchErr) {
+      notes = fetchErr.name === 'AbortError' ? 'Timeout (>10s)' : fetchErr.message;
+      trustScore = Math.max(0, trustScore - 2);
+    }
+
+    const { rows: [updated] } = await query(
+      `UPDATE tracked_sources
+         SET verification_status = $1, verified_at = NOW(), verified_by = $2, trust_score = $3
+       WHERE id = $4 RETURNING *`,
+      [newStatus, userId, trustScore, req.params.id]
+    );
+
+    await query(
+      `INSERT INTO source_verifications (source_id, status, checked_by, notes, http_status, response_ms)
+       VALUES ($1,$2,$3,$4,$5,$6)`,
+      [req.params.id, newStatus, userId, notes, http_status, response_ms]
+    );
+
+    res.json({ source: updated, result: { status: newStatus, notes, http_status, response_ms } });
+  } catch (e) { next(e); }
+});
+
+// POST /monitor/sources/:id/approve — editorial approval
+router.post('/sources/:id/approve', requireAuth, async (req, res, next) => {
+  try {
+    const { notes } = req.body;
+    const userId = req.user?.sub ? parseInt(req.user.sub) : null;
+
+    const { rows: [updated] } = await query(
+      `UPDATE tracked_sources
+         SET verification_status = 'approved', verified_at = NOW(), verified_by = $1
+       WHERE id = $2 RETURNING *`,
+      [userId, req.params.id]
+    );
+    if (!updated) return res.status(404).json({ error: 'Source not found' });
+
+    await query(
+      `INSERT INTO source_verifications (source_id, status, checked_by, notes)
+       VALUES ($1, 'approved', $2, $3)`,
+      [req.params.id, userId, notes || 'Aprobada editorialmente']
+    );
+
+    res.json({ source: updated });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/sources/:id/verifications — history log
+router.get('/sources/:id/verifications', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT sv.* FROM source_verifications sv
+       WHERE sv.source_id = $1
+       ORDER BY sv.created_at DESC LIMIT 20`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
 // GET /monitor/articles?hours=24&source_id=&entity_id=&limit=60
 router.get('/articles', requireAuth, async (req, res, next) => {
   try {
