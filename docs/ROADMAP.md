@@ -7,11 +7,15 @@
 
 ## En Progreso
 
-### Branch: `001-agente-cm-platform`
+### Branch: `001-agente-cm-platform` → subido a `main` en [github.com/rubenlux/panorama](https://github.com/rubenlux/panorama)
+
 - [x] Diseño Panorama implementado en Home (web frontend)
 - [x] PKS (Project Knowledge System) creado en `/docs`
 - [x] **Sprint 1 — Centro de Investigación AI** (tablas + backend + conectores RSS + UI CMS)
 - [x] **Sprint 2 — Knowledge Base** (`knowledge_entities`, `entity_mentions`, `knowledge_events` + extracción automática con Claude + UI CMS)
+- [x] Branding: título "PANORAMA" + favicon P/punto rojo en DB y `web/index.html`
+- [x] Repositorio GitHub conectado (`panorama.git`) + `.gitignore` raíz
+- [x] Docker-compose: `restart: unless-stopped` (fix CPU spike VmmemWSL)
 - [ ] Sprint 3 — Generación de artículos desde brief (PostEditor prefill desde ResearchCenter)
 - [ ] Sprint 4 — Distribución (`article_distributions` — generación para redes sociales)
 - [ ] Diseño Panorama en página de Artículo (`Article.jsx`)
@@ -63,3 +67,6 @@
 - [x] Navbar con categorías dinámicas de base de datos
 - [x] Ticker de últimas noticias animado
 - [x] SearchOverlay con UI completa
+- [x] Branding Panorama — título y favicon (P + punto rojo) en `web/public/favicon.svg` + DB settings
+- [x] Repositorio GitHub — `https://github.com/rubenlux/panorama` (branch `main`, 200 archivos)
+- [x] Docker fix — `restart: unless-stopped` en `docker-compose.yml`

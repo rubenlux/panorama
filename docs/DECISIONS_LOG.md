@@ -7,6 +7,41 @@
 
 ## 2026-06-09
 
+**Decisión:** Branding Panorama — título y favicon del sitio.
+
+**Motivo:** El sitio mostraba "El Espectador" en la pestaña del browser y el favicon era el logo de Vite (artefacto del scaffolding inicial). Ambos necesitaban reflejar la identidad real del producto.
+
+**Cambios:**
+- `web/public/favicon.svg` creado: "P" blanca en fondo oscuro (`#0f172a`) con punto rojo (`#ef4444` — branding Panorama)
+- `web/index.html` actualizado: `<title>Panorama</title>` + `href="/favicon.svg"` como fallback estático
+- DB `settings`: `site_title` = `PANORAMA`, `site_favicon` = `/favicon.svg` — `SettingsContext.jsx` los aplica dinámicamente al cargar el frontend
+
+**Regla:** El título y favicon canónicos viven en la DB (`settings` table). El `index.html` tiene los valores de fallback para cuando la API no responde.
+
+---
+
+**Decisión:** Repositorio GitHub conectado como `panorama` (público).
+
+**Motivo:** El proyecto no tenía control de versiones independiente. El directorio `/news` vivía dentro de un git raíz en `C:/Users/ruben/` apuntando a otro proyecto (`MicroSaas-lolo`).
+
+**Cambios:**
+- Nuevo `.git` inicializado en `c:/Users/ruben/Documents/Mis-Proyectos/news/`
+- Remote: `https://github.com/rubenlux/panorama.git` (branch `main`)
+- `.gitignore` raíz creado: excluye `.env`, `node_modules/`, `uploads/`, `backups/`, `dist/`, scripts de debug
+- Commit inicial: 200 archivos, 36157 líneas — Sprint 1 + Sprint 2 completos
+
+---
+
+**Decisión:** `docker-compose.yml` — cambiar `restart: always` por `restart: unless-stopped`.
+
+**Motivo:** Con `restart: always`, el contenedor de postgres se reiniciaba automáticamente cada vez que se iniciaba Docker Desktop, generando un spike de CPU en VmmemWSL (77–80%) incluso cuando el desarrollo no estaba activo.
+
+**Impacto:** Con `unless-stopped`, postgres sólo se reinicia si crashea, no al abrir Docker Desktop. Resolución del problema de CPU alto reportado.
+
+---
+
+## 2026-06-09
+
 **Decisión:** Sprint 2 — Knowledge Base Foundation implementada como sistema de conocimiento acumulativo.
 
 **Motivo:** Cada investigación generaba un brief desechable. El objetivo del Sprint 2 es transformar ese conocimiento en memoria persistente: entidades nombradas (personas, empresas, productos, lugares) que crecen en cada investigación nueva.

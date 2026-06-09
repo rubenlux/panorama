@@ -1,7 +1,7 @@
 # PROJECT_OVERVIEW.md
 
 > Fuente de verdad del sistema. Actualizar con cada cambio estructural.
-> Última actualización: 2026-06-09
+> Última actualización: 2026-06-09 | Repositorio: https://github.com/rubenlux/panorama
 
 ---
 
@@ -106,3 +106,5 @@ Proveer una plataforma de noticias completa con:
 11. **Suscriptores** — Newsletter y lista de emails
 12. **Configuración** — Settings key-value del sitio (título, favicon, etc.)
 13. **Worker** — Cron job diario para calcular revenue publicitario
+14. **Research Center** *(Sprint 1)* — Investigaciones AI con RSS + Claude brief generation
+15. **Knowledge Base** *(Sprint 2)* — Entidades nombradas extraídas automáticamente, memoria acumulativa
