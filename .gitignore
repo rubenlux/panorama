@@ -1,0 +1,38 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+cms/node_modules/
+web/node_modules/
+
+# Build output
+cms/dist/
+web/dist/
+
+# Uploads and media
+uploads/
+
+# Backups
+backups/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Temp / debug scripts
+check_*.js
+debug_*.js
+list_tables.js
+check_schema.js
+test_*.js

@@ -1,0 +1,7 @@
+{
+  "defaultEnv": "local",
+  "local": {
+    "databaseUrl": { "env": "DATABASE_URL" },
+    "migrationsDir": "migrations"
+  }
+}

@@ -1,0 +1,8 @@
+/* Base reset — design tokens come from panorama.css loaded in App.jsx */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; }
+ul, ol { list-style: none; margin: 0; padding: 0; }
+img { max-width: 100%; display: block; }
+a { text-decoration: none; color: inherit; }
+button { cursor: pointer; border: none; background: none; font-family: inherit; }

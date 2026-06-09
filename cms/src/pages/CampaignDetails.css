@@ -1,0 +1,133 @@
+/* CampaignDetails.css */
+
+.campaign-details-container {
+    padding: 20px;
+    font-family: Arial, sans-serif;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.back-link {
+    display: block;
+    margin-bottom: 20px;
+    text-decoration: none;
+    color: #666;
+    font-weight: bold;
+}
+
+.back-link:hover {
+    text-decoration: underline;
+}
+
+.section-title {
+    margin-top: 30px;
+    margin-bottom: 15px;
+    font-size: 1.2rem;
+    color: #333;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 10px;
+}
+
+/* Info Table Styling */
+.info-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 30px;
+    background: white;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    border: 1px solid #ddd;
+}
+
+.info-table th {
+    background-color: #f8f9fa;
+    color: #495057;
+    text-align: left;
+    padding: 12px 15px;
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    border-bottom: 2px solid #dee2e6;
+}
+
+.info-table td {
+    padding: 15px;
+    vertical-align: middle;
+    border-bottom: 1px solid #eee;
+    font-size: 1rem;
+    color: #333;
+}
+
+.stat-value {
+    font-weight: bold;
+    font-size: 1.1rem;
+}
+
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: bold;
+    text-transform: uppercase;
+    display: inline-block;
+}
+
+.status-active {
+    background-color: #d4edda;
+    color: #155724;
+}
+
+.status-inactive {
+    background-color: #f8d7da;
+    color: #721c24;
+}
+
+.chart-container {
+    background: white;
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin-bottom: 30px;
+    height: 400px;
+}
+
+/* Ads Table Styling (reuse similar basic styles) */
+.ads-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+    border: 1px solid #ddd;
+}
+
+.ads-table th {
+    background-color: #007bff;
+    color: white;
+    padding: 12px;
+    text-align: left;
+}
+
+.ads-table td {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.ads-table tr:hover {
+    background-color: #f1f1f1;
+}
+
+.ad-image {
+    width: 60px;
+    height: 40px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid #ccc;
+    vertical-align: middle;
+    margin-right: 10px;
+}
+
+.ctr-good {
+    color: green;
+    font-weight: bold;
+}
+
+.ctr-bad {
+    color: red;
+}

@@ -1,0 +1,84 @@
+[2026-01-14T23:28:17.241Z] PATCH ARTICLE ERROR: column "updated_at" does not exist
+error: column "updated_at" does not exist
+    at C:\Users\ruben\Desktop\news\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async query (file:///C:/Users/ruben/Desktop/news/src/routes/db.js:10:15)
+    at async file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:403:19
+
+[2026-01-14T23:46:00.645Z] PATCH ARTICLE ERROR: column "updated_at" does not exist
+error: column "updated_at" does not exist
+    at C:\Users\ruben\Desktop\news\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async query (file:///C:/Users/ruben/Desktop/news/src/routes/db.js:10:15)
+    at async file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:403:19
+
+[2026-01-14T23:47:40.045Z] PATCH ARTICLE ERROR: column "updated_at" does not exist
+error: column "updated_at" does not exist
+    at C:\Users\ruben\Desktop\news\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async query (file:///C:/Users/ruben/Desktop/news/src/routes/db.js:10:15)
+    at async file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:403:19
+
+[2026-01-14T23:53:27.014Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+[2026-01-14T23:54:00.964Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+[2026-01-14T23:56:44.482Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+[2026-01-15T00:25:21.838Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+[2026-01-15T00:26:13.885Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+[2026-01-15T13:28:06.166Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+
+[2026-01-15T14:03:30.139Z] PATCH ARTICLE ERROR: Cannot set headers after they are sent to the client
+Error [ERR_HTTP_HEADERS_SENT]: Cannot set headers after they are sent to the client
+    at ServerResponse.setHeader (node:_http_outgoing:655:11)
+    at ServerResponse.header (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:686:10)
+    at ServerResponse.send (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:163:12)
+    at ServerResponse.json (C:\Users\ruben\Desktop\news\node_modules\express\lib\response.js:252:15)
+    at file:///C:/Users/ruben/Desktop/news/src/routes/articles.js:440:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+

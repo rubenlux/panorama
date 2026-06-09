@@ -1,0 +1,50 @@
+.ads-alerts-container {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    height: 100%;
+    /* For grid matching */
+}
+
+.ads-alerts-container h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.1rem;
+    color: #333;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+}
+
+.alerts-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.alert-item {
+    padding: 12px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+}
+
+.alert-warning {
+    background-color: #fff3e0;
+    border: 1px solid #ffe0b2;
+    color: #e65100;
+}
+
+.alert-info {
+    background-color: #e3f2fd;
+    border: 1px solid #bbdefb;
+    color: #0d47a1;
+}
+
+.alert-error {
+    background-color: #ffebee;
+    border: 1px solid #ffcdd2;
+    color: #b71c1c;
+}

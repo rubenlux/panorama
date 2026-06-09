@@ -1,0 +1,43 @@
+{
+  "name": "news",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon -r dotenv/config src/server.js",
+    "start": "node -r dotenv/config src/server.js",
+    "db:up": "docker-compose up -d",
+    "db:init": "node init_db.js && node seed.js",
+    "cms": "cd cms && npm run dev",
+    "worker": "nodemon -r dotenv/config src/worker.js",
+    "dev:all": "concurrently \"npm run start\" \"npm run cms\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@tinymce/tinymce-react": "^6.3.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "geoip-lite": "^1.4.10",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.3",
+    "morgan": "^1.10.1",
+    "multer": "^2.0.2",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2",
+    "openai": "^6.16.0",
+    "pg": "^8.16.3",
+    "sanitize-html": "^2.17.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "node-pg-migrate": "^8.0.4",
+    "nodemon": "^3.1.11"
+  }
+}

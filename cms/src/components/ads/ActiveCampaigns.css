@@ -1,0 +1,75 @@
+.active-campaigns-container,
+.top-ads-container {
+    background: #fff;
+    padding: 20px;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    margin-bottom: 20px;
+}
+
+.active-campaigns-container h3,
+.top-ads-container h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 1.1rem;
+    color: #333;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 10px;
+}
+
+.table-responsive {
+    overflow-x: auto;
+}
+
+.ads-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.ads-table th,
+.ads-table td {
+    text-align: left;
+    padding: 12px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.ads-table th {
+    font-weight: 600;
+    color: #666;
+    background-color: #f9f9f9;
+}
+
+.ads-table td {
+    color: #333;
+}
+
+.status-badge {
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: capitalize;
+}
+
+.status-active {
+    background-color: #e6f7e9;
+    color: #2e7d32;
+}
+
+.status-draft {
+    background-color: #f5f5f5;
+    color: #616161;
+}
+
+.status-paused {
+    background-color: #fff8e1;
+    color: #f57c00;
+}
+
+.no-data {
+    text-align: center;
+    color: #999;
+    padding: 20px;
+}

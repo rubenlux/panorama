@@ -1,0 +1,128 @@
+.admin-container {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    min-height: 100vh;
+    font-family: "Inter", system-ui, sans-serif;
+}
+
+.admin-sidebar {
+    background: #151a23;
+    color: white;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    z-index: 1200;
+    overflow-y: auto;
+}
+
+.admin-main {
+    padding: 24px;
+    background: #f8fafc;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.mobile-header {
+    display: none;
+    background: #151a23;
+    color: white;
+    padding: 12px 20px;
+    justify-content: space-between;
+    align-items: center;
+    position: sticky;
+    top: 0;
+    z-index: 1100;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.menu-toggle {
+    background: transparent;
+    border: none;
+    color: white;
+    padding: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+}
+
+/* Utilities */
+.horizontal-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 1024px) {
+    .admin-container {
+        grid-template-columns: 1fr;
+    }
+
+    .admin-sidebar {
+        position: fixed;
+        top: 56px;
+        left: -280px;
+        width: 280px;
+        height: calc(100vh - 56px);
+        transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        box-shadow: 4px 0 10px rgba(0, 0, 0, 0.1);
+    }
+
+    .admin-sidebar.open {
+        left: 0;
+    }
+
+    .admin-main {
+        padding: 12px;
+    }
+
+    .mobile-header {
+        display: flex;
+    }
+
+    /* Responsive Utilities */
+    .responsive-grid {
+        grid-template-columns: 1fr !important;
+    }
+
+    .responsive-stack {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 16px !important;
+    }
+
+    .responsive-hide {
+        display: none !important;
+    }
+
+    .full-width-mobile {
+        width: 100% !important;
+    }
+
+    /* Specific fixes for common elements */
+    table {
+        min-width: 800px;
+    }
+
+    input,
+    select,
+    textarea {
+        font-size: 16px !important;
+    }
+
+    .toolbar-scroll {
+        overflow-x: auto !important;
+        flex-wrap: nowrap !important;
+        padding: 10px !important;
+        justify-content: flex-start !important;
+        background: white !important;
+        position: sticky !important;
+        top: 0;
+        z-index: 1000;
+        -webkit-overflow-scrolling: touch;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .toolbar-scroll::-webkit-scrollbar {
+        height: 4px;
+    }
+}
