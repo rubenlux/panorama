@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { pool, query } from "./db.js";
-import { authMiddleware } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -239,7 +239,7 @@ router.get("/:id", async (req, res) => {
 });
 
 // ── CREATE topic ──────────────────────────────────────────────────────────────
-router.post("/", authMiddleware, async (req, res) => {
+router.post("/", requireAuth, async (req, res) => {
   const { name, description, category, region, coverage_scope, importance_score } = req.body;
   if (!name) return res.status(400).json({ error: "name is required" });
   const slug = slugify(name);
@@ -257,7 +257,7 @@ router.post("/", authMiddleware, async (req, res) => {
 });
 
 // ── UPDATE topic ──────────────────────────────────────────────────────────────
-router.patch("/:id", authMiddleware, async (req, res) => {
+router.patch("/:id", requireAuth, async (req, res) => {
   const { id } = req.params;
   const { name, description, category, region, coverage_scope, importance_score } = req.body;
   try {
@@ -284,13 +284,13 @@ router.patch("/:id", authMiddleware, async (req, res) => {
 });
 
 // ── DELETE topic ──────────────────────────────────────────────────────────────
-router.delete("/:id", authMiddleware, async (req, res) => {
+router.delete("/:id", requireAuth, async (req, res) => {
   await query("DELETE FROM topics WHERE id = $1", [req.params.id]);
   res.status(204).end();
 });
 
 // ── LINK article ──────────────────────────────────────────────────────────────
-router.post("/:id/articles", authMiddleware, async (req, res) => {
+router.post("/:id/articles", requireAuth, async (req, res) => {
   const { article_id, relevance_score = 1.0 } = req.body;
   if (!article_id) return res.status(400).json({ error: "article_id required" });
   try {
@@ -306,14 +306,14 @@ router.post("/:id/articles", authMiddleware, async (req, res) => {
 });
 
 // ── UNLINK article ────────────────────────────────────────────────────────────
-router.delete("/:id/articles/:article_id", authMiddleware, async (req, res) => {
+router.delete("/:id/articles/:article_id", requireAuth, async (req, res) => {
   await query("DELETE FROM topic_articles WHERE topic_id=$1 AND article_id=$2",
     [req.params.id, req.params.article_id]);
   res.status(204).end();
 });
 
 // ── LINK research ─────────────────────────────────────────────────────────────
-router.post("/:id/research", authMiddleware, async (req, res) => {
+router.post("/:id/research", requireAuth, async (req, res) => {
   const { research_topic_id } = req.body;
   if (!research_topic_id) return res.status(400).json({ error: "research_topic_id required" });
   try {
@@ -329,7 +329,7 @@ router.post("/:id/research", authMiddleware, async (req, res) => {
 });
 
 // ── LINK entity ───────────────────────────────────────────────────────────────
-router.post("/:id/entities", authMiddleware, async (req, res) => {
+router.post("/:id/entities", requireAuth, async (req, res) => {
   const { entity_id, prominence_score = 1.0 } = req.body;
   if (!entity_id) return res.status(400).json({ error: "entity_id required" });
   try {
@@ -345,7 +345,7 @@ router.post("/:id/entities", authMiddleware, async (req, res) => {
 });
 
 // ── LINK event ────────────────────────────────────────────────────────────────
-router.post("/:id/events", authMiddleware, async (req, res) => {
+router.post("/:id/events", requireAuth, async (req, res) => {
   const { event_id } = req.body;
   if (!event_id) return res.status(400).json({ error: "event_id required" });
   try {
