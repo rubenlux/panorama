@@ -831,26 +831,120 @@ JSON ESTRICTO — sin markdown:
   // EDITORIAL WORKFLOW METHODS (Sprint 4)
   // ============================================================
 
-  async generateDossier(topicTitle, brief, entities = []) {
-    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+  // ── EDITORIAL WORKFLOW (Sprint 4 / 4.1) ──────────────────────────────────
 
-    const entityList = entities.slice(0, 20).map(e => `${e.name} (${e.entity_type})`).join(', ') || 'No hay entidades detectadas';
-    const briefText = `
-Resumen ejecutivo: ${brief.executive_summary || ''}
+  _buildBriefText(brief) {
+    return `Resumen ejecutivo: ${brief.executive_summary || ''}
 Hechos clave: ${(brief.key_facts || []).join(' | ')}
 Controversias: ${(brief.controversies || []).join(' | ')}
 Timeline: ${(brief.timeline || []).join(' | ')}
 Oportunidades: ${brief.opportunities || ''}
 Riesgos/vacíos: ${brief.risks || ''}`.trim();
+  }
+
+  _anglesPromptBlock() {
+    return `Los ángulos deben ser DISTINTOS en tipo y enfoque. Tipos permitidos:
+- noticia      → Informativa pura, pirámide invertida, 5W+H
+- ultima_hora  → Breaking, urgente, datos concretos
+- cronica      → Narrativa cronológica, contexto profundo
+- analisis     → Interpretación, causas y consecuencias
+- investigacion→ Múltiples fuentes, metodología transparente
+- fact_check   → Verificación de afirmaciones, verdadero/falso
+- explicador   → ¿Qué es? ¿Por qué importa? Pedagógico
+
+Estructura de cada ángulo:
+{
+  "angle_type": "uno de los 7 tipos",
+  "title": "Titular periodístico exacto (50-60 chars)",
+  "summary": "2-3 oraciones: qué cubre, por qué es relevante, qué lo diferencia",
+  "target_audience": "A quién está dirigido específicamente",
+  "seo_keywords": ["kw1", "kw2", "kw3"]
+}`;
+  }
+
+  _articleTypeInstructions(articleType) {
+    const rules = {
+      noticia: `
+═══ TIPO: NOTICIA INFORMATIVA ═══
+ESTRUCTURA: Pirámide invertida estricta
+LEAD (primer párrafo): Responde 5W+H en 2-3 oraciones máximo
+  - QUIÉN (Quién es el protagonista)
+  - QUÉ (Qué ocurrió)
+  - CUÁNDO (Cuándo ocurrió)
+  - DÓNDE (Dónde ocurrió)
+  - POR QUÉ (Por qué importa)
+  - CÓMO (Cómo ocurrió)
+ORDEN: Información crítica → Detalles → Contexto → Antecedentes
+TONO: Neutral, objetivo, sin opiniones
+❌ PROHIBIDO: Conclusiones, opiniones del autor, adjetivos valorativos, intro tipo "En un mundo donde..."
+❌ PROHIBIDO: "En conclusión", "En definitiva", "Cabe destacar que"
+`,
+      ultima_hora: `
+═══ TIPO: ÚLTIMA HORA / BREAKING ═══
+LEAD: Hecho más importante en la primera oración. Directo al punto.
+CUERPO: Datos confirmados primero. Marcar explícitamente lo que se está verificando.
+LONGITUD: Puede ser más corto (300-400 palabras) — prioridad es rapidez y precisión
+TONO: Urgente, factual, sin especulaciones
+❌ PROHIBIDO: Contexto histórico extenso, análisis, opinión
+⚠️ Obligatorio marcar con [EN DESARROLLO] datos no confirmados
+`,
+      cronica: `
+═══ TIPO: CRÓNICA ═══
+ESTRUCTURA: Cronológica o narrativa — puede empezar con un momento clave (no necesariamente la noticia principal)
+ESTILO: Más narrativo que la noticia, puede incluir descripción de escenas
+LEAD: Puede ser un gancho narrativo — escena, diálogo, descripción
+CUERPO: Desarrollo cronológico con contexto rico
+TONO: Más literario que la noticia, pero periodísticamente riguroso
+`,
+      analisis: `
+═══ TIPO: ANÁLISIS ═══
+ESTRUCTURA: Contexto → Hechos → Causas → Consecuencias → Perspectivas
+LEAD: Puede presentar la pregunta central del análisis
+CUERPO: Profundidad. Explica el "por qué" y el "qué significa".
+TONO: Puede incluir interpretación del periodista pero fundamentada en hechos
+❌ NO confundir con opinión: el análisis usa hechos como base, no percepciones personales
+`,
+      investigacion: `
+═══ TIPO: INVESTIGACIÓN ═══
+ESTRUCTURA: Hallazgo principal → Metodología → Evidencias → Contexto → Implicaciones
+LEAD: El hallazgo más impactante, bien documentado
+CUERPO: Múltiples fuentes citadas. Transparencia sobre método. ¿Qué documentos? ¿Qué fuentes?
+TONO: Riguroso, documentado, preciso
+⚠️ Cada afirmación importante debe tener fuente o marcarse como ⚠️ requiere verificación
+`,
+      fact_check: `
+═══ TIPO: FACT CHECK ═══
+ESTRUCTURA: Afirmación a verificar → Veredicto (VERDADERO/FALSO/PARCIALMENTE VERDADERO/SIN EVIDENCIA) → Evidencia → Contexto
+LEAD: Identifica claramente qué afirmación se está verificando y quién la hizo
+CUERPO: Evidencias concretas para cada veredicto. Fuentes citadas.
+TONO: Neutral, preciso, basado en evidencia
+Usar etiquetas claras: ✅ VERDADERO | ❌ FALSO | ⚠️ PARCIALMENTE VERDADERO | 🔍 SIN EVIDENCIA SUFICIENTE
+`,
+      explicador: `
+═══ TIPO: EXPLICADOR ═══
+ESTRUCTURA: Pregunta central → Respuesta directa → Contexto → Implicaciones → Qué viene después
+LEAD: Plantea la pregunta que el lector tiene en mente
+CUERPO: Pedagógico. Definir términos. Usar analogías. H2s como preguntas (¿Qué es X? ¿Por qué ocurre? ¿Qué significa para...?)
+TONO: Accesible, claro, sin jerga sin explicar
+Ideal para lectores que necesitan contexto para entender una noticia
+`,
+    };
+    return rules[articleType] || rules.noticia;
+  }
+
+  async generateDossier(topicTitle, brief, entities = []) {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+
+    const entityList = entities.slice(0, 20).map(e => `${e.name} (${e.entity_type})`).join(', ') || 'No hay entidades detectadas';
+    const briefText = this._buildBriefText(brief);
 
     const prompt = `Eres un editor estratégico senior de una redacción digital.
-Tu tarea: a partir de una investigación periodística, crear un DOSSIER EDITORIAL que guíe al equipo de redacción.
+Tu tarea: a partir de una investigación periodística, crear un DOSSIER EDITORIAL completo.
 
 REGLAS CRÍTICAS:
 🚫 NO inventes datos, citas, fechas o nombres que no estén en el brief
 🚫 NO agregues información de entrenamiento si no está explícitamente en el brief
 ✅ Basa todas las recomendaciones en los hechos del brief
-✅ Genera 3-4 ángulos DISTINTOS (no variaciones del mismo enfoque)
 ✅ El hero_image_prompt debe ser en inglés, fotorrealista, evocador
 
 TEMA: ${topicTitle}
@@ -859,6 +953,10 @@ BRIEF DE INVESTIGACIÓN:
 ${briefText}
 
 ENTIDADES DETECTADAS: ${entityList}
+
+ÁNGULOS EDITORIALES:
+${this._anglesPromptBlock()}
+Genera exactamente 4 ángulos, cada uno de un tipo distinto.
 
 Genera el dossier en JSON ESTRICTO sin markdown:
 {
@@ -875,14 +973,14 @@ Genera el dossier en JSON ESTRICTO sin markdown:
   ],
   "suggested_angles": [
     {
-      "angle_type": "informativo",
-      "title": "Título del artículo desde este enfoque",
-      "summary": "2-3 oraciones describiendo qué cubriría y por qué es relevante",
-      "target_audience": "A quién está dirigido principalmente",
-      "keywords": ["kw1", "kw2", "kw3"]
+      "angle_type": "noticia",
+      "title": "Titular periodístico exacto (50-60 chars)",
+      "summary": "2-3 oraciones: qué cubre y por qué es relevante",
+      "target_audience": "A quién está dirigido",
+      "seo_keywords": ["kw1", "kw2", "kw3"]
     }
   ],
-  "hero_image_prompt": "Describe in English a photorealistic scene representing this story. Include: setting, mood, lighting, key visual elements. Avoid text in image. Professional news photography style."
+  "hero_image_prompt": "Describe in English a photorealistic scene. Professional news photography style. No text in image."
 }`;
 
     const msg = await this.anthropic.messages.create({
@@ -898,60 +996,159 @@ Genera el dossier en JSON ESTRICTO sin markdown:
     return JSON.parse(text);
   }
 
+  async generateAngles(topicTitle, briefText, entityList, excludeTypes = []) {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+
+    const exclude = excludeTypes.length
+      ? `\nNO uses estos tipos que ya existen: ${excludeTypes.join(', ')}`
+      : '';
+
+    const prompt = `Eres un editor estratégico de una redacción digital.
+Genera 4 ángulos editoriales DISTINTOS para el siguiente tema periodístico.
+
+REGLAS CRÍTICAS:
+🚫 NO inventes datos que no estén en el brief
+✅ Cada ángulo debe ser completamente distinto en tipo y enfoque
+${exclude}
+
+TEMA: ${topicTitle}
+BRIEF: ${briefText.slice(0, 800)}
+ENTIDADES: ${entityList || '—'}
+
+${this._anglesPromptBlock()}
+
+Devuelve JSON ESTRICTO sin markdown — solo el array:
+[
+  {
+    "angle_type": "tipo",
+    "title": "Titular periodístico (50-60 chars)",
+    "summary": "2-3 oraciones descriptivas",
+    "target_audience": "Audiencia objetivo",
+    "seo_keywords": ["kw1", "kw2", "kw3"]
+  }
+]`;
+
+    const msg = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 1500,
+      temperature: 0.5,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = msg.content[0].text;
+    const match = text.match(/\[[\s\S]*\]/);
+    if (match) return JSON.parse(match[0]);
+    return JSON.parse(text);
+  }
+
+  async regenerateAngle(topicTitle, briefText, entityList, angleType) {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+
+    const typeInstructions = {
+      noticia:       'Noticia informativa: pirámide invertida, 5W+H en el lead',
+      ultima_hora:   'Última hora: urgente, datos confirmados, directo',
+      cronica:       'Crónica: narrativa cronológica, contexto rico',
+      analisis:      'Análisis: causas, consecuencias, interpretación fundamentada',
+      investigacion: 'Investigación: múltiples fuentes, metodología, hallazgos documentados',
+      fact_check:    'Fact Check: verifica afirmaciones, veredictos claros, evidencia',
+      explicador:    'Explicador: pedagógico, ¿qué es? ¿por qué importa?',
+    };
+
+    const prompt = `Genera UN ángulo editorial de tipo "${angleType}" para el siguiente tema.
+
+TIPO: ${angleType} — ${typeInstructions[angleType] || angleType}
+
+TEMA: ${topicTitle}
+BRIEF: ${briefText.slice(0, 600)}
+ENTIDADES: ${entityList || '—'}
+
+REGLAS:
+🚫 NO inventes datos que no estén en el brief
+✅ El título debe tener 50-60 caracteres
+✅ El summary debe describir específicamente qué cubriría este artículo
+
+Devuelve JSON ESTRICTO sin markdown:
+{
+  "angle_type": "${angleType}",
+  "title": "Titular periodístico (50-60 chars)",
+  "summary": "2-3 oraciones descriptivas del artículo",
+  "target_audience": "Audiencia objetivo específica",
+  "seo_keywords": ["kw1", "kw2", "kw3"]
+}`;
+
+    const msg = await this.anthropic.messages.create({
+      model: this.model,
+      max_tokens: 600,
+      temperature: 0.5,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = msg.content[0].text;
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) return JSON.parse(match[0]);
+    return JSON.parse(text);
+  }
+
   async generateArticleDraft(topicTitle, dossier, angle, briefText = '') {
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
 
     const facts = (dossier.verified_facts || []).join('\n- ');
     const timeline = (dossier.timeline || []).join('\n- ');
     const seoKw = (dossier.seo_keywords || []).join(', ');
+    const articleType = angle.angle_type || 'noticia';
+    const typeInstructions = this._articleTypeInstructions(articleType);
 
-    const prompt = `Eres un redactor periodístico senior. Genera un ARTÍCULO COMPLETO a partir de un dossier editorial.
+    const prompt = `Eres un REDACTOR PERIODÍSTICO SENIOR. Tu tarea: generar un artículo COMPLETO y PROFESIONAL.
 
-REGLAS CRÍTICAS:
+${typeInstructions}
+
+REGLAS UNIVERSALES:
 🚫 NO inventes datos, nombres, fechas o cifras que no estén en el dossier o brief
-🚫 NO uses conocimiento de entrenamiento como fuente primaria — solo los hechos dados
-✅ Marca con ⚠️ cualquier elemento que requiera verificación adicional
+🚫 NO uses tu conocimiento de entrenamiento como fuente primaria
+🚫 NO escribas introducción tipo blog ("En este artículo veremos...", "Es importante destacar que...")
+🚫 NO escribas conclusión ni cierre editorial
 ✅ Mínimo 400 palabras en el body
-✅ Pirámide invertida: lo más importante primero
-✅ El título debe tener entre 50 y 60 caracteres ESTRICTAMENTE
+✅ Título: exactamente 50-60 caracteres
+✅ Marcá con ⚠️ todo lo que requiere verificación adicional
+✅ Usá comillas «» para citas textuales
 
 TEMA: ${topicTitle}
 
-HECHOS VERIFICADOS:
-- ${facts || '(sin hechos verificados — basarse en el brief)'}
+HECHOS VERIFICADOS (únicas fuentes válidas):
+- ${facts || '(sin hechos verificados — usá solo lo del brief)'}
 
 TIMELINE:
 - ${timeline || '(sin timeline)'}
 
 BRIEF ADICIONAL: ${briefText.slice(0, 500) || '—'}
 
-ENFOQUE SELECCIONADO:
-Tipo: ${angle.angle_type}
+ÁNGULO SELECCIONADO (generá SOLO este ángulo, no mezcles con otros):
+Tipo: ${articleType}
 Título sugerido: ${angle.title}
-Descripción del enfoque: ${angle.summary}
-Audiencia objetivo: ${angle.target_audience}
-Keywords del enfoque: ${(angle.keywords || []).join(', ')}
+Descripción: ${angle.summary}
+Audiencia: ${angle.target_audience}
+Keywords: ${(angle.seo_keywords || angle.keywords || []).join(', ')}
 Keywords SEO del dossier: ${seoKw}
 
-GENERA EL ARTÍCULO COMPLETO (JSON ONLY, sin markdown):
+OUTPUT (JSON ONLY, sin markdown, sin texto extra):
 {
-  "volanta": "Kicker contextual (3-6 palabras)",
-  "title": "Título SEO exacto (50-60 caracteres)",
-  "excerpt": "Copete: WHO+WHAT+WHEN+WHERE (150-160 chars, incluye keyword)",
-  "body": "<p>Primer párrafo con las 5W+H...</p><h2>Subtítulo descriptivo 1</h2><p>Desarrollo...</p><h2>Subtítulo descriptivo 2</h2><p>Contexto...</p>",
-  "meta_title": "Meta title (50-60 chars, puede = title o variante con keyword)",
-  "meta_description": "Meta description para Google (150-160 chars, incluye keyword + CTA implícito)",
-  "og_title": "Título para redes sociales (puede ser más largo o emocional)",
-  "og_description": "Descripción para redes (120-140 chars, atractivo para compartir)",
+  "volanta": "Kicker contextual (3-6 palabras, tipo sección o contexto)",
+  "title": "Título periodístico EXACTO (50-60 caracteres)",
+  "excerpt": "Copete que responde QUIÉN+QUÉ+CUÁNDO+DÓNDE (150-160 chars)",
+  "body": "<p>Lead: primer párrafo con las 5W+H...</p><h2>Subtítulo descriptivo</h2><p>Desarrollo...</p><h2>Contexto</h2><p>Antecedentes...</p>",
+  "meta_title": "Meta title (50-60 chars)",
+  "meta_description": "Meta description (150-160 chars, incluye keyword)",
+  "og_title": "Título para redes sociales",
+  "og_description": "Descripción para redes (120-140 chars)",
   "tags": ["tag1", "tag2", "tag3"],
-  "categoria": "Categoría principal del artículo",
-  "verification_notes": ["⚠️ Verificar que..."]
+  "categoria": "Categoría principal",
+  "verification_notes": ["⚠️ Verificar: ..."]
 }`;
 
     const msg = await this.anthropic.messages.create({
       model: this.model,
       max_tokens: 4500,
-      temperature: 0.4,
+      temperature: 0.35,
       messages: [{ role: 'user', content: prompt }],
     });
 

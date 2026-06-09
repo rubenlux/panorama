@@ -7,13 +7,11 @@ const router = Router();
 const ai = new AiService();
 
 // ── POST /editorial-workflow/dossiers ──────────────────────────────────────
-// Creates a dossier from a research topic (async — generates with Claude in background)
 router.post('/dossiers', requireAuth, async (req, res, next) => {
   try {
     const { topic_id } = req.body;
     if (!topic_id) return res.status(400).json({ error: 'topic_id is required' });
 
-    // Verify topic exists and has a completed brief
     const { rows: [topic] } = await query(
       `SELECT rt.*, rb.executive_summary, rb.key_facts, rb.controversies, rb.timeline, rb.opportunities, rb.risks
        FROM research_topics rt
@@ -27,29 +25,25 @@ router.post('/dossiers', requireAuth, async (req, res, next) => {
     if (!topic.executive_summary) return res.status(422).json({ error: 'Topic does not have a research brief yet' });
 
     const userId = req.user?.sub || null;
-
-    // Create dossier record in 'generating' state
     const { rows: [dossier] } = await query(
       `INSERT INTO editorial_dossiers (topic_id, status, created_by) VALUES ($1, 'generating', $2) RETURNING *`,
       [topic_id, userId]
     );
 
-    // Respond immediately — CMS polls for status
     res.status(201).json({ dossier });
-
-    // Generate in background
     setImmediate(() => _generateDossier(dossier.id, topic));
   } catch (e) { next(e); }
 });
 
-// ── GET /editorial-workflow/dossiers ─────────────────────────────────────
+// ── GET /editorial-workflow/dossiers ──────────────────────────────────────
 router.get('/dossiers', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await query(`
       SELECT ed.*,
              rt.title AS topic_title,
              rt.status AS topic_status,
-             (SELECT COUNT(*)::int FROM articles WHERE dossier_id = ed.id) AS drafts_count
+             (SELECT COUNT(*)::int FROM articles WHERE dossier_id = ed.id) AS drafts_count,
+             (SELECT COUNT(*)::int FROM editorial_angles WHERE dossier_id = ed.id) AS angles_count
       FROM editorial_dossiers ed
       LEFT JOIN research_topics rt ON rt.id = ed.topic_id
       ORDER BY ed.created_at DESC
@@ -59,7 +53,7 @@ router.get('/dossiers', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /editorial-workflow/dossiers/:id ────────────────────────────────
+// ── GET /editorial-workflow/dossiers/:id ──────────────────────────────────
 router.get('/dossiers/:id', requireAuth, async (req, res, next) => {
   try {
     const { rows: [dossier] } = await query(`
@@ -84,18 +78,131 @@ router.get('/dossiers/:id', requireAuth, async (req, res, next) => {
       [req.params.id]
     );
 
-    res.json({ dossier, drafts });
+    const { rows: angles } = await query(
+      `SELECT * FROM editorial_angles WHERE dossier_id = $1 ORDER BY position ASC`,
+      [req.params.id]
+    );
+
+    res.json({ dossier, drafts, angles });
   } catch (e) { next(e); }
 });
 
-// ── POST /editorial-workflow/dossiers/:id/draft ─────────────────────────
-// Generates a full article draft from a specific angle (synchronous — returns content directly)
+// ── GET /editorial-workflow/dossiers/:id/angles ───────────────────────────
+router.get('/dossiers/:id/angles', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await query(
+      `SELECT * FROM editorial_angles WHERE dossier_id = $1 ORDER BY position ASC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (e) { next(e); }
+});
+
+// ── POST /editorial-workflow/dossiers/:id/angles/refresh ──────────────────
+// Generate 4 brand-new angles, replacing all existing ones
+router.post('/dossiers/:id/angles/refresh', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: [dossier] } = await query(
+      `SELECT ed.*, rt.title AS topic_title, rb.executive_summary, rb.key_facts, rb.opportunities, rb.risks
+       FROM editorial_dossiers ed
+       LEFT JOIN research_topics rt ON rt.id = ed.topic_id
+       LEFT JOIN LATERAL (
+         SELECT executive_summary, key_facts, opportunities, risks
+         FROM research_briefs WHERE topic_id = ed.topic_id
+         ORDER BY generated_at DESC LIMIT 1
+       ) rb ON true
+       WHERE ed.id = $1`,
+      [req.params.id]
+    );
+    if (!dossier) return res.status(404).json({ error: 'Dossier not found' });
+    if (dossier.status !== 'ready') return res.status(422).json({ error: 'Dossier is not ready yet' });
+
+    const { rows: entities } = await query(
+      `SELECT ke.name, ke.entity_type FROM entity_mentions em JOIN knowledge_entities ke ON ke.id = em.entity_id WHERE em.topic_id = $1`,
+      [dossier.topic_id]
+    );
+    const entityList = entities.map(e => `${e.name} (${e.entity_type})`).join(', ');
+    const briefText = dossier.executive_summary || '';
+
+    const newAngles = await ai.generateAngles(dossier.topic_title, briefText, entityList);
+
+    await query(`DELETE FROM editorial_angles WHERE dossier_id = $1`, [req.params.id]);
+
+    const saved = [];
+    for (let i = 0; i < newAngles.length; i++) {
+      const a = newAngles[i];
+      const { rows: [row] } = await query(
+        `INSERT INTO editorial_angles (dossier_id, title, angle_type, summary, target_audience, seo_keywords, position)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+        [req.params.id, a.title, a.angle_type, a.summary, a.target_audience, JSON.stringify(a.seo_keywords || []), i]
+      );
+      saved.push(row);
+    }
+
+    res.json(saved);
+  } catch (e) { next(e); }
+});
+
+// ── POST /editorial-workflow/dossiers/:id/angles/regenerate ──────────────
+// Regenerate a single angle by angle_id
+router.post('/dossiers/:id/angles/regenerate', requireAuth, async (req, res, next) => {
+  try {
+    const { angle_id } = req.body;
+    if (!angle_id) return res.status(400).json({ error: 'angle_id is required' });
+
+    const { rows: [angle] } = await query(
+      `SELECT * FROM editorial_angles WHERE id = $1 AND dossier_id = $2`,
+      [angle_id, req.params.id]
+    );
+    if (!angle) return res.status(404).json({ error: 'Angle not found' });
+
+    const { rows: [dossier] } = await query(
+      `SELECT ed.*, rt.title AS topic_title, rb.executive_summary
+       FROM editorial_dossiers ed
+       LEFT JOIN research_topics rt ON rt.id = ed.topic_id
+       LEFT JOIN LATERAL (SELECT executive_summary FROM research_briefs WHERE topic_id = ed.topic_id ORDER BY generated_at DESC LIMIT 1) rb ON true
+       WHERE ed.id = $1`,
+      [req.params.id]
+    );
+
+    const { rows: entities } = await query(
+      `SELECT ke.name, ke.entity_type FROM entity_mentions em JOIN knowledge_entities ke ON ke.id = em.entity_id WHERE em.topic_id = $1`,
+      [dossier.topic_id]
+    );
+    const entityList = entities.map(e => `${e.name} (${e.entity_type})`).join(', ');
+
+    const newAngle = await ai.regenerateAngle(
+      dossier.topic_title,
+      dossier.executive_summary || '',
+      entityList,
+      angle.angle_type
+    );
+
+    const { rows: [updated] } = await query(
+      `UPDATE editorial_angles SET title=$1, summary=$2, target_audience=$3, seo_keywords=$4
+       WHERE id=$5 RETURNING *`,
+      [newAngle.title, newAngle.summary, newAngle.target_audience, JSON.stringify(newAngle.seo_keywords || []), angle_id]
+    );
+
+    res.json(updated);
+  } catch (e) { next(e); }
+});
+
+// ── POST /editorial-workflow/dossiers/:id/draft ───────────────────────────
+// Generate article draft from a specific angle_id (sync, returns content — does NOT create article)
 router.post('/dossiers/:id/draft', requireAuth, async (req, res, next) => {
   try {
-    const { angle_index = 0 } = req.body;
+    const { angle_id } = req.body;
+    if (!angle_id) return res.status(400).json({ error: 'angle_id is required' });
+
+    const { rows: [angle] } = await query(
+      `SELECT * FROM editorial_angles WHERE id = $1 AND dossier_id = $2`,
+      [angle_id, req.params.id]
+    );
+    if (!angle) return res.status(404).json({ error: 'Angle not found in this dossier' });
+
     const { rows: [dossier] } = await query(
-      `SELECT ed.*, rt.title AS topic_title,
-              rb.executive_summary AS brief_summary
+      `SELECT ed.*, rt.title AS topic_title, rb.executive_summary AS brief_summary
        FROM editorial_dossiers ed
        LEFT JOIN research_topics rt ON rt.id = ed.topic_id
        LEFT JOIN LATERAL (
@@ -108,27 +215,26 @@ router.post('/dossiers/:id/draft', requireAuth, async (req, res, next) => {
     if (!dossier) return res.status(404).json({ error: 'Dossier not found' });
     if (dossier.status !== 'ready') return res.status(422).json({ error: 'Dossier is not ready yet' });
 
-    const angles = Array.isArray(dossier.suggested_angles) ? dossier.suggested_angles : [];
-    const angle = angles[angle_index];
-    if (!angle) return res.status(400).json({ error: `No angle at index ${angle_index}` });
+    const angleForAi = {
+      angle_type:      angle.angle_type,
+      title:           angle.title,
+      summary:         angle.summary,
+      target_audience: angle.target_audience,
+      seo_keywords:    Array.isArray(angle.seo_keywords) ? angle.seo_keywords : tryParse(angle.seo_keywords, []),
+    };
 
     const draft = await ai.generateArticleDraft(
       dossier.topic_title,
       dossier,
-      angle,
+      angleForAi,
       dossier.brief_summary || ''
     );
 
-    res.json({
-      draft,
-      dossier_id: dossier.id,
-      angle_index,
-      angle,
-    });
+    res.json({ draft, dossier_id: dossier.id, angle_id, angle: angleForAi });
   } catch (e) { next(e); }
 });
 
-// ── GET /editorial-workflow/metrics ────────────────────────────────────
+// ── GET /editorial-workflow/metrics ──────────────────────────────────────
 router.get('/metrics', requireAuth, async (req, res, next) => {
   try {
     const { rows: [m] } = await query(`
@@ -136,6 +242,7 @@ router.get('/metrics', requireAuth, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM editorial_dossiers)                              AS total_dossiers,
         (SELECT COUNT(*)::int FROM editorial_dossiers WHERE status = 'ready')       AS ready_dossiers,
         (SELECT COUNT(*)::int FROM editorial_dossiers WHERE status = 'generating')  AS generating_dossiers,
+        (SELECT COUNT(*)::int FROM editorial_angles)                                AS total_angles,
         (SELECT COUNT(*)::int FROM articles WHERE origin = 'manual')                AS articles_manual,
         (SELECT COUNT(*)::int FROM articles WHERE origin = 'dossier')               AS articles_from_dossier,
         (SELECT COUNT(*)::int FROM articles WHERE origin = 'research')              AS articles_from_research,
@@ -145,10 +252,9 @@ router.get('/metrics', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── Background dossier generation ───────────────────────────────────────
+// ── Background dossier generation ─────────────────────────────────────────
 async function _generateDossier(dossierId, topic) {
   try {
-    // Get entities for this topic
     const { rows: entities } = await query(
       `SELECT ke.name, ke.entity_type
        FROM entity_mentions em JOIN knowledge_entities ke ON ke.id = em.entity_id
@@ -158,15 +264,16 @@ async function _generateDossier(dossierId, topic) {
 
     const brief = {
       executive_summary: topic.executive_summary,
-      key_facts:    Array.isArray(topic.key_facts)    ? topic.key_facts    : tryParse(topic.key_facts,    []),
+      key_facts:     Array.isArray(topic.key_facts)     ? topic.key_facts     : tryParse(topic.key_facts,     []),
       controversies: Array.isArray(topic.controversies) ? topic.controversies : tryParse(topic.controversies, []),
-      timeline:     Array.isArray(topic.timeline)     ? topic.timeline     : tryParse(topic.timeline,     []),
+      timeline:      Array.isArray(topic.timeline)      ? topic.timeline      : tryParse(topic.timeline,      []),
       opportunities: topic.opportunities,
-      risks:        topic.risks,
+      risks:         topic.risks,
     };
 
     const data = await ai.generateDossier(topic.title, brief, entities);
 
+    // Save dossier fields
     await query(
       `UPDATE editorial_dossiers SET
          status               = 'ready',
@@ -183,20 +290,34 @@ async function _generateDossier(dossierId, topic) {
          updated_at           = now()
        WHERE id = $11`,
       [
-        data.executive_summary   || null,
+        data.executive_summary    || null,
         JSON.stringify(data.verified_facts    || []),
         JSON.stringify(data.timeline          || []),
         JSON.stringify(entities),
-        data.seo_keywords        || [],
+        data.seo_keywords         || [],
         data.suggested_categories || [],
-        data.suggested_tags      || [],
-        data.suggested_headlines || [],
+        data.suggested_tags       || [],
+        data.suggested_headlines  || [],
         JSON.stringify(data.suggested_angles  || []),
-        data.hero_image_prompt   || null,
+        data.hero_image_prompt    || null,
         dossierId,
       ]
     );
-    console.log(`[Dossier] Generated successfully: ${dossierId}`);
+
+    // Persist angles to editorial_angles table
+    const angles = Array.isArray(data.suggested_angles) ? data.suggested_angles : [];
+    for (let i = 0; i < angles.length; i++) {
+      const a = angles[i];
+      if (!a.angle_type || !a.title) continue;
+      await query(
+        `INSERT INTO editorial_angles (dossier_id, title, angle_type, summary, target_audience, seo_keywords, position)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)
+         ON CONFLICT DO NOTHING`,
+        [dossierId, a.title, a.angle_type, a.summary || '', a.target_audience || '', JSON.stringify(a.seo_keywords || a.keywords || []), i]
+      );
+    }
+
+    console.log(`[Dossier] Generated: ${dossierId} | ${angles.length} angles persisted`);
   } catch (e) {
     console.error(`[Dossier] Generation failed for ${dossierId}:`, e.message);
     await query(
