@@ -82,8 +82,6 @@ function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifyi
     setHistoryOpen(o => !o);
   }
 
-  const canApprove = s.verification_status === 'verified' || s.verification_status === 'approved';
-
   return (
     <div style={{ background: '#fff', border: `1px solid ${s.verification_status === 'failed' ? '#fecaca' : s.verification_status === 'approved' ? '#a7f3d0' : '#e5e7eb'}`, borderRadius: 10, opacity: s.enabled ? 1 : 0.55, transition: 'opacity .2s' }}>
       {/* Main row */}
@@ -133,13 +131,19 @@ function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifyi
             {verifying === s.id ? '⟳ Verificando…' : '⟳ Verificar'}
           </button>
 
-          {canApprove && (
-            <button onClick={() => onApprove(s.id)} disabled={busy || s.verification_status === 'approved'}
+          {s.verification_status === 'approved' ? (
+            <button disabled style={{ padding: '5px 11px', borderRadius: 7, border: 'none',
+              background: '#d1fae5', cursor: 'default', fontSize: 12, fontWeight: 700, color: '#059669', whiteSpace: 'nowrap' }}>
+              ★ Aprobada
+            </button>
+          ) : (
+            <button onClick={() => onApprove(s.id)} disabled={busy}
+              title={s.verification_status === 'failed' ? 'Aprobar manualmente aunque la verificación automática falló' : 'Aprobar editorialmente'}
               style={{ padding: '5px 11px', borderRadius: 7, border: 'none',
-                background: s.verification_status === 'approved' ? '#d1fae5' : '#059669',
-                cursor: (busy || s.verification_status === 'approved') ? 'default' : 'pointer',
-                fontSize: 12, fontWeight: 700, color: s.verification_status === 'approved' ? '#059669' : '#fff', whiteSpace: 'nowrap' }}>
-              {s.verification_status === 'approved' ? '★ Aprobada' : '★ Aprobar'}
+                background: s.verification_status === 'failed' ? '#7c3aed' : '#059669',
+                cursor: busy ? 'not-allowed' : 'pointer',
+                fontSize: 12, fontWeight: 700, color: '#fff', whiteSpace: 'nowrap' }}>
+              {s.verification_status === 'failed' ? '★ Aprobar igualmente' : '★ Aprobar'}
             </button>
           )}
 
