@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { apiJson } from '../api.js';
 
 const PLATFORM_META = {
-  youtube:   { label: 'YouTube',   color: '#dc2626', bg: '#fee2e2', active: true,  placeholder: 'https://www.youtube.com/@CanalNoticias' },
-  instagram: { label: 'Instagram', color: '#7c3aed', bg: '#ede9fe', active: false, placeholder: 'https://www.instagram.com/medionoticia' },
-  facebook:  { label: 'Facebook',  color: '#1d4ed8', bg: '#dbeafe', active: false, placeholder: 'https://www.facebook.com/medionoticia' },
-  x:         { label: 'X',         color: '#111827', bg: '#f3f4f6', active: false, placeholder: 'https://twitter.com/medionoticia' },
-  tiktok:    { label: 'TikTok',    color: '#be123c', bg: '#ffe4e6', active: false, placeholder: 'https://www.tiktok.com/@medionoticia' },
+  youtube:   { label: 'YouTube',   color: '#dc2626', bg: '#fee2e2', active: true, placeholder: 'https://www.youtube.com/@CanalNoticias' },
+  instagram: { label: 'Instagram', color: '#7c3aed', bg: '#ede9fe', active: true, placeholder: 'https://www.instagram.com/medionoticia' },
+  facebook:  { label: 'Facebook',  color: '#1d4ed8', bg: '#dbeafe', active: true, placeholder: 'https://www.facebook.com/medionoticia' },
+  x:         { label: 'X',         color: '#111827', bg: '#f3f4f6', active: true, placeholder: 'https://x.com/medionoticia' },
+  tiktok:    { label: 'TikTok',    color: '#be123c', bg: '#ffe4e6', active: true, placeholder: 'https://www.tiktok.com/@medionoticia' },
 };
 
 const REGION_OPTIONS = ['nacional', 'internacional', 'formosa', 'nea', 'noa', 'cuyo', 'patagonia', 'bsas'];

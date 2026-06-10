@@ -7,7 +7,8 @@
  *            posts above engagement threshold (future sprint).
  *
  * Active platforms:   YouTube (requires YOUTUBE_API_KEY env var)
- * Stubbed platforms:  Instagram, Facebook, X, TikTok (credentials needed)
+ *                     X/Twitter  (requires NITTER_INSTANCE or uses nitter.poast.org)
+ *                     Facebook / Instagram / TikTok (requires RSSHUB_INSTANCE or uses rsshub.app)
  *
  * YouTube quota cost: ~12 units per channel per run
  *   (playlist listing: 1 + stats batch: ~10 + channel resolve: 1)
@@ -167,31 +168,146 @@ async function fetchYouTube(source) {
   return { posts, resolvedPlatformId: channelId };
 }
 
-// ── Platform stubs ────────────────────────────────────────────────────────────
-// Each returns { posts: [], resolvedPlatformId: null }
-// Requires platform credentials to activate:
-//   Instagram / Facebook: Meta Graph API (app review required)
-//   X:                    X API v2 Basic tier ($100/mo) or elevated access
-//   TikTok:               TikTok Research API (academic/business application)
+// ── RSS utilities (shared by X, Facebook, Instagram, TikTok adapters) ────────
 
-async function fetchInstagram(source) {
-  console.warn(`[SocialFetcher:instagram] Not implemented — "${source.name}". Requires Meta Graph API credentials.`);
-  return { posts: [], resolvedPlatformId: null };
+// Minimal RSS 2.0 parser — handles CDATA sections, strips HTML from description
+function parseSimpleRss(xml) {
+  const items = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let m;
+  while ((m = itemRe.exec(xml)) !== null) {
+    const raw = m[1];
+    const get = tag => {
+      const r = new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`, 'i');
+      const hit = raw.match(r);
+      return hit ? hit[1].trim() : '';
+    };
+    const title = get('title');
+    const link  = get('link') || get('guid');
+    const desc  = get('description').replace(/<[^>]+>/g, '').trim();
+    const pub   = get('pubDate') || get('published') || get('dc:date');
+    const guid  = get('guid') || link;
+    if (title || link) items.push({ title, link, description: desc, pubDate: pub, guid });
+  }
+  return items;
+}
+
+async function fetchRss(url, label) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SocialMonitor/1.0)' },
+    timeout: 15000,
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status} from ${label}`);
+  const xml = await res.text();
+  if (!xml.includes('<item>')) throw new Error(`No RSS items from ${label}`);
+  return parseSimpleRss(xml);
+}
+
+function extractHandle(source) {
+  return source.handle ? source.handle.replace(/^@/, '') : null;
+}
+
+function mapRssItems(items, fallbackUrl) {
+  return items.slice(0, 15).map(item => ({
+    external_id:   item.guid || item.link,
+    url:           item.link || fallbackUrl,
+    title:         (item.title || '').slice(0, 300),
+    content:       (item.description || '').slice(0, 1000),
+    thumbnail_url: '', video_url: '',
+    published_at:  item.pubDate ? new Date(item.pubDate).toISOString() : null,
+    views: 0, likes: 0, comments: 0, shares: 0,
+  }));
+}
+
+// ── X/Twitter adapter — Nitter RSS proxy ─────────────────────────────────────
+// Env: NITTER_INSTANCE (default: https://nitter.poast.org)
+// Monitors public accounts. No API key required.
+
+async function fetchX(source) {
+  const instance = (process.env.NITTER_INSTANCE || 'https://nitter.poast.org').replace(/\/$/, '');
+
+  let username = extractHandle(source);
+  if (!username) {
+    const m = source.profile_url?.match(/(?:twitter\.com|x\.com)\/@?([\w]+)/i);
+    username = m?.[1] || null;
+  }
+  if (!username) {
+    console.warn(`[SocialFetcher:x] Cannot extract username for "${source.name}"`);
+    return { posts: [], resolvedPlatformId: null };
+  }
+
+  const items = await fetchRss(`${instance}/${username}/rss`, `Nitter/${username}`);
+  return {
+    posts: items.slice(0, 15).map(item => ({
+      external_id:   item.guid || item.link,
+      url:           normalizeXUrl(item.link, username),
+      title:         (item.title || '').slice(0, 300),
+      content:       (item.description || '').slice(0, 1000),
+      thumbnail_url: '', video_url: '',
+      published_at:  item.pubDate ? new Date(item.pubDate).toISOString() : null,
+      views: 0, likes: 0, comments: 0, shares: 0,
+    })),
+    resolvedPlatformId: username,
+  };
+}
+
+function normalizeXUrl(link, username) {
+  if (!link) return `https://x.com/${username}`;
+  const m = link.match(/\/status\/(\d+)/);
+  return m ? `https://x.com/${username}/status/${m[1]}` : link;
+}
+
+// ── Facebook / Instagram / TikTok adapters — RSSHub ──────────────────────────
+// Env: RSSHUB_INSTANCE (default: https://rsshub.app, or self-hosted instance)
+// Monitors public pages/accounts. No API key required.
+
+function rsshubBase() {
+  return (process.env.RSSHUB_INSTANCE || 'https://rsshub.app').replace(/\/$/, '');
 }
 
 async function fetchFacebook(source) {
-  console.warn(`[SocialFetcher:facebook] Not implemented — "${source.name}". Requires Meta Graph API credentials.`);
-  return { posts: [], resolvedPlatformId: null };
+  let username = extractHandle(source);
+  if (!username) {
+    const m = source.profile_url?.match(/facebook\.com\/(?:pages\/[^/]+\/)?([^/?#]+)/i);
+    username = m?.[1]?.replace(/^@/, '') || null;
+  }
+  if (!username || username === 'profile.php') {
+    console.warn(`[SocialFetcher:facebook] Cannot extract page name for "${source.name}"`);
+    return { posts: [], resolvedPlatformId: null };
+  }
+
+  const items = await fetchRss(`${rsshubBase()}/facebook/page/${username}`, `RSSHub/facebook/${username}`);
+  return { posts: mapRssItems(items, `https://www.facebook.com/${username}`), resolvedPlatformId: username };
 }
 
-async function fetchX(source) {
-  console.warn(`[SocialFetcher:x] Not implemented — "${source.name}". Requires X API v2 credentials.`);
-  return { posts: [], resolvedPlatformId: null };
+async function fetchInstagram(source) {
+  let username = extractHandle(source);
+  if (!username) {
+    const m = source.profile_url?.match(/instagram\.com\/([^/?#]+)/i);
+    username = m?.[1] || null;
+  }
+  if (!username) {
+    console.warn(`[SocialFetcher:instagram] Cannot extract username for "${source.name}"`);
+    return { posts: [], resolvedPlatformId: null };
+  }
+
+  const items = await fetchRss(`${rsshubBase()}/instagram/user/${username}`, `RSSHub/instagram/${username}`);
+  return { posts: mapRssItems(items, `https://www.instagram.com/${username}`), resolvedPlatformId: username };
 }
 
 async function fetchTikTok(source) {
-  console.warn(`[SocialFetcher:tiktok] Not implemented — "${source.name}". Requires TikTok Research API credentials.`);
-  return { posts: [], resolvedPlatformId: null };
+  let username = extractHandle(source);
+  if (!username) {
+    const m = source.profile_url?.match(/tiktok\.com\/@([^/?#]+)/i);
+    username = m?.[1] || null;
+  }
+  if (!username) {
+    console.warn(`[SocialFetcher:tiktok] Cannot extract username for "${source.name}"`);
+    return { posts: [], resolvedPlatformId: null };
+  }
+
+  const items = await fetchRss(`${rsshubBase()}/tiktok/user/@${username}`, `RSSHub/tiktok/${username}`);
+  return { posts: mapRssItems(items, `https://www.tiktok.com/@${username}`), resolvedPlatformId: username };
 }
 
 // ── Main entry point ─────────────────────────────────────────────────────────
@@ -213,9 +329,9 @@ export async function fetchRecentPosts(source) {
 }
 
 export const PLATFORM_INFO = {
-  youtube:   { label: 'YouTube',   active: true  },
-  instagram: { label: 'Instagram', active: false },
-  facebook:  { label: 'Facebook',  active: false },
-  x:         { label: 'X',         active: false },
-  tiktok:    { label: 'TikTok',    active: false },
+  youtube:   { label: 'YouTube',   active: true },
+  instagram: { label: 'Instagram', active: true },
+  facebook:  { label: 'Facebook',  active: true },
+  x:         { label: 'X',         active: true },
+  tiktok:    { label: 'TikTok',    active: true },
 };
