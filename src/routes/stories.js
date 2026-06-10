@@ -282,6 +282,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       opportunities:        oppsSummary,
       risks:                `Cobertura: ${story.coverage_status}. Importancia: ${story.importance_score}/10.`,
       source_opportunities: storyOpps,
+      source_articles:      articles,   // full content_text passed directly to generateDossier
     };
 
     setImmediate(() => runDossierGeneration(dossier.id, topicForGen));

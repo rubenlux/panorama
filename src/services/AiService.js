@@ -842,6 +842,57 @@ Oportunidades: ${brief.opportunities || ''}
 Riesgos/vacíos: ${brief.risks || ''}`.trim();
   }
 
+  // Builds the full-content article block for generateDossier.
+  // Sorts articles richest-first, allocates a global char budget across all of them.
+  // MAX_PER_ARTICLE matches the Research pipeline cap (≈1,500 words).
+  _buildArticlesBlock(sourceArticles) {
+    if (!sourceArticles?.length) return '';
+
+    const MAX_ARTICLES    = 8;
+    const MAX_PER_ARTICLE = 9_000;  // ~1,500–1,800 words in chars
+    const TOTAL_BUDGET    = 50_000; // comfortable ceiling well inside Claude's context
+
+    // Richest content first (fetched articles before rss_only/summary-only)
+    const sorted = [...sourceArticles]
+      .filter(a => a.content_text || a.summary)
+      .sort((a, b) => {
+        const wa = a.content_words || (a.content_text ? a.content_text.split(/\s+/).length : 0);
+        const wb = b.content_words || (b.content_text ? b.content_text.split(/\s+/).length : 0);
+        return wb - wa;
+      })
+      .slice(0, MAX_ARTICLES);
+
+    if (!sorted.length) return '';
+
+    let remaining = TOTAL_BUDGET;
+    const parts   = [];
+
+    for (let i = 0; i < sorted.length && remaining > 0; i++) {
+      const a       = sorted[i];
+      const date    = a.published_at
+        ? new Date(a.published_at).toLocaleDateString('es-AR', { day: '2-digit', month: 'short', year: 'numeric' })
+        : 'sin fecha';
+      const raw     = a.content_text || a.summary || '';
+      const allowed = Math.min(raw.length, MAX_PER_ARTICLE, remaining);
+      const body    = raw.slice(0, allowed);
+      const hadMore = raw.length > allowed;
+
+      let entry  = `[ARTÍCULO ${i + 1}]\n`;
+      entry     += `Medio: ${a.source_name || a.source || '—'}\n`;
+      entry     += `Fecha: ${date}\n`;
+      if (a.url) entry += `URL: ${a.url}\n`;
+      entry     += `\nContenido:\n${body}`;
+      if (hadMore) entry += '\n[…]';
+
+      parts.push(entry);
+      remaining -= body.length;
+    }
+
+    return '\n=== ARTÍCULOS FUENTE ===\n\n' +
+      parts.join('\n\n────────────────────────\n\n') +
+      '\n\n=== FIN ARTÍCULOS FUENTE ===\n';
+  }
+
   // Returns a JSONB-ready array of {opportunity_type, title, description} for the dossier prompt.
   _buildOpportunitiesBlock(sourceOpportunities) {
     if (!Array.isArray(sourceOpportunities) || sourceOpportunities.length === 0) return '';
@@ -864,13 +915,18 @@ Riesgos/vacíos: ${brief.risks || ''}`.trim();
   async synthesizeKeyFacts(articles) {
     if (!process.env.ANTHROPIC_API_KEY || !articles?.length) return [];
 
+    // Dynamic budget: up to 1500 words/article, capped so total input stays ≤ 12k words
+    const articleCount   = Math.min(articles.length, 10);
+    const perArticleCap  = Math.min(1500, Math.floor(12_000 / articleCount));
+
     const corpus = articles
       .slice(0, 10)
       .map((a, i) => {
         let body;
         if (a.content_text) {
-          const words = a.content_text.split(/\s+/).slice(0, 300);
-          body = `${a.title}\n${words.join(' ')}${words.length < a.content_text.split(/\s+/).length ? '…' : ''}`;
+          const allWords = a.content_text.split(/\s+/);
+          const words    = allWords.slice(0, perArticleCap);
+          body = `${a.title}\n${words.join(' ')}${words.length < allWords.length ? '…' : ''}`;
         } else {
           body = a.summary ? `${a.title}\n${a.summary}` : a.title;
         }
@@ -885,7 +941,7 @@ REGLAS:
 🚫 NO inventes datos que no estén en el texto
 ✅ Extrae cifras, fechas, nombres, resultados, declaraciones textuales
 ✅ Cada hecho = una oración corta con dato concreto (quién, qué, cuánto, cuándo)
-✅ Máximo 8 hechos ordenados por relevancia informativa
+✅ Máximo 10 hechos ordenados por relevancia informativa
 
 ARTÍCULOS:
 ${corpus}
@@ -896,7 +952,7 @@ Devuelve SOLO un JSON array de strings, sin markdown:
     try {
       const msg = await this.anthropic.messages.create({
         model:       this.model,
-        max_tokens:  700,
+        max_tokens:  1200,
         temperature: 0.1,
         messages:    [{ role: 'user', content: prompt }],
       });
@@ -1020,27 +1076,35 @@ Ideal para lectores que necesitan contexto para entender una noticia
     return rules[articleType] || rules.noticia;
   }
 
-  async generateDossier(topicTitle, brief, entities = []) {
+  // sourceArticles: array of { title, source_name, url, published_at, content_text, content_words }
+  // Passed from DossierService so Claude receives full article text, not just the compressed brief.
+  async generateDossier(topicTitle, brief, entities = [], sourceArticles = []) {
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
 
-    const entityList = entities.slice(0, 20).map(e => `${e.name} (${e.entity_type})`).join(', ') || 'No hay entidades detectadas';
-    const briefText  = this._buildBriefText(brief);
-    const oppsBlock  = this._buildOpportunitiesBlock(brief.source_opportunities);
+    const entityList    = entities.slice(0, 20).map(e => `${e.name} (${e.entity_type})`).join(', ') || 'No hay entidades detectadas';
+    const briefText     = this._buildBriefText(brief);
+    const oppsBlock     = this._buildOpportunitiesBlock(brief.source_opportunities);
+    const articlesBlock = this._buildArticlesBlock(sourceArticles);
+
+    const hasArticles = articlesBlock.length > 0;
 
     const prompt = `Eres un editor estratégico senior de una redacción digital.
-Tu tarea: a partir de una investigación periodística, crear un DOSSIER EDITORIAL completo.
+Tu tarea: a partir de una investigación periodística con artículos fuente completos, crear un DOSSIER EDITORIAL preciso y accionable.
 
 REGLAS CRÍTICAS:
-🚫 NO inventes datos, citas, fechas o nombres que no estén en el brief
-🚫 NO agregues información de entrenamiento si no está explícitamente en el brief
-✅ Basa todas las recomendaciones en los hechos del brief
+🚫 NO inventes datos, citas, fechas o nombres
+🚫 NO uses conocimiento de entrenamiento como fuente primaria${hasArticles ? `
+✅ PRIORIZA los ARTÍCULOS FUENTE como evidencia principal — tienen el texto completo
+✅ En "verified_facts": extrae hechos concretos directamente de los artículos (cifras exactas, resultados, citas textuales, fechas, nombres)
+✅ Si un hecho aparece en los artículos fuente, es VERIFICADO — no requiere marca de advertencia` : `
+✅ Basa todas las recomendaciones en los hechos del brief`}
 ✅ El hero_image_prompt debe ser en inglés, fotorrealista, evocador
 
 TEMA: ${topicTitle}
 
 BRIEF DE INVESTIGACIÓN:
 ${briefText}
-${oppsBlock}
+${oppsBlock}${articlesBlock}
 ENTIDADES DETECTADAS: ${entityList}
 
 ÁNGULOS EDITORIALES:
@@ -1050,9 +1114,9 @@ Genera EXACTAMENTE 4 ángulos respetando el orden obligatorio:
 
 Genera el dossier en JSON ESTRICTO sin markdown:
 {
-  "executive_summary": "Resumen editorial de 3-4 oraciones (reformular, no copiar del brief)",
-  "verified_facts": ["Hecho verificado y citable 1", "Hecho 2", "Hecho 3"],
-  "timeline": ["Evento más reciente — descripción breve", "Evento anterior — descripción"],
+  "executive_summary": "Resumen editorial de 3-4 oraciones con datos concretos de los artículos",
+  "verified_facts": ["Hecho con dato específico extraído de los artículos: cifra, fecha, resultado, cita o nombre exacto", "..."],
+  "timeline": ["Evento más reciente — descripción breve con fecha", "Evento anterior — descripción"],
   "seo_keywords": ["keyword principal", "variación semántica 1", "long-tail 1", "long-tail 2"],
   "suggested_categories": ["Categoría Principal", "Categoría Secundaria"],
   "suggested_tags": ["tag1", "tag2", "tag3", "tag4"],
@@ -1075,7 +1139,7 @@ Genera el dossier en JSON ESTRICTO sin markdown:
 
     const msg = await this.anthropic.messages.create({
       model: this.model,
-      max_tokens: 3000,
+      max_tokens: 4500,
       temperature: 0.3,
       messages: [{ role: 'user', content: prompt }],
     });

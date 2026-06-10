@@ -43,7 +43,51 @@ export async function runDossierGeneration(dossierId, topic) {
         : tryParse(topic.source_opportunities, []),
     };
 
-    const data = await ai.generateDossier(topic.title, brief, entities);
+    // ── Article context ──────────────────────────────────────────────────────
+    // Prefer articles passed directly from the caller (stories/opportunities/events).
+    // Fallback: fetch from research_sources for the manual editorial_workflow path.
+    let sourceArticles = Array.isArray(topic.source_articles) ? topic.source_articles : [];
+
+    if (sourceArticles.length === 0) {
+      const { rows: rs } = await query(
+        `SELECT title, source_name, url, published_at,
+                content      AS content_text,
+                word_count   AS content_words,
+                relevance_score
+         FROM research_sources
+         WHERE topic_id = $1
+         ORDER BY relevance_score DESC NULLS LAST
+         LIMIT 8`,
+        [topic.id]
+      );
+      sourceArticles = rs;
+    }
+
+    // ── Metrics ──────────────────────────────────────────────────────────────
+    const charsAvailable = sourceArticles.reduce(
+      (sum, a) => sum + (a.content_text?.length || a.summary?.length || 0), 0
+    );
+    const richCount = sourceArticles.filter(a => a.content_text && a.content_text.length > 200).length;
+
+    const data = await ai.generateDossier(topic.title, brief, entities, sourceArticles);
+
+    // Calculate chars actually sent (reuse same budget constants as _buildArticlesBlock)
+    const MAX_PER = 9_000, TOTAL = 50_000;
+    let budgetUsed = 0;
+    for (const a of [...sourceArticles]
+      .filter(a => a.content_text || a.summary)
+      .sort((a, b) => (b.content_words || 0) - (a.content_words || 0))
+      .slice(0, 8)) {
+      const raw  = a.content_text || a.summary || '';
+      const used = Math.min(raw.length, MAX_PER, TOTAL - budgetUsed);
+      budgetUsed += used;
+      if (budgetUsed >= TOTAL) break;
+    }
+    const pct = charsAvailable > 0 ? Math.round(budgetUsed / charsAvailable * 100) : 0;
+    console.log(
+      `[DossierService] Context: ${sourceArticles.length} articles (${richCount} full) | ` +
+      `available=${charsAvailable}c sent=${budgetUsed}c utilization=${pct}%`
+    );
 
     await query(
       `UPDATE editorial_dossiers SET
