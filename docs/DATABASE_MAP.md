@@ -784,9 +784,14 @@ UNIQUE(trend_id, article_id)
 | article_count | INTEGER | 0 |
 | is_recurring | BOOLEAN | false |
 | first_seen / last_seen | TIMESTAMPTZ | — |
-| story_quality | VARCHAR(10) | `'fair'` — poor\|fair\|good\|excellent *(Sprint 6.2)* |
+| story_quality | VARCHAR(10) | `'fair'` — poor\|fair\|good\|excellent ← story_context_score con caps duros *(Sprint 6.2, redefinido en 6.4)* |
 | avg_relevance | FLOAT | — — AVG(relevance_score) de artículos *(Sprint 6.2)* |
-| story_context_score | INTEGER | 0 — 0-100: relevance×35 + depth×25 + diversity×15 + enrichment×25 *(Sprint 6.2)* |
+| story_context_score | INTEGER | 0 — 0-100: suma de 4 componentes *(Sprint 6.2, calculado por CTE en 6.4)* |
+| context_relevance_score | INTEGER | 0 — 0-35: avg_relevance × 35 *(Sprint 6.4)* |
+| context_depth_score | INTEGER | 0 — 0-25: total_words/5000 × 25 *(Sprint 6.4)* |
+| context_diversity_score | INTEGER | 0 — 0-15: sources/5 × 15 *(Sprint 6.4)* |
+| context_coverage_score | INTEGER | 0 — 0-25: enriched_fraction × 25 *(Sprint 6.4)* |
+| story_confidence | VARCHAR(10) | `'low'` — low\|medium\|high ← source_count (1=low, 2-3=medium, 4+=high) *(Sprint 6.4)* |
 
 ### `story_cluster_articles` *(Sprint 5.5)*
 | Columna | Tipo | Default |
@@ -913,6 +918,7 @@ Trazabilidad de exactamente qué contexto recibió Claude en cada llamada.
 | `scripts/migrate_dossier_traceability.js` | Sprint 5.7: columnas `source_type/id/title/score` en `research_topics` |
 | `scripts/migrate_clustering_quality.js` | Sprint 6.2: `story_quality`, `avg_relevance`, `story_context_score`, `ai_generation_logs` |
 | `scripts/migrate_story_traceability.js` | Sprint 6.3: trazabilidad en `story_cluster_articles`, fix `story_context_score`, stale huérfanas |
+| `scripts/migrate_editorial_scoring.js` | Sprint 6.4: 4 componentes + `story_confidence`, nueva fórmula de `story_quality` con caps duros |
 
 ## Estado de Índices
 > Pendiente de documentar. Ejecutar: `SELECT indexname, tablename, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename`

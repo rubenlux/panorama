@@ -5,6 +5,27 @@
 
 ---
 
+## 2026-06-10 — Sprint 6.4
+
+**Decisión:** story_quality ← story_context_score (reemplaza avg_relevance como fuente de verdad para calidad editorial).
+
+**Problema raíz:** `avg_relevance = 1.0` para cualquier historia con un solo artículo (el seed article siempre tiene `relevance_score = 1.0`). Resultado: 85%+ de historias calificaban como `excellent` aunque tuvieran 1 artículo, 1 fuente y cero texto completo. El sistema respondía "¿los artículos se parecen entre sí?" pero no "¿la historia está sustentada?".
+
+**Decisión tomada:** `story_quality` se basa en `story_context_score` (0-100) con dos caps duros:
+- `article_count = 1` → máximo `fair` (sin importar el score)
+- `source_count < 2` → máximo `good` (sin importar el score)
+- Umbrales: >70 = excellent, >45 = good, >20 = fair, ≤20 = poor
+
+**Separación Calidad / Confianza:** `story_confidence` es un campo nuevo basado exclusivamente en `source_count` (1=low, 2-3=medium, 4+=high). Responde "¿está corroborado?", no "¿es bueno?". Permite el caso: `quality=excellent, confidence=low` (1 artículo muy completo, 1 fuente).
+
+**Desglose auditable:** `story_context_score` se divide en 4 componentes persistidos: `context_relevance_score` (35pts), `context_depth_score` (25pts), `context_diversity_score` (15pts), `context_coverage_score` (25pts). El editor puede ver `R:32/35 P:5/25 D:3/15 C:10/25` y entender inmediatamente por qué el score es bajo.
+
+**Por qué no IA:** La confianza editorial no requiere semántica — basta con contar fuentes. Simple, transparente, auditable, sin latencia ni costo.
+
+**Impacto:** `scripts/migrate_editorial_scoring.js`, `src/jobs/newsMonitor.js` (recálculo completo con CTE), `src/routes/stories.js`, `src/routes/monitor.js` (+scoring-audit), `cms/src/pages/MediaMonitor.jsx` (badges Quality+Confidence+desglose).
+
+---
+
 ## 2026-06-10 — Sprints 5.3–6.3
 
 **Decisión:** Story Context Score como métrica compuesta de calidad editorial.

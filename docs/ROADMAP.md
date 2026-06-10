@@ -27,6 +27,7 @@
 - [x] **Sprint 6.1 — Bug fixes** (duplicate events, editorial_score=0, EventCard coverageOk scope, display limits 150)
 - [x] **Sprint 6.2 — Story Clustering Quality Engine** (`story_quality`, `avg_relevance`, `story_context_score` en `story_clusters`, `ai_generation_logs`, `RELEVANCE_FILTER_THRESHOLD=0.30`, `GET /monitor/clustering-audit`, badges CMS)
 - [x] **Sprint 6.3 — Story Quality Forensics** (trazabilidad en `story_cluster_articles`, fix `story_context_score`, huérfanas → stale, `GET /monitor/story/:id/explain`, `GET /monitor/clustering-outliers`, docs actualizados)
+- [x] **Sprint 6.4 — Editorial Scoring Audit** (`story_quality` ← `story_context_score` con caps duros; `story_confidence` ← corroboración por fuentes; 4 componentes auditables; `GET /monitor/scoring-audit`; badges Quality+Confidence en CMS)
 - [x] Branding: título "PANORAMA" + favicon P/punto rojo en DB y `web/index.html`
 - [x] Repositorio GitHub conectado (`panorama.git`) + `.gitignore` raíz
 - [x] Docker-compose: `restart: unless-stopped` (fix CPU spike VmmemWSL)

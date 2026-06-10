@@ -33,8 +33,13 @@ router.get('/', requireAuth, async (req, res, next) => {
         sc.first_seen,
         sc.last_seen,
         sc.story_quality,
+        sc.story_confidence,
         sc.avg_relevance,
         sc.story_context_score,
+        sc.context_relevance_score,
+        sc.context_depth_score,
+        sc.context_diversity_score,
+        sc.context_coverage_score,
         (
           SELECT COUNT(sca3.article_id) FILTER (WHERE sca3.relevance_score >= 0.30)::int
           FROM story_cluster_articles sca3

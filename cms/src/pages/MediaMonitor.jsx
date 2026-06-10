@@ -1009,10 +1009,16 @@ const STORY_TYPE_ICON = {
 };
 
 const QUALITY_STYLE = {
-  poor:      { emoji: '🔴', label: 'Cluster contaminado', bg: '#fee2e2', color: '#b91c1c' },
-  fair:      { emoji: '🟡', label: 'Revisar cluster',     bg: '#fef9c3', color: '#a16207' },
-  good:      { emoji: '🟢', label: 'Cluster limpio',      bg: '#d1fae5', color: '#065f46' },
-  excellent: { emoji: '🟢', label: 'Cluster limpio',      bg: '#d1fae5', color: '#065f46' },
+  poor:      { emoji: '🔴', label: 'Insuficiente',   bg: '#fee2e2', color: '#b91c1c' },
+  fair:      { emoji: '🟡', label: 'En desarrollo',  bg: '#fef9c3', color: '#a16207' },
+  good:      { emoji: '🟢', label: 'Buena historia', bg: '#d1fae5', color: '#065f46' },
+  excellent: { emoji: '⭐', label: 'Historia sólida', bg: '#ecfdf5', color: '#047857' },
+};
+
+const CONFIDENCE_STYLE = {
+  low:    { label: 'Sin corroborar', bg: '#f3f4f6', color: '#6b7280' },
+  medium: { label: 'Corroborada',    bg: '#eff6ff', color: '#1d4ed8' },
+  high:   { label: 'Confirmada',     bg: '#dcfce7', color: '#166534' },
 };
 
 function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
@@ -1025,12 +1031,17 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
   const opportunities = Array.isArray(s.editorial_opportunities) ? s.editorial_opportunities : [];
   const coverage      = s.enrichment_coverage ?? null;  // 0-100 or null
   const coverageOk    = coverage === null || coverage >= 70;
-  const quality       = s.story_quality || null;
-  const qStyle        = QUALITY_STYLE[quality] || null;
+  const quality       = s.story_quality    || null;
+  const confidence    = s.story_confidence || null;
+  const qStyle        = QUALITY_STYLE[quality]    || null;
+  const cStyle        = CONFIDENCE_STYLE[confidence] || null;
   const contextScore  = s.story_context_score ?? null;
+  const relScore      = s.context_relevance_score ?? null;
+  const depthScore    = s.context_depth_score     ?? null;
+  const divScore      = s.context_diversity_score ?? null;
+  const covScore      = s.context_coverage_score  ?? null;
   const validCount    = s.valid_article_count ?? s.article_count;
   const discarded     = s.article_count - validCount;
-  const avgRelPct     = s.avg_relevance != null ? Math.round(s.avg_relevance * 100) : null;
 
   return (
     <div style={{
@@ -1056,11 +1067,19 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
             </span>
           )}
           {qStyle && (
-            <span title={`Calidad del cluster: ${qStyle.label}. Relevancia promedio: ${avgRelPct}%`} style={{
+            <span title={`Calidad: ${qStyle.label} — Score ${contextScore}/100 (R:${relScore}/35 P:${depthScore}/25 D:${divScore}/15 C:${covScore}/25)`} style={{
               fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 10,
               background: qStyle.bg, color: qStyle.color,
             }}>
-              {qStyle.emoji} {avgRelPct}%
+              {qStyle.emoji} {qStyle.label} · {contextScore}
+            </span>
+          )}
+          {cStyle && (
+            <span title={`Corroboración: ${cStyle.label} (${s.source_count} fuente${s.source_count === 1 ? '' : 's'})`} style={{
+              fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 10,
+              background: cStyle.bg, color: cStyle.color,
+            }}>
+              {cStyle.label}
             </span>
           )}
           <div style={{ fontSize: 11, color: '#9ca3af' }}>
@@ -1069,20 +1088,25 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
         </div>
       </div>
 
-      {/* Cluster diagnostic row — only shown when contamination detected */}
+      {/* Quality diagnostic — shown for poor and fair stories */}
       {quality === 'poor' && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '6px 10px', borderRadius: 8, background: '#fff1f2', border: '1px solid #fecdd3' }}>
-          <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 700 }}>⚠ Cluster contaminado</span>
-          <span style={{ fontSize: 11, color: '#6b7280' }}>·</span>
-          <span style={{ fontSize: 11, color: '#374151' }}>{validCount} válidos</span>
-          {discarded > 0 && <span style={{ fontSize: 11, color: '#b91c1c' }}>{discarded} descartados (relevancia &lt; 30%)</span>}
-          {contextScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>· Contexto: {contextScore}/100</span>}
+          <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 700 }}>⚠ Calidad insuficiente</span>
+          {relScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>R:{relScore}/35</span>}
+          {depthScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>P:{depthScore}/25</span>}
+          {divScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>D:{divScore}/15</span>}
+          {covScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>C:{covScore}/25</span>}
+          {discarded > 0 && <span style={{ fontSize: 11, color: '#b91c1c' }}>· {discarded} arts excluidos (&lt;30% rel)</span>}
         </div>
       )}
-      {quality === 'fair' && discarded > 0 && (
+      {quality === 'fair' && (
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '4px 8px', borderRadius: 8, background: '#fefce8', border: '1px solid #fef08a' }}>
-          <span style={{ fontSize: 11, color: '#a16207', fontWeight: 600 }}>🟡 {discarded} artículo{discarded > 1 ? 's' : ''} de baja relevancia excluido{discarded > 1 ? 's' : ''} del contexto IA</span>
-          {contextScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>· Score: {contextScore}/100</span>}
+          <span style={{ fontSize: 11, color: '#a16207', fontWeight: 600 }}>🟡 En desarrollo</span>
+          {relScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>R:{relScore}/35</span>}
+          {depthScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>P:{depthScore}/25</span>}
+          {divScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>D:{divScore}/15</span>}
+          {covScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>C:{covScore}/25</span>}
+          {discarded > 0 && <span style={{ fontSize: 11, color: '#a16207' }}>· {discarded} arts excluidos del contexto IA</span>}
         </div>
       )}
 

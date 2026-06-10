@@ -692,49 +692,74 @@ async function detectStories(newArticleIds) {
     `, [assignedId, article.id]);
   }
 
-  // Recalculate live counts + quality fields for all affected stories
+  // Recalculate all quality metrics for affected stories using a single CTE query.
+  // story_quality ← story_context_score with hard caps:
+  //   article_count = 1 → max 'fair'
+  //   source_count  < 2 → max 'good'
+  // story_confidence ← source_count corroboration (1 = low, 2-3 = medium, 4+ = high)
   for (const storyId of affectedIds) {
     await query(`
-      UPDATE story_clusters SET
-        article_count       = (SELECT COUNT(*) FROM story_cluster_articles WHERE story_id = $1),
-        source_count        = (
-          SELECT COUNT(DISTINCT ma.source_id)
+      WITH m AS (
+        SELECT
+          base.rel_score,
+          base.depth_score,
+          base.div_score,
+          base.cov_score,
+          base.cnt_articles,
+          base.cnt_sources,
+          LEAST(100, base.rel_score + base.depth_score + base.div_score + base.cov_score) AS total_score
+        FROM (
+          SELECT
+            ROUND(COALESCE(AVG(sca.relevance_score), 0) * 35)::integer                        AS rel_score,
+            ROUND(LEAST(COALESCE(SUM(ma.content_words), 0)::float / 5000, 1.0) * 25)::integer AS depth_score,
+            ROUND(LEAST(COUNT(DISTINCT ma.source_id)::float / 5, 1.0) * 15)::integer           AS div_score,
+            ROUND(COALESCE(
+              COUNT(ma.id) FILTER (WHERE ma.extraction_method IN ('fetch','playwright'))::float
+              / NULLIF(COUNT(ma.id), 0), 0
+            ) * 25)::integer                                                                   AS cov_score,
+            COUNT(sca.article_id)::integer                                                     AS cnt_articles,
+            COUNT(DISTINCT ma.source_id)::integer                                               AS cnt_sources
           FROM story_cluster_articles sca
-          JOIN monitored_articles ma ON ma.id = sca.article_id
+          LEFT JOIN monitored_articles ma ON ma.id = sca.article_id
           WHERE sca.story_id = $1
-        ),
-        avg_relevance       = (
-          SELECT AVG(relevance_score) FROM story_cluster_articles WHERE story_id = $1
-        ),
-        story_quality       = (
-          SELECT CASE
-            WHEN AVG(relevance_score) < 0.40 THEN 'poor'
-            WHEN AVG(relevance_score) < 0.60 THEN 'fair'
-            WHEN AVG(relevance_score) < 0.80 THEN 'good'
-            ELSE 'excellent'
-          END
-          FROM story_cluster_articles WHERE story_id = $1
-        ),
-        story_context_score = (
-          SELECT LEAST(100, GREATEST(0, ROUND(
-            -- relevance component (35 pts): avg_relevance * 35
-            (COALESCE(AVG(sca2.relevance_score), 0) * 35)
-            -- content depth (25 pts): 5000 total words = full score
-            + LEAST(COALESCE(SUM(ma2.content_words), 0)::float / 5000, 1.0) * 25
-            -- source diversity (15 pts): 5+ sources = full score
-            + LEAST(COUNT(DISTINCT ma2.source_id)::float / 5, 1.0) * 15
-            -- enrichment coverage (25 pts): fraction of fetched articles
-            + COALESCE(COUNT(ma2.id) FILTER (
-                WHERE ma2.extraction_method IN ('fetch','playwright')
-              )::float / NULLIF(COUNT(ma2.id), 0), 0) * 25
-          )::integer))
-          FROM story_cluster_articles sca2
-          JOIN monitored_articles ma2 ON ma2.id = sca2.article_id
-          WHERE sca2.story_id = $1
-        ),
+        ) base
+      )
+      UPDATE story_clusters sc
+      SET
+        article_count           = m.cnt_articles,
+        source_count            = m.cnt_sources,
+        avg_relevance           = (SELECT AVG(relevance_score) FROM story_cluster_articles WHERE story_id = $1),
+        context_relevance_score = m.rel_score,
+        context_depth_score     = m.depth_score,
+        context_diversity_score = m.div_score,
+        context_coverage_score  = m.cov_score,
+        story_context_score     = m.total_score,
+        story_quality           = CASE
+          WHEN m.cnt_articles <= 1 THEN
+            CASE WHEN m.total_score < 20 THEN 'poor' ELSE 'fair' END
+          WHEN m.cnt_sources < 2 THEN
+            CASE
+              WHEN m.total_score > 45 THEN 'good'
+              WHEN m.total_score > 20 THEN 'fair'
+              ELSE 'poor'
+            END
+          ELSE
+            CASE
+              WHEN m.total_score > 70 THEN 'excellent'
+              WHEN m.total_score > 45 THEN 'good'
+              WHEN m.total_score > 20 THEN 'fair'
+              ELSE 'poor'
+            END
+        END,
+        story_confidence        = CASE
+          WHEN m.cnt_sources >= 4 THEN 'high'
+          WHEN m.cnt_sources >= 2 THEN 'medium'
+          ELSE 'low'
+        END,
         last_seen  = now(),
         updated_at = now()
-      WHERE id = $1
+      FROM m
+      WHERE sc.id = $1
     `, [storyId]);
   }
 }

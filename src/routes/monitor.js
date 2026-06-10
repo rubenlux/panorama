@@ -485,6 +485,61 @@ router.get('/story/:id/explain', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /monitor/scoring-audit — editorial quality + confidence distribution
+router.get('/scoring-audit', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: [dist] } = await query(`
+      SELECT
+        COUNT(*) FILTER (WHERE story_quality = 'excellent' AND status != 'stale')::int AS excellent,
+        COUNT(*) FILTER (WHERE story_quality = 'good'      AND status != 'stale')::int AS good,
+        COUNT(*) FILTER (WHERE story_quality = 'fair'      AND status != 'stale')::int AS fair,
+        COUNT(*) FILTER (WHERE story_quality = 'poor'      AND status != 'stale')::int AS poor,
+        COUNT(*) FILTER (WHERE story_confidence = 'high'   AND status != 'stale')::int AS conf_high,
+        COUNT(*) FILTER (WHERE story_confidence = 'medium' AND status != 'stale')::int AS conf_medium,
+        COUNT(*) FILTER (WHERE story_confidence = 'low'    AND status != 'stale')::int AS conf_low,
+        ROUND(AVG(story_context_score) FILTER (WHERE status != 'stale'))::int          AS avg_score,
+        ROUND(AVG(article_count::float) FILTER (WHERE status != 'stale'), 1)           AS avg_articles,
+        ROUND(AVG(source_count::float)  FILTER (WHERE status != 'stale'), 1)           AS avg_sources,
+        ROUND(AVG(context_relevance_score::float) FILTER (WHERE status != 'stale'), 1) AS avg_relevance_pts,
+        ROUND(AVG(context_depth_score::float)     FILTER (WHERE status != 'stale'), 1) AS avg_depth_pts,
+        ROUND(AVG(context_diversity_score::float) FILTER (WHERE status != 'stale'), 1) AS avg_diversity_pts,
+        ROUND(AVG(context_coverage_score::float)  FILTER (WHERE status != 'stale'), 1) AS avg_coverage_pts,
+        COUNT(*) FILTER (WHERE source_count = 1 AND story_quality = 'excellent' AND status != 'stale')::int AS capped_excellent,
+        COUNT(*) FILTER (WHERE article_count = 1 AND status != 'stale')::int                               AS single_article
+      FROM story_clusters
+      WHERE is_recurring = false
+    `);
+
+    // Sample stories per quality tier for illustration
+    const { rows: samples } = await query(`
+      SELECT id, title, story_quality, story_confidence, story_context_score,
+             context_relevance_score, context_depth_score, context_diversity_score, context_coverage_score,
+             article_count, source_count
+      FROM story_clusters
+      WHERE is_recurring = false AND status != 'stale' AND story_context_score > 0
+      ORDER BY story_context_score DESC
+      LIMIT 20
+    `);
+
+    res.json({
+      quality:    { excellent: dist.excellent, good: dist.good, fair: dist.fair, poor: dist.poor },
+      confidence: { high: dist.conf_high, medium: dist.conf_medium, low: dist.conf_low },
+      avg_score:     dist.avg_score,
+      avg_articles:  parseFloat(dist.avg_articles),
+      avg_sources:   parseFloat(dist.avg_sources),
+      avg_component: {
+        relevance:  parseFloat(dist.avg_relevance_pts),
+        depth:      parseFloat(dist.avg_depth_pts),
+        diversity:  parseFloat(dist.avg_diversity_pts),
+        coverage:   parseFloat(dist.avg_coverage_pts),
+      },
+      capped_excellent: dist.capped_excellent,
+      single_article:   dist.single_article,
+      top_stories:      samples,
+    });
+  } catch (e) { next(e); }
+});
+
 // GET /monitor/clustering-outliers — audit of problematic stories + global SQL report
 router.get('/clustering-outliers', requireAuth, async (req, res, next) => {
   try {

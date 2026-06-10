@@ -1,7 +1,7 @@
 # SYSTEM_STATUS.md
 
 > Estado actual del sistema Panorama. Permite entender la plataforma completa en menos de 5 minutos.
-> Última actualización: 2026-06-10 (Sprint 6.3)
+> Última actualización: 2026-06-10 (Sprint 6.4)
 
 ---
 
@@ -69,16 +69,26 @@ Cola de prioridad: artículos en historias activas → últimas 24h → últimas
 
 | Campo | Descripción |
 |---|---|
-| `story_quality` | poor / fair / good / excellent basado en `avg_relevance` |
-| `avg_relevance` | Promedio de Jaccard scores de todos los artículos del cluster |
-| `story_context_score` | 0-100: relevancia×35 + profundidad×25 + diversidad×15 + enrichment×25 |
+| `story_quality` | poor / fair / good / excellent ← `story_context_score` con caps duros *(Sprint 6.4)* |
+| `story_confidence` | low / medium / high ← `source_count` (1=low, 2-3=medium, 4+=high) *(Sprint 6.4)* |
+| `story_context_score` | 0-100 = suma de 4 componentes |
+| `context_relevance_score` | 0-35: avg_relevance × 35 |
+| `context_depth_score` | 0-25: total_words/5000 × 25 |
+| `context_diversity_score` | 0-15: sources/5 × 15 |
+| `context_coverage_score` | 0-25: enriched_fraction × 25 |
+| `avg_relevance` | Promedio de Jaccard scores — para auditoría, ya no define quality |
 | `RELEVANCE_FILTER_THRESHOLD` | 0.30 — artículos bajo este score excluidos del contexto Claude |
 
-**Clasificación story_quality:**
-- `poor` → avg_relevance < 0.40 (cluster contaminado 🔴)
-- `fair` → 0.40–0.60 (revisar 🟡)
-- `good` → 0.60–0.80 (limpio 🟢)
-- `excellent` → > 0.80 (limpio 🟢)
+**Clasificación story_quality (Sprint 6.4):**
+- `poor` → score ≤ 20 🔴
+- `fair` → score 21-45 🟡 · también si article_count = 1 aunque score sea mayor
+- `good` → score 46-70 🟢 · cap para historias con source_count < 2
+- `excellent` → score > 70 ⭐ · requiere source_count ≥ 2 y article_count ≥ 2
+
+**Clasificación story_confidence:**
+- `low` → 1 fuente (sin corroborar)
+- `medium` → 2-3 fuentes (corroborada)
+- `high` → 4+ fuentes (confirmada)
 
 ---
 
@@ -134,19 +144,20 @@ Research Topic → Research Brief → Entity Mentions → Research Sources
 
 ---
 
-## Último Sprint: 6.3 — Story Quality Forensics
+## Último Sprint: 6.4 — Editorial Scoring Audit
 
 **Completado:** 2026-06-10
 
-**Objetivo:** Explicar por qué cada artículo está en cada historia; corregir `story_context_score = 0`; limpiar huérfanas.
+**Objetivo:** Corregir la distribución de calidad (85% excellent) separando Calidad de Confianza editorial.
 
 **Implementado:**
-- `story_cluster_articles` ahora guarda `matching_reason`, `shared_keywords`, `keyword_similarity`, `title_similarity`
-- `story_context_score` backfilleado para todas las historias activas (bug: la migración anterior no lo calculaba)
-- Historias con `article_count = 0` se stale automáticamente en cada ciclo del worker
-- `GET /monitor/story/:id/explain` — trazabilidad completa de una historia
-- `GET /monitor/clustering-outliers` — auditoría de huérfanas, contaminadas, weak-link ratio alto, scores en 0
-- 4 docs actualizados + SYSTEM_STATUS.md creado
+- `story_quality` ahora se basa en `story_context_score` con caps duros (1 artículo → max fair, 1 fuente → max good)
+- `story_confidence` nuevo campo: low (1 fuente) / medium (2-3) / high (4+)
+- 4 componentes auditables en DB: `context_relevance_score`, `context_depth_score`, `context_diversity_score`, `context_coverage_score`
+- Worker recalcula con CTE (una sola query eficiente, reemplaza 5 subqueries anidadas)
+- `GET /monitor/scoring-audit` — distribución calidad+confianza + promedios por componente
+- CMS StoryCard: badge "⭐ Historia sólida · 84" + badge "Confirmada" por separado
+- Desglose R/P/D/C visible en filas de diagnóstico (poor y fair)
 
 ---
 
