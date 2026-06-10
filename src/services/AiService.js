@@ -843,9 +843,16 @@ Riesgos/vacíos: ${brief.risks || ''}`.trim();
   }
 
   _anglesPromptBlock() {
-    return `Los ángulos deben ser DISTINTOS en tipo y enfoque. Tipos permitidos:
-- noticia      → Informativa pura, pirámide invertida, 5W+H
-- ultima_hora  → Breaking, urgente, datos concretos
+    return `ORDEN DE ÁNGULOS — REGLA OBLIGATORIA:
+Posición 1 → SIEMPRE "noticia" (pirámide invertida, 5W+H en el lead, tono agencia)
+Posición 2 → "analisis" o "cronica"
+Posición 3 → "explicador" o "investigacion"
+Posición 4 → "fact_check" o "investigacion"
+❌ NUNCA omitas el tipo "noticia". ❌ NUNCA repitas tipos.
+
+Tipos disponibles:
+- noticia      → Informativa pura, pirámide invertida, 5W+H obligatorio en lead
+- ultima_hora  → Breaking, urgente, datos concretos, sin análisis
 - cronica      → Narrativa cronológica, contexto profundo
 - analisis     → Interpretación, causas y consecuencias
 - investigacion→ Múltiples fuentes, metodología transparente
@@ -854,7 +861,7 @@ Riesgos/vacíos: ${brief.risks || ''}`.trim();
 
 Estructura de cada ángulo:
 {
-  "angle_type": "uno de los 7 tipos",
+  "angle_type": "uno de los tipos listados arriba",
   "title": "Titular periodístico exacto (50-60 chars)",
   "summary": "2-3 oraciones: qué cubre, por qué es relevante, qué lo diferencia",
   "target_audience": "A quién está dirigido específicamente",
@@ -865,28 +872,41 @@ Estructura de cada ángulo:
   _articleTypeInstructions(articleType) {
     const rules = {
       noticia: `
-═══ TIPO: NOTICIA INFORMATIVA ═══
-ESTRUCTURA: Pirámide invertida estricta
-LEAD (primer párrafo): Responde 5W+H en 2-3 oraciones máximo
-  - QUIÉN (Quién es el protagonista)
-  - QUÉ (Qué ocurrió)
-  - CUÁNDO (Cuándo ocurrió)
-  - DÓNDE (Dónde ocurrió)
-  - POR QUÉ (Por qué importa)
-  - CÓMO (Cómo ocurrió)
-ORDEN: Información crítica → Detalles → Contexto → Antecedentes
-TONO: Neutral, objetivo, sin opiniones
-❌ PROHIBIDO: Conclusiones, opiniones del autor, adjetivos valorativos, intro tipo "En un mundo donde..."
-❌ PROHIBIDO: "En conclusión", "En definitiva", "Cabe destacar que"
+═══ TIPO: NOTICIA INFORMATIVA — PIRÁMIDE INVERTIDA ═══
+
+LEAD OBLIGATORIO (primer <p> del body):
+  Escribe UN párrafo de 2-3 oraciones que responda las 6 preguntas:
+  ✅ QUIÉN — protagonista principal
+  ✅ QUÉ   — el hecho central
+  ✅ CUÁNDO — fecha o momento
+  ✅ DÓNDE — lugar
+  ✅ POR QUÉ — causa o relevancia
+  ✅ CÓMO — de qué manera ocurrió
+  Este párrafo debe poder leerse solo y dar la noticia completa.
+
+ESTRUCTURA DEL BODY:
+  <p>LEAD — 5W+H en 2-3 oraciones</p>
+  <h2>Datos y detalles relevantes</h2>
+  <p>Hechos secundarios, declaraciones, cifras</p>
+  <h2>Contexto</h2>
+  <p>Antecedentes necesarios para entender</p>
+
+TONO: Agencia de noticias. Objetivo. Sin adjetivos valorativos.
+❌ PROHIBIDO ABSOLUTAMENTE:
+  - Introducción tipo blog ("En un mundo donde...", "Hoy en día...", "Es importante destacar...")
+  - Conclusión o cierre editorial ("En definitiva...", "Queda por ver si...")
+  - Opinión del autor
+  - Preguntas retóricas
+  - Adjetivos emocionales: "increíble", "preocupante", "histórico"
 `,
       ultima_hora: `
 ═══ TIPO: ÚLTIMA HORA / BREAKING ═══
-LEAD: Hecho más importante en la primera oración. Directo al punto.
-CUERPO: Datos confirmados primero. Marcar explícitamente lo que se está verificando.
-LONGITUD: Puede ser más corto (300-400 palabras) — prioridad es rapidez y precisión
-TONO: Urgente, factual, sin especulaciones
-❌ PROHIBIDO: Contexto histórico extenso, análisis, opinión
-⚠️ Obligatorio marcar con [EN DESARROLLO] datos no confirmados
+PRIMERA ORACIÓN: El hecho más importante. Sin contexto previo.
+LEAD: Datos confirmados únicamente. Una oración por hecho.
+LONGITUD: 250-400 palabras máximo — la rapidez es prioritaria
+TONO: Urgente, directo, sin especulaciones
+⚠️ Marcar con [EN DESARROLLO] cualquier dato no confirmado
+❌ PROHIBIDO: Contexto histórico extenso, análisis, intro tipo blog, conclusión
 `,
       cronica: `
 ═══ TIPO: CRÓNICA ═══
@@ -956,7 +976,8 @@ ENTIDADES DETECTADAS: ${entityList}
 
 ÁNGULOS EDITORIALES:
 ${this._anglesPromptBlock()}
-Genera exactamente 4 ángulos, cada uno de un tipo distinto.
+Genera EXACTAMENTE 4 ángulos respetando el orden obligatorio:
+[0] noticia → [1] analisis o cronica → [2] explicador o investigacion → [3] fact_check o investigacion
 
 Genera el dossier en JSON ESTRICTO sin markdown:
 {
@@ -1004,11 +1025,12 @@ Genera el dossier en JSON ESTRICTO sin markdown:
       : '';
 
     const prompt = `Eres un editor estratégico de una redacción digital.
-Genera 4 ángulos editoriales DISTINTOS para el siguiente tema periodístico.
+Genera 4 ángulos editoriales para el siguiente tema periodístico.
 
 REGLAS CRÍTICAS:
 🚫 NO inventes datos que no estén en el brief
-✅ Cada ángulo debe ser completamente distinto en tipo y enfoque
+✅ El primer ángulo SIEMPRE debe ser "noticia" — pirámide invertida, 5W+H, tono de agencia
+✅ Los otros 3 deben ser de tipos distintos (analisis/cronica/explicador/investigacion/fact_check)
 ${exclude}
 
 TEMA: ${topicTitle}
@@ -1098,10 +1120,16 @@ Devuelve JSON ESTRICTO sin markdown:
     const articleType = angle.angle_type || 'noticia';
     const typeInstructions = this._articleTypeInstructions(articleType);
 
+    const noticiaReminder = (articleType === 'noticia' || articleType === 'ultima_hora') ? `
+⚡ RECORDATORIO CRÍTICO PARA ESTE TIPO:
+El PRIMER <p> del body = LEAD PERIODÍSTICO que responde 5W+H.
+NO empieces con contexto. NO empieces con historia. Empieza con el hecho.
+` : '';
+
     const prompt = `Eres un REDACTOR PERIODÍSTICO SENIOR. Tu tarea: generar un artículo COMPLETO y PROFESIONAL.
 
 ${typeInstructions}
-
+${noticiaReminder}
 REGLAS UNIVERSALES:
 🚫 NO inventes datos, nombres, fechas o cifras que no estén en el dossier o brief
 🚫 NO uses tu conocimiento de entrenamiento como fuente primaria

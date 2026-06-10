@@ -128,9 +128,14 @@ router.post('/dossiers/:id/angles/refresh', requireAuth, async (req, res, next) 
 
     await query(`DELETE FROM editorial_angles WHERE dossier_id = $1`, [req.params.id]);
 
+    // Always save noticia first
+    const sorted = [
+      ...newAngles.filter(a => a.angle_type === 'noticia'),
+      ...newAngles.filter(a => a.angle_type !== 'noticia'),
+    ];
     const saved = [];
-    for (let i = 0; i < newAngles.length; i++) {
-      const a = newAngles[i];
+    for (let i = 0; i < sorted.length; i++) {
+      const a = sorted[i];
       const { rows: [row] } = await query(
         `INSERT INTO editorial_angles (dossier_id, title, angle_type, summary, target_audience, seo_keywords, position)
          VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -304,10 +309,14 @@ async function _generateDossier(dossierId, topic) {
       ]
     );
 
-    // Persist angles to editorial_angles table
-    const angles = Array.isArray(data.suggested_angles) ? data.suggested_angles : [];
-    for (let i = 0; i < angles.length; i++) {
-      const a = angles[i];
+    // Persist angles to editorial_angles table — noticia always first
+    const rawAngles = Array.isArray(data.suggested_angles) ? data.suggested_angles : [];
+    const noticiaFirst = [
+      ...rawAngles.filter(a => a.angle_type === 'noticia'),
+      ...rawAngles.filter(a => a.angle_type !== 'noticia'),
+    ];
+    for (let i = 0; i < noticiaFirst.length; i++) {
+      const a = noticiaFirst[i];
       if (!a.angle_type || !a.title) continue;
       await query(
         `INSERT INTO editorial_angles (dossier_id, title, angle_type, summary, target_audience, seo_keywords, position)
