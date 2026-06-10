@@ -625,6 +625,80 @@ router.get('/clustering-outliers', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /monitor/scoring-integrity — detect inconsistencies in story scoring data
+router.get('/scoring-integrity', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: [summary] } = await query(`
+      SELECT
+        COUNT(*) FILTER (WHERE is_recurring = false)::int                                                      AS total_stories,
+        COUNT(*) FILTER (WHERE is_recurring = false AND status != 'stale')::int                                AS active_stories,
+        COUNT(*) FILTER (WHERE is_recurring = false AND article_count = 0 AND status != 'stale')::int         AS orphan_stories,
+        COUNT(*) FILTER (WHERE is_recurring = false AND article_count = 0 AND story_context_score > 0)::int   AS score_with_no_articles,
+        COUNT(*) FILTER (WHERE is_recurring = false AND source_count = 0 AND story_context_score > 0)::int    AS score_with_no_sources,
+        COUNT(*) FILTER (WHERE is_recurring = false AND status != 'stale'
+          AND (
+            (story_context_score >= 70 AND source_count > 1 AND story_quality != 'excellent') OR
+            (story_context_score >= 45 AND story_context_score < 70 AND story_quality != 'good') OR
+            (story_context_score >= 20 AND story_context_score < 45 AND story_quality != 'fair') OR
+            (story_context_score < 20 AND story_quality != 'poor')
+          )
+        )::int                                                                                                  AS quality_mismatch
+      FROM story_clusters
+    `);
+
+    const { rows: scoreNoArticles } = await query(`
+      SELECT id, title, article_count, source_count, story_context_score, story_quality, story_confidence, status
+      FROM story_clusters
+      WHERE article_count = 0
+        AND story_context_score > 0
+        AND is_recurring = false
+      ORDER BY story_context_score DESC
+      LIMIT 50
+    `);
+
+    const { rows: scoreNoSources } = await query(`
+      SELECT id, title, article_count, source_count, story_context_score, story_quality, story_confidence, status
+      FROM story_clusters
+      WHERE source_count = 0
+        AND story_context_score > 0
+        AND article_count > 0
+        AND is_recurring = false
+      LIMIT 50
+    `);
+
+    const { rows: qualityMismatch } = await query(`
+      SELECT id, title, article_count, source_count, story_context_score, story_quality, story_confidence, status
+      FROM story_clusters
+      WHERE is_recurring = false
+        AND status != 'stale'
+        AND (
+          (story_context_score >= 70 AND source_count > 1 AND story_quality != 'excellent') OR
+          (story_context_score >= 45 AND story_context_score < 70 AND story_quality != 'good') OR
+          (story_context_score >= 20 AND story_context_score < 45 AND story_quality != 'fair') OR
+          (story_context_score < 20 AND story_quality != 'poor')
+        )
+      ORDER BY story_context_score DESC
+      LIMIT 50
+    `);
+
+    const is_clean = (
+      summary.score_with_no_articles === 0 &&
+      summary.score_with_no_sources === 0 &&
+      summary.quality_mismatch === 0
+    );
+
+    res.json({
+      is_clean,
+      summary,
+      issues: {
+        score_with_no_articles: scoreNoArticles,
+        score_with_no_sources:  scoreNoSources,
+        quality_mismatch:       qualityMismatch,
+      },
+    });
+  } catch (e) { next(e); }
+});
+
 // POST /monitor/research — trigger research from a trending topic
 router.post('/research', requireAuth, async (req, res, next) => {
   try {

@@ -1,7 +1,7 @@
 # SYSTEM_STATUS.md
 
 > Estado actual del sistema Panorama. Permite entender la plataforma completa en menos de 5 minutos.
-> Última actualización: 2026-06-10 (Sprint 6.4)
+> Última actualización: 2026-06-10 (Sprint 6.4.1)
 
 ---
 
@@ -79,11 +79,13 @@ Cola de prioridad: artículos en historias activas → últimas 24h → últimas
 | `avg_relevance` | Promedio de Jaccard scores — para auditoría, ya no define quality |
 | `RELEVANCE_FILTER_THRESHOLD` | 0.30 — artículos bajo este score excluidos del contexto Claude |
 
-**Clasificación story_quality (Sprint 6.4):**
-- `poor` → score ≤ 20 🔴
-- `fair` → score 21-45 🟡 · también si article_count = 1 aunque score sea mayor
-- `good` → score 46-70 🟢 · cap para historias con source_count < 2
-- `excellent` → score > 70 ⭐ · requiere source_count ≥ 2 y article_count ≥ 2
+**Clasificación story_quality (Sprint 6.4.1):**
+- `poor` → score < 20 🔴
+- `fair` → score 20-44 🟡
+- `good` → score 45-69 🟢 · también si score ≥ 70 pero source_count = 1
+- `excellent` → score ≥ 70 ⭐ · requiere source_count ≥ 2
+
+Cap único: `source_count = 1 AND score ≥ 70 → good` (no excellent). No hay cap por article_count — el score ya refleja la falta de profundidad.
 
 **Clasificación story_confidence:**
 - `low` → 1 fuente (sin corroborar)
@@ -144,20 +146,20 @@ Research Topic → Research Brief → Entity Mentions → Research Sources
 
 ---
 
-## Último Sprint: 6.4 — Editorial Scoring Audit
+## Último Sprint: 6.4.1 — Scoring Integrity Fix
 
 **Completado:** 2026-06-10
 
-**Objetivo:** Corregir la distribución de calidad (85% excellent) separando Calidad de Confianza editorial.
+**Objetivo:** Corregir doble-penalización y 73 huérfanas con score inconsistente introducidos en Sprint 6.4.
 
 **Implementado:**
-- `story_quality` ahora se basa en `story_context_score` con caps duros (1 artículo → max fair, 1 fuente → max good)
-- `story_confidence` nuevo campo: low (1 fuente) / medium (2-3) / high (4+)
-- 4 componentes auditables en DB: `context_relevance_score`, `context_depth_score`, `context_diversity_score`, `context_coverage_score`
-- Worker recalcula con CTE (una sola query eficiente, reemplaza 5 subqueries anidadas)
-- `GET /monitor/scoring-audit` — distribución calidad+confianza + promedios por componente
-- CMS StoryCard: badge "⭐ Historia sólida · 84" + badge "Confirmada" por separado
-- Desglose R/P/D/C visible en filas de diagnóstico (poor y fair)
+- Eliminado el cap `article_count=1 → max fair` — el score ya refleja la falta de profundidad
+- Cap único simplificado: `source_count=1 AND score≥70 → good` (no excellent)
+- `scripts/fix_story_scoring_integrity.js`: sync + recálculo + reporte de integridad (73 huérfanas corregidas)
+- `GET /monitor/scoring-integrity`: detecta `score_with_no_articles`, `score_with_no_sources`, `quality_mismatch`
+- Distribución post-fix: excellent:4 / good:1214 / fair:113 / poor:0 — 0 inconsistencias
+
+**Sprint anterior (6.4):** `story_quality` ← `story_context_score`; `story_confidence` ← source_count; 4 componentes auditables; CTE recalculation; scoring-audit endpoint; badges CMS.
 
 ---
 
@@ -188,6 +190,8 @@ psql postgres://postgres:postgres@127.0.0.1:5435/newsdb  # Conectar
 # Migraciones (ejecutar manualmente)
 node scripts/migrate_clustering_quality.js     # Sprint 6.2 (si no corrió)
 node scripts/migrate_story_traceability.js     # Sprint 6.3
+node scripts/migrate_editorial_scoring.js      # Sprint 6.4 (añade 5 columnas)
+node scripts/fix_story_scoring_integrity.js    # Sprint 6.4.1 (corrige quality + huérfanas)
 
 # Auditoría
 node scripts/rebuild_story_clusters.js --dry-run  # Ver estado sin modificar

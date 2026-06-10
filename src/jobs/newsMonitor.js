@@ -693,9 +693,9 @@ async function detectStories(newArticleIds) {
   }
 
   // Recalculate all quality metrics for affected stories using a single CTE query.
-  // story_quality ← story_context_score with hard caps:
-  //   article_count = 1 → max 'fair'
-  //   source_count  < 2 → max 'good'
+  // story_quality thresholds (score-based, single cap):
+  //   <20 → poor | 20-44 → fair | 45-69 → good | ≥70 → excellent
+  //   Cap: source_count = 1 AND excellent → good (single-source stories can't be excellent)
   // story_confidence ← source_count corroboration (1 = low, 2-3 = medium, 4+ = high)
   for (const storyId of affectedIds) {
     await query(`
@@ -735,21 +735,11 @@ async function detectStories(newArticleIds) {
         context_coverage_score  = m.cov_score,
         story_context_score     = m.total_score,
         story_quality           = CASE
-          WHEN m.cnt_articles <= 1 THEN
-            CASE WHEN m.total_score < 20 THEN 'poor' ELSE 'fair' END
-          WHEN m.cnt_sources < 2 THEN
-            CASE
-              WHEN m.total_score > 45 THEN 'good'
-              WHEN m.total_score > 20 THEN 'fair'
-              ELSE 'poor'
-            END
-          ELSE
-            CASE
-              WHEN m.total_score > 70 THEN 'excellent'
-              WHEN m.total_score > 45 THEN 'good'
-              WHEN m.total_score > 20 THEN 'fair'
-              ELSE 'poor'
-            END
+          WHEN m.total_score < 20  THEN 'poor'
+          WHEN m.total_score < 45  THEN 'fair'
+          WHEN m.total_score < 70  THEN 'good'
+          WHEN m.cnt_sources <= 1  THEN 'good'
+          ELSE 'excellent'
         END,
         story_confidence        = CASE
           WHEN m.cnt_sources >= 4 THEN 'high'

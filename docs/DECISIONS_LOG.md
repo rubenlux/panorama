@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-06-10 — Sprint 6.4.1
+
+**Decisión:** Simplificar caps de story_quality — eliminar el cap de article_count=1.
+
+**Problema:** Sprint 6.4 introdujo dos caps simultáneos (`article_count=1 → max fair` y `source_count<2 → max good`). Esto penalizaba dos veces la misma dimensión de corroboración, causando que una historia con score 71 y 1 fuente quedara clasificada como `fair` en lugar de `good`. La penalización por artículo único es innecesaria porque el propio score ya castiga la falta de profundidad (context_depth_score = 0 si hay poco texto).
+
+**Decisión tomada:** Un solo cap: `source_count = 1 AND score ≥ 70 → good` (no excellent). Umbrales puros sin cap de artículos:
+- score < 20   → poor
+- score 20-44  → fair
+- score 45-69  → good
+- score ≥ 70   → excellent (cap: si source_count = 1 → good)
+
+**Por qué este cap es suficiente:** Una historia excelente debe estar corroborada por al menos 2 fuentes. Pero una historia con 1 artículo y alto score simplemente tendrá context_depth bajo — el score se encarga de eso sin cap adicional.
+
+**También corregido:** 73 historias huérfanas tenían `story_context_score > 0` con `article_count = 0` — inconsistencia matemática introducida por el backfill de Sprint 6.4. `fix_story_scoring_integrity.js` las resetea a score=0, quality=poor.
+
+**Distribución post-fix:** excellent: 4 / good: 1214 / fair: 113 / poor: 0 (avg_score 62/100). 0 inconsistencias de integridad.
+
+**Impacto:** `scripts/fix_story_scoring_integrity.js` (nuevo), `src/jobs/newsMonitor.js` (lógica quality simplificada), `src/routes/monitor.js` (+scoring-integrity endpoint).
+
+---
+
 ## 2026-06-10 — Sprint 6.4
 
 **Decisión:** story_quality ← story_context_score (reemplaza avg_relevance como fuente de verdad para calidad editorial).
