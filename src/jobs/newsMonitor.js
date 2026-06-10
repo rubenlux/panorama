@@ -2,6 +2,7 @@ import fetch from 'node-fetch';
 import { createHash } from 'crypto';
 import { query } from '../routes/db.js';
 import { AiService } from '../services/AiService.js';
+import { fetchArticleContentForMonitor } from '../services/ArticleFetcher.js';
 
 const ai = new AiService();
 
@@ -659,7 +660,8 @@ async function summarizePendingStories() {
 
     const [articlesRes, entitiesRes] = await Promise.all([
       query(`
-        SELECT ma.title, ma.url, ma.summary, ma.detected_at, ts.name AS source_name
+        SELECT ma.title, ma.url, ma.summary, ma.detected_at, ma.content_text, ma.extraction_method,
+               ts.name AS source_name
         FROM story_cluster_articles sca
         JOIN monitored_articles ma ON ma.id = sca.article_id
         JOIN tracked_sources    ts ON ts.id = ma.source_id
@@ -741,7 +743,8 @@ async function generateOpportunitiesForStories() {
     try {
       const [articlesRes, entitiesRes] = await Promise.all([
         query(`
-          SELECT ma.title, ma.url, ma.summary, ma.detected_at, ts.name AS source_name
+          SELECT ma.title, ma.url, ma.summary, ma.detected_at, ma.content_text, ma.extraction_method,
+                 ts.name AS source_name
           FROM story_cluster_articles sca
           JOIN monitored_articles ma ON ma.id = sca.article_id
           JOIN tracked_sources    ts ON ts.id = ma.source_id
@@ -974,13 +977,14 @@ async function summarizePendingEvents() {
           WHERE ecs.event_id = $1
         `, [event.id]),
         query(`
-          SELECT DISTINCT ma.title, ma.url, ma.summary, ma.detected_at, ts.name AS source_name
+          SELECT DISTINCT ON (ma.id) ma.title, ma.url, ma.summary, ma.detected_at,
+                 ma.content_text, ma.extraction_method, ts.name AS source_name
           FROM event_cluster_stories ecs
           JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
           JOIN monitored_articles ma ON ma.id = sca.article_id
           JOIN tracked_sources ts ON ts.id = ma.source_id
           WHERE ecs.event_id = $1
-          ORDER BY ma.detected_at DESC
+          ORDER BY ma.id, ma.detected_at DESC
           LIMIT 25
         `, [event.id]),
         query(`
@@ -1064,6 +1068,66 @@ async function summarizePendingEvents() {
   }
 }
 
+// ── Sprint 5.8 — Full Article Acquisition Layer ───────────────────────────────
+// Background job: fetches full article content for recent unfetched articles.
+// Runs fire-and-forget each monitor cycle. Limit per cycle prevents overloading.
+
+const CONTENT_FETCH_LIMIT = 15;   // max articles fetched per cycle
+const CONTENT_FETCH_AGE_H = 6;    // only fetch articles newer than this
+
+async function fetchPendingArticleContent() {
+  const { rows: pending } = await query(`
+    SELECT id, url FROM monitored_articles
+    WHERE extraction_method IS NULL
+      AND detected_at > now() - interval '${CONTENT_FETCH_AGE_H} hours'
+    ORDER BY detected_at DESC
+    LIMIT ${CONTENT_FETCH_LIMIT}
+  `);
+
+  if (pending.length === 0) return;
+  console.log(`[Monitor] Fetching content for ${pending.length} articles…`);
+
+  let fetched = 0, playwright = 0, paywall = 0, failed = 0;
+
+  for (const article of pending) {
+    try {
+      const result = await fetchArticleContentForMonitor(article.url);
+
+      if (result?.method === 'paywall') {
+        await query(
+          `UPDATE monitored_articles SET extraction_method='paywall', extracted_at=now() WHERE id=$1`,
+          [article.id]
+        );
+        paywall++;
+      } else if (result?.content) {
+        await query(
+          `UPDATE monitored_articles
+           SET content_text=$1, content_words=$2, extraction_method=$3, extracted_at=now()
+           WHERE id=$4`,
+          [result.content, result.word_count, result.method, article.id]
+        );
+        if (result.method === 'playwright') playwright++;
+        else fetched++;
+      } else {
+        await query(
+          `UPDATE monitored_articles SET extraction_method='rss_only', extracted_at=now() WHERE id=$1`,
+          [article.id]
+        );
+        failed++;
+      }
+    } catch (e) {
+      console.error(`[Monitor] Content fetch failed for ${article.url}:`, e.message);
+      await query(
+        `UPDATE monitored_articles SET extraction_method='rss_only', extracted_at=now() WHERE id=$1`,
+        [article.id]
+      ).catch(() => {});
+      failed++;
+    }
+  }
+
+  console.log(`[Monitor] Content: ${fetched} fetch, ${playwright} playwright, ${paywall} paywall, ${failed} rss_only`);
+}
+
 // ── Main job ──────────────────────────────────────────────────────────────────
 
 export async function runNewsMonitor() {
@@ -1086,6 +1150,9 @@ export async function runNewsMonitor() {
     if (allNewIds.length === 0) return;
 
     console.log(`[Monitor] ${allNewIds.length} new articles from ${sources.length} sources`);
+
+    // Sprint 5.8 — fetch full article content in background (does not block intelligence pipeline)
+    fetchPendingArticleContent().catch(e => console.error('[Monitor] Content fetch error:', e.message));
 
     // Research entity matching (knowledge base context)
     await matchResearchEntities(allNewIds);

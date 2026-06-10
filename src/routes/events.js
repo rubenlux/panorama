@@ -1,6 +1,10 @@
 import { Router } from 'express';
-import { query } from './db.js';
+import { query, pool } from './db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { AiService } from '../services/AiService.js';
+import { runDossierGeneration } from '../services/DossierService.js';
+
+const ai = new AiService();
 
 const router = Router();
 
@@ -180,49 +184,156 @@ router.post('/:id/follow', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /events/:id/create-dossier — creates research_topic + pre-seeds articles
+// POST /events/:id/create-dossier
+// Sprint 5.7: full pipeline — uses event AI data (summary, timeline, entities, editorial_opportunities)
+// as the research_brief. No RSS re-investigation.
 router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
   try {
+    const eventId = req.params.id;
+    const userId  = req.user?.sub || null;
+
     const { rows: eventRows } = await query(
       `SELECT * FROM event_clusters WHERE id = $1`,
-      [req.params.id]
+      [eventId]
     );
     if (!eventRows[0]) return res.status(404).json({ error: 'Event not found' });
     const event = eventRows[0];
 
+    // Articles across all stories in the event
     const { rows: articles } = await query(`
-      SELECT DISTINCT ON (ma.id) ma.title, ma.url, ma.published_at, ts.name AS source_name
+      SELECT DISTINCT ON (ma.id) ma.title, ma.url, ma.summary, ma.published_at,
+             ma.content_text, ma.extraction_method, ts.name AS source_name, sca.relevance_score
       FROM event_cluster_stories ecs
       JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
       JOIN monitored_articles ma ON ma.id = sca.article_id
       JOIN tracked_sources ts ON ts.id = ma.source_id
       WHERE ecs.event_id = $1
       ORDER BY ma.id, sca.relevance_score DESC
-      LIMIT 10
-    `, [req.params.id]);
+      LIMIT 15
+    `, [eventId]);
 
-    const tags = ['event-cluster', event.event_type, event.coverage_status].filter(Boolean);
+    // Entities from all stories in the event (deduplicated)
+    const { rows: entities } = await query(`
+      SELECT DISTINCT ke.id, ke.name, ke.entity_type
+      FROM event_cluster_stories ecs
+      JOIN story_entities se ON se.story_id = ecs.story_id
+      JOIN knowledge_entities ke ON ke.id = se.entity_id
+      WHERE ecs.event_id = $1
+    `, [eventId]);
 
-    const { rows: topicRows } = await query(`
-      INSERT INTO research_topics (title, status, category, tags, created_by)
-      VALUES ($1, 'pending', $2, $3, $4)
-      RETURNING *
-    `, [event.headline, event.event_type || 'trending', tags, req.user?.sub || null]);
+    // Editorial opportunities linked to the event
+    const { rows: eventOpps } = await query(`
+      SELECT id, type AS opportunity_type, title, reason AS description,
+             seo_value, traffic_potential, difficulty, status
+      FROM editorial_opportunities
+      WHERE event_id = $1 AND status IN ('pending','in_progress')
+      ORDER BY seo_value DESC NULLS LAST
+      LIMIT 8
+    `, [eventId]);
 
-    const topic = topicRows[0];
+    const keyFacts = await ai.synthesizeKeyFacts(articles).catch(() => []);
+    const finalKeyFacts = keyFacts.length > 0
+      ? keyFacts
+      : articles.slice(0, 5).map(a => `${a.source_name}: ${a.title}`);
 
-    if (articles.length > 0) {
-      const ph     = articles.map((_, i) => `($1,$${i*4+2},$${i*4+3},$${i*4+4},$${i*4+5})`).join(',');
-      const params = [topic.id];
-      articles.forEach(a => params.push(a.url, a.title, a.source_name, a.published_at || null));
-      await query(
-        `INSERT INTO research_sources (topic_id, url, title, source_name, published_at)
-         VALUES ${ph} ON CONFLICT DO NOTHING`,
-        params
-      );
+    const timeline     = Array.isArray(event.timeline) ? event.timeline : [];
+    const dossierTitle = event.headline;
+    const tags         = ['event-cluster', event.event_type, event.coverage_status, 'source:monitor'].filter(Boolean);
+
+    // Map event editorial_opportunities to the same shape as story_opportunities for the prompt
+    const sourceOpps = eventOpps.map(o => ({
+      opportunity_type: o.opportunity_type,
+      title:            o.title,
+      description:      o.description,
+      editorial_score:  o.seo_value ? o.seo_value * 10 : null,
+      composite_score:  null,
+    }));
+
+    const oppsSummary = sourceOpps.map(o => `${o.opportunity_type}: ${o.title}`).join(', ');
+
+    // ── Full pipeline in a transaction ───────────────────────────────────────
+    const client = await pool.connect();
+    let topic, dossier;
+    try {
+      await client.query('BEGIN');
+
+      const { rows: [t] } = await client.query(`
+        INSERT INTO research_topics
+          (title, status, category, tags, created_by, source_type, source_id, source_title, source_score)
+        VALUES ($1, 'ready', $2, $3, $4, 'event', $5, $6, $7)
+        RETURNING *
+      `, [dossierTitle, event.event_type || 'editorial', tags, userId,
+          eventId, dossierTitle, event.editorial_score || 0]);
+      topic = t;
+
+      await client.query(`
+        INSERT INTO research_briefs
+          (topic_id, executive_summary, key_facts, controversies, timeline,
+           opportunities, risks, source_opportunities, model_used)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `, [
+        topic.id,
+        event.summary || dossierTitle,
+        JSON.stringify(finalKeyFacts),
+        JSON.stringify([]),
+        JSON.stringify(timeline),
+        oppsSummary,
+        `Cobertura: ${event.coverage_status}. Importancia: ${event.importance_score}/10. Fuentes: ${event.source_count}.`,
+        JSON.stringify(sourceOpps),
+        'event-monitor',
+      ]);
+
+      for (const e of entities) {
+        await client.query(`
+          INSERT INTO entity_mentions (entity_id, topic_id, confidence)
+          VALUES ($1, $2, 0.9)
+          ON CONFLICT (entity_id, topic_id) DO NOTHING
+        `, [e.id, topic.id]);
+      }
+
+      if (articles.length > 0) {
+        const ph     = articles.map((_, i) => `($1,$${i*7+2},$${i*7+3},$${i*7+4},$${i*7+5},$${i*7+6},$${i*7+7},$${i*7+8})`).join(',');
+        const params = [topic.id];
+        articles.forEach(a => {
+          const wc = a.summary ? a.summary.split(/\s+/).filter(Boolean).length : 0;
+          params.push(a.url, a.title, a.source_name, a.published_at || null, a.summary || '', a.relevance_score || 1.0, wc);
+        });
+        await client.query(
+          `INSERT INTO research_sources (topic_id, url, title, source_name, published_at, content, relevance_score, word_count)
+           VALUES ${ph} ON CONFLICT DO NOTHING`,
+          params
+        );
+      }
+
+      const { rows: [d] } = await client.query(`
+        INSERT INTO editorial_dossiers (topic_id, status, created_by)
+        VALUES ($1, 'generating', $2)
+        RETURNING *
+      `, [topic.id, userId]);
+      dossier = d;
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
 
-    res.json({ ok: true, topic });
+    const topicForGen = {
+      ...topic,
+      executive_summary:    event.summary || dossierTitle,
+      key_facts:            finalKeyFacts,
+      controversies:        [],
+      timeline,
+      opportunities:        oppsSummary,
+      risks:                `Cobertura: ${event.coverage_status}. Importancia: ${event.importance_score}/10.`,
+      source_opportunities: sourceOpps,
+    };
+
+    setImmediate(() => runDossierGeneration(dossier.id, topicForGen));
+
+    res.json({ ok: true, dossier });
   } catch (e) { next(e); }
 });
 

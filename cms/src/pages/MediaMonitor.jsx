@@ -326,8 +326,8 @@ export default function MediaMonitor() {
   async function handleDossierFromStory(id) {
     setStoryBusy(p => ({ ...p, [id]: 'dossier' }));
     try {
-      await createDossierFromStory(id);
-      navigate('/editorial-workflow');
+      const { dossier } = await createDossierFromStory(id);
+      navigate(`/dossiers/${dossier.id}`);
     } catch (e) {
       alert('Error: ' + e.message);
     } finally {
@@ -345,8 +345,8 @@ export default function MediaMonitor() {
   async function handleDossierFromEvent(id) {
     setEventBusy(p => ({ ...p, [id]: 'dossier' }));
     try {
-      await createDossierFromEvent(id);
-      navigate('/editorial-workflow');
+      const { dossier } = await createDossierFromEvent(id);
+      navigate(`/dossiers/${dossier.id}`);
     } catch (e) {
       alert('Error: ' + e.message);
     } finally {
@@ -366,9 +366,9 @@ export default function MediaMonitor() {
   async function handleOppDossier(id) {
     setOppBusy(p => ({ ...p, [id]: 'dossier' }));
     try {
-      await createDossierFromOpportunity(id);
+      const { dossier } = await createDossierFromOpportunity(id);
       setEditOpps(prev => prev.map(o => o.id === id ? { ...o, status: 'in_progress' } : o));
-      navigate('/dossiers');
+      navigate(`/dossiers/${dossier.id}`);
     } catch (e) { alert('Error: ' + e.message); }
     finally { setOppBusy(p => ({ ...p, [id]: null })); }
   }

@@ -24,6 +24,48 @@ router.get('/stats', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /monitor/content-stats — article content extraction coverage metrics
+router.get('/content-stats', requireAuth, async (req, res, next) => {
+  try {
+    const days = Math.min(parseInt(req.query.days || '7'), 30);
+
+    const { rows: [counts] } = await query(`
+      SELECT
+        COUNT(*)::int                                                              AS total,
+        COUNT(*) FILTER (WHERE extraction_method = 'fetch')::int                  AS fetch,
+        COUNT(*) FILTER (WHERE extraction_method = 'playwright')::int             AS playwright,
+        COUNT(*) FILTER (WHERE extraction_method = 'paywall')::int                AS paywall,
+        COUNT(*) FILTER (WHERE extraction_method = 'rss_only')::int               AS rss_only,
+        COUNT(*) FILTER (WHERE extraction_method IS NULL)::int                    AS pending,
+        ROUND(AVG(content_words) FILTER (WHERE extraction_method = 'fetch'))      AS avg_words_fetch,
+        ROUND(AVG(content_words) FILTER (WHERE extraction_method = 'playwright'))  AS avg_words_playwright
+      FROM monitored_articles
+      WHERE detected_at > now() - ($1 || ' days')::interval
+    `, [days]);
+
+    const { rows: sources } = await query(`
+      SELECT
+        ts.id,
+        ts.name,
+        COUNT(*)::int                                                          AS total,
+        COUNT(*) FILTER (WHERE ma.extraction_method = 'fetch')::int           AS fetch,
+        COUNT(*) FILTER (WHERE ma.extraction_method = 'playwright')::int      AS playwright,
+        COUNT(*) FILTER (WHERE ma.extraction_method = 'paywall')::int         AS paywall,
+        COUNT(*) FILTER (WHERE ma.extraction_method = 'rss_only')::int        AS rss_only,
+        ROUND(AVG(ma.content_words) FILTER (WHERE ma.extraction_method IN ('fetch','playwright'))) AS avg_words
+      FROM monitored_articles ma
+      JOIN tracked_sources ts ON ts.id = ma.source_id
+      WHERE ma.detected_at > now() - ($1 || ' days')::interval
+      GROUP BY ts.id, ts.name
+      HAVING COUNT(*) > 3
+      ORDER BY COUNT(*) FILTER (WHERE ma.extraction_method = 'rss_only') DESC, ts.name
+      LIMIT 20
+    `, [days]);
+
+    res.json({ days, ...counts, sources });
+  } catch (e) { next(e); }
+});
+
 // GET /monitor/sources
 router.get('/sources', requireAuth, async (req, res, next) => {
   try {

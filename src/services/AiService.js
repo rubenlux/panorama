@@ -842,6 +842,74 @@ Oportunidades: ${brief.opportunities || ''}
 Riesgos/vacíos: ${brief.risks || ''}`.trim();
   }
 
+  // Returns a JSONB-ready array of {opportunity_type, title, description} for the dossier prompt.
+  _buildOpportunitiesBlock(sourceOpportunities) {
+    if (!Array.isArray(sourceOpportunities) || sourceOpportunities.length === 0) return '';
+    const lines = sourceOpportunities
+      .slice(0, 8)
+      .map(o => {
+        const score = o.composite_score ?? o.editorial_score ?? '';
+        const desc  = o.description ? ` — ${o.description}` : '';
+        return `- ${o.opportunity_type}${score ? ` (score ${score})` : ''}: ${o.title}${desc}`;
+      })
+      .join('\n');
+    return `\nOPORTUNIDADES EDITORIALES DEL MONITOR (úsalas como guía prioritaria para los ángulos):\n${lines}\n`;
+  }
+
+  /**
+   * Synthesizes concrete factual statements from article titles + RSS summaries.
+   * Returns a string[] of 5-8 facts with specific data (numbers, names, dates, results).
+   * Falls back to [] on error — callers should handle gracefully.
+   */
+  async synthesizeKeyFacts(articles) {
+    if (!process.env.ANTHROPIC_API_KEY || !articles?.length) return [];
+
+    const corpus = articles
+      .slice(0, 10)
+      .map((a, i) => {
+        let body;
+        if (a.content_text) {
+          const words = a.content_text.split(/\s+/).slice(0, 300);
+          body = `${a.title}\n${words.join(' ')}${words.length < a.content_text.split(/\s+/).length ? '…' : ''}`;
+        } else {
+          body = a.summary ? `${a.title}\n${a.summary}` : a.title;
+        }
+        return `[${i + 1}] ${a.source_name}: ${body}`;
+      })
+      .join('\n\n');
+
+    const prompt = `Eres un editor de datos periodístico. Tu tarea: extraer hechos concretos y verificables de estos artículos.
+
+REGLAS:
+🚫 NO parafrasees títulos — extrae datos específicos de los cuerpos
+🚫 NO inventes datos que no estén en el texto
+✅ Extrae cifras, fechas, nombres, resultados, declaraciones textuales
+✅ Cada hecho = una oración corta con dato concreto (quién, qué, cuánto, cuándo)
+✅ Máximo 8 hechos ordenados por relevancia informativa
+
+ARTÍCULOS:
+${corpus}
+
+Devuelve SOLO un JSON array de strings, sin markdown:
+["Hecho concreto con dato específico", "Otro hecho", ...]`;
+
+    try {
+      const msg = await this.anthropic.messages.create({
+        model:       this.model,
+        max_tokens:  700,
+        temperature: 0.1,
+        messages:    [{ role: 'user', content: prompt }],
+      });
+      const text  = msg.content[0].text;
+      const match = text.match(/\[[\s\S]*\]/);
+      if (match) return JSON.parse(match[0]);
+      return [];
+    } catch (e) {
+      console.error('[AiService] synthesizeKeyFacts failed:', e.message);
+      return [];
+    }
+  }
+
   _anglesPromptBlock() {
     return `ORDEN DE ÁNGULOS — REGLA OBLIGATORIA:
 Posición 1 → SIEMPRE "noticia" (pirámide invertida, 5W+H en el lead, tono agencia)
@@ -956,7 +1024,8 @@ Ideal para lectores que necesitan contexto para entender una noticia
     if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
 
     const entityList = entities.slice(0, 20).map(e => `${e.name} (${e.entity_type})`).join(', ') || 'No hay entidades detectadas';
-    const briefText = this._buildBriefText(brief);
+    const briefText  = this._buildBriefText(brief);
+    const oppsBlock  = this._buildOpportunitiesBlock(brief.source_opportunities);
 
     const prompt = `Eres un editor estratégico senior de una redacción digital.
 Tu tarea: a partir de una investigación periodística, crear un DOSSIER EDITORIAL completo.
@@ -971,7 +1040,7 @@ TEMA: ${topicTitle}
 
 BRIEF DE INVESTIGACIÓN:
 ${briefText}
-
+${oppsBlock}
 ENTIDADES DETECTADAS: ${entityList}
 
 ÁNGULOS EDITORIALES:
@@ -1434,16 +1503,31 @@ Responde SOLO con JSON válido, sin texto adicional:
 
   // Sprint 5.5 — Story Intelligence Engine
   // Generates structured editorial intelligence for a story cluster.
+  // ── Article context builder ─────────────────────────────────────────────────
+  // content_text (full article) takes precedence over RSS summary.
+  // wordCap controls how many words of full content to include per article.
+  _articleSnippet(a, wordCap = 200) {
+    if (a.content_text) {
+      const words = a.content_text.split(/\s+/);
+      const body  = words.slice(0, wordCap).join(' ') + (words.length > wordCap ? '…' : '');
+      const label = a.extraction_method === 'playwright' ? '🌐' : '📄';
+      return `\n   ${label} ${body}`;
+    }
+    if (a.summary) return `\n   📰 ${a.summary.slice(0, 200)}`;
+    return '';
+  }
+
   async generateStorySummary(articles, entities) {
     const sourceNames = [...new Set(articles.map(a => a.source_name).filter(Boolean))];
+    const richCount   = articles.filter(a => a.content_text).length;
 
     const articleList = articles.map((a, i) => {
-      const age = a.detected_at
-        ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h ago'
-        : '';
-      const snippet = a.summary ? `\n   ${a.summary.slice(0, 180)}` : '';
+      const age     = a.detected_at ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h ago' : '';
+      const snippet = this._articleSnippet(a, 200);
       return `[${i + 1}] ${a.source_name}${age ? ` (${age})` : ''}\n   ${a.title}${snippet}`;
     }).join('\n\n');
+
+    const contextNote = richCount > 0 ? ` (${richCount} artículos completos)` : ' (solo extractos RSS)';
 
     const entityList = entities.length > 0
       ? entities.map(e => `${e.name} (${e.entity_type}${e.role !== 'participant' ? `, ${e.role}` : ''})`).join(', ')
@@ -1451,7 +1535,7 @@ Responde SOLO con JSON válido, sin texto adicional:
 
     const prompt = `Eres editor jefe de un diario de alcance nacional en Argentina. Se detectó una historia emergente. Analiza los artículos y genera inteligencia editorial accionable.
 
-ARTÍCULOS AGRUPADOS (${articles.length} artículos · ${sourceNames.length} fuentes: ${sourceNames.join(', ')}):
+ARTÍCULOS AGRUPADOS (${articles.length} artículos · ${sourceNames.length} fuentes: ${sourceNames.join(', ')}${contextNote}):
 
 ${articleList}
 
@@ -1501,11 +1585,11 @@ Responde SOLO con JSON válido, sin texto adicional:
       `[Historia ${i + 1}] ${s.title}\n   Artículos: ${s.article_count} · Fuentes: ${s.source_count}`
     ).join('\n\n');
 
+    const richCount   = articles.filter(a => a.content_text).length;
+    const contextNote = richCount > 0 ? ` · ${richCount} completos` : '';
     const articleList = articles.slice(0, 20).map((a, i) => {
-      const age = a.detected_at
-        ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h'
-        : '';
-      const snippet = a.summary ? `\n   ${a.summary.slice(0, 150)}` : '';
+      const age     = a.detected_at ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h' : '';
+      const snippet = this._articleSnippet(a, 150);
       return `[${i + 1}] ${a.source_name}${age ? ` (${age})` : ''}: ${a.title}${snippet}`;
     }).join('\n\n');
 
@@ -1518,7 +1602,7 @@ Responde SOLO con JSON válido, sin texto adicional:
 FRAGMENTOS DE COBERTURA DETECTADOS:
 ${storyList}
 
-ARTÍCULOS INDIVIDUALES (${articles.length} total · ${sourceNames.length} medios: ${sourceNames.join(', ')}):
+ARTÍCULOS INDIVIDUALES (${articles.length} total · ${sourceNames.length} medios: ${sourceNames.join(', ')}${contextNote}):
 ${articleList}
 
 ENTIDADES INVOLUCRADAS: ${entityList}
@@ -1576,10 +1660,8 @@ Responde SOLO con JSON válido, sin texto adicional:
     const sourceNames = [...new Set(articles.map(a => a.source_name).filter(Boolean))];
 
     const articleList = articles.slice(0, 15).map((a, i) => {
-      const age = a.detected_at
-        ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h'
-        : '';
-      const snippet = a.summary ? `\n   ${a.summary.slice(0, 120)}` : '';
+      const age     = a.detected_at ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h' : '';
+      const snippet = this._articleSnippet(a, 150);
       return `[${i + 1}] ${a.source_name}${age ? ` (${age})` : ''}: ${a.title}${snippet}`;
     }).join('\n\n');
 
