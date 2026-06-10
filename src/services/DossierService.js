@@ -138,9 +138,13 @@ export async function runDossierGeneration(dossierId, topic) {
     console.log(`[DossierService] Generated: ${dossierId} | ${noticiaFirst.length} angles`);
   } catch (e) {
     console.error(`[DossierService] Generation failed for ${dossierId}:`, e.message);
+    // Detect credit exhaustion specifically to surface a clear message in the CMS
+    const reason = e.message?.includes('credit balance') || e.message?.includes('too low')
+      ? 'Créditos de API insuficientes. Recargá el saldo en console.anthropic.com/settings/billing'
+      : e.message?.slice(0, 300) || 'Error desconocido';
     await query(
-      `UPDATE editorial_dossiers SET status = 'failed', updated_at = now() WHERE id = $1`,
-      [dossierId]
+      `UPDATE editorial_dossiers SET status = 'failed', failure_reason = $2, updated_at = now() WHERE id = $1`,
+      [dossierId, reason]
     ).catch(() => {});
   }
 }

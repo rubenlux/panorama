@@ -301,6 +301,13 @@ export default function DossierDetail() {
         </div>
       )}
 
+      {dossier.status === 'failed' && (
+        <div style={{ background: "#fee2e2", border: "1px solid #fca5a5", borderRadius: 12, padding: "16px 20px", marginBottom: 24, color: "#991b1b", fontSize: 14 }}>
+          <strong>Error en la generación:</strong>{' '}
+          {dossier.failure_reason || 'La generación con IA falló. Revisá los logs del servidor.'}
+        </div>
+      )}
+
       {drafts.length > 0 && (
         <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 10, padding: "12px 16px", marginBottom: 20, fontSize: 13 }}>
           <span style={{ fontWeight: 600, color: "#0c4a6e" }}>{drafts.length} borrador{drafts.length > 1 ? "es" : ""} generado{drafts.length > 1 ? "s" : ""}:</span>{" "}
