@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Estado del producto y próximos pasos.
-> Última actualización: 2026-06-10 (Sprint 6.3 completado)
+> Última actualización: 2026-06-10 (Sprint 7.0 completado)
 
 ---
 
@@ -29,6 +29,7 @@
 - [x] **Sprint 6.3 — Story Quality Forensics** (trazabilidad en `story_cluster_articles`, fix `story_context_score`, huérfanas → stale, `GET /monitor/story/:id/explain`, `GET /monitor/clustering-outliers`, docs actualizados)
 - [x] **Sprint 6.4 — Editorial Scoring Audit** (`story_quality` ← `story_context_score` con caps duros; `story_confidence` ← corroboración por fuentes; 4 componentes auditables; `GET /monitor/scoring-audit`; badges Quality+Confidence en CMS)
 - [x] **Sprint 6.4.1 — Scoring Integrity Fix** (elimina cap redundante article_count=1; nuevo cap único source_count=1→max good; 73 huérfanas con score>0 corregidas; `GET /monitor/scoring-integrity`; `scripts/fix_story_scoring_integrity.js`)
+- [x] **Sprint 7.0 — Social Intelligence Platform** (4 tablas nuevas; `SocialFetcher.js` con YouTube activo + stubs para IG/FB/X/TK; `socialMonitor.js`; rutas `/social`; CMS: menu actualizado, `SocialSources.jsx`, `SocialIntelligence.jsx` con tabs Virales/Top Medios/Brechas/Regiones; Knowledge Base y Topic Intelligence retirados del menú)
 - [x] Branding: título "PANORAMA" + favicon P/punto rojo en DB y `web/index.html`
 - [x] Repositorio GitHub conectado (`panorama.git`) + `.gitignore` raíz
 - [x] Docker-compose: `restart: unless-stopped` (fix CPU spike VmmemWSL)

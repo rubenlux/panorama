@@ -34,6 +34,7 @@ import trendsRoutes from "./routes/trends.js";
 import storiesRoutes from "./routes/stories.js";
 import eventsRoutes from "./routes/events.js";
 import opportunitiesRoutes from "./routes/opportunities.js";
+import socialRoutes from "./routes/social.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +84,7 @@ export function createApp() {
   app.use("/stories", storiesRoutes);
   app.use("/events", eventsRoutes);
   app.use("/opportunities", opportunitiesRoutes);
+  app.use("/social", socialRoutes);
 
 
   app.use(commentsRoutes);

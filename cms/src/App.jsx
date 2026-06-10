@@ -36,6 +36,8 @@ import Regions from "./pages/Regions.jsx";
 import TrendDetail from "./pages/TrendDetail.jsx";
 import StoryDetail from "./pages/StoryDetail.jsx";
 import EventDetail from "./pages/EventDetail.jsx";
+import SocialIntelligence from "./pages/SocialIntelligence.jsx";
+import SocialSources from "./pages/SocialSources.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -73,18 +75,24 @@ export default function App() {
         <Route path="reels" element={<Reels />} />
         <Route path="editorial-studio" element={<EditorialStudio />} />
         <Route path="research" element={<ResearchCenter />} />
-        <Route path="knowledge" element={<KnowledgeBase />} />
-        <Route path="knowledge/entities/:id" element={<EntityDetail />} />
         <Route path="monitor" element={<MediaMonitor />} />
         <Route path="trends/:id" element={<TrendDetail />} />
         <Route path="stories/:id" element={<StoryDetail />} />
         <Route path="events/:id" element={<EventDetail />} />
         <Route path="dossiers" element={<Dossiers />} />
         <Route path="dossiers/:id" element={<DossierDetail />} />
+        {/* Topic Intelligence — deprecated Sprint 7.0, routes kept for backward compat */}
         <Route path="topics" element={<Topics />} />
         <Route path="topics/regions" element={<Regions />} />
         <Route path="topics/regions/:slug" element={<Regions />} />
         <Route path="topics/:id" element={<TopicDetail />} />
+        {/* Knowledge Base — deprecated Sprint 7.0, routes kept for backward compat */}
+        <Route path="knowledge" element={<KnowledgeBase />} />
+        <Route path="knowledge/entities/:id" element={<EntityDetail />} />
+
+        {/* Social Intelligence */}
+        <Route path="social" element={<SocialIntelligence />} />
+        <Route path="social/sources" element={<SocialSources />} />
 
 
         <Route path="ads" element={<AdsDashboardV2 />} /> {/* Replaced V1 with V2 default */}

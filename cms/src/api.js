@@ -216,3 +216,61 @@ export const updateStoryOpportunityStatus = (id, status) =>
 export const createDossierFromOpportunity = (id) =>
   apiJson(`/opportunities/${id}/create-dossier`, { method: 'POST', auth: true });
 
+// ── Social Intelligence (Sprint 7.0) ─────────────────────────────────────────
+
+export const getSocialSources = () =>
+  apiJson('/social/sources', { auth: true });
+
+export const createSocialSource = (body) =>
+  apiJson('/social/sources', { method: 'POST', body, auth: true });
+
+export const updateSocialSource = (id, body) =>
+  apiJson(`/social/sources/${id}`, { method: 'PUT', body, auth: true });
+
+export const deleteSocialSource = (id) =>
+  apiJson(`/social/sources/${id}`, { method: 'DELETE', auth: true });
+
+export const toggleSocialSource = (id) =>
+  apiJson(`/social/sources/${id}/toggle`, { method: 'PATCH', auth: true });
+
+export const checkSocialSource = (id) =>
+  apiJson(`/social/sources/${id}/check`, { method: 'POST', auth: true });
+
+export const getSocialStats = () =>
+  apiJson('/social/stats', { auth: true });
+
+export const getSocialClusters = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.hours)  qs.set('hours',  params.hours);
+  if (params.limit)  qs.set('limit',  params.limit);
+  if (params.status) qs.set('status', params.status);
+  return apiJson(`/social/clusters?${qs}`, { auth: true });
+};
+
+export const getSocialCluster = (id) =>
+  apiJson(`/social/clusters/${id}`, { auth: true });
+
+export const getSocialPosts = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.hours)     qs.set('hours',     params.hours);
+  if (params.platform)  qs.set('platform',  params.platform);
+  if (params.source_id) qs.set('source_id', params.source_id);
+  if (params.region)    qs.set('region',    params.region);
+  if (params.limit)     qs.set('limit',     params.limit);
+  return apiJson(`/social/posts?${qs}`, { auth: true });
+};
+
+export const getSocialTopSources = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.hours) qs.set('hours', params.hours);
+  return apiJson(`/social/top-sources?${qs}`, { auth: true });
+};
+
+export const getSocialContentGap = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.hours)     qs.set('hours',     params.hours);
+  if (params.limit)     qs.set('limit',     params.limit);
+  if (params.min_posts) qs.set('min_posts', params.min_posts);
+  return apiJson(`/social/content-gap?${qs}`, { auth: true });
+};
+

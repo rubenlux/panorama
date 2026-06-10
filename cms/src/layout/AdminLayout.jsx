@@ -119,16 +119,6 @@ export default function AdminLayout() {
           })}>
             <span>📋 Dossiers</span>
           </NavLink>
-          <NavLink to="/knowledge" style={(props) => ({
-            ...linkStyle(props),
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            paddingLeft: 24,
-            fontSize: 13,
-          })}>
-            <span>🧠 Knowledge Base</span>
-          </NavLink>
           <NavLink to="/monitor" style={(props) => ({
             ...linkStyle(props),
             display: "flex",
@@ -139,13 +129,15 @@ export default function AdminLayout() {
           })}>
             <span>📡 Monitoreo de Medios</span>
           </NavLink>
-          <NavLink to="/topics" style={(props) => ({
+          <NavLink to="/social" style={(props) => ({
             ...linkStyle(props),
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
+            paddingLeft: 24,
+            fontSize: 13,
           })}>
-            <span>🗂️ Topic Intelligence</span>
+            <span>📱 Social Intelligence</span>
           </NavLink>
           <NavLink to="/reels" style={linkStyle}>Reels</NavLink>
           <NavLink to="/media" style={linkStyle}>Medios</NavLink>

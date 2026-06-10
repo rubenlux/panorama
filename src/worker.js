@@ -2,6 +2,7 @@ import "dotenv/config";
 import cron from "node-cron";
 import { calculateAdRevenue } from "./jobs/calculateAdRevenue.js";
 import { runNewsMonitor }     from "./jobs/newsMonitor.js";
+import { runSocialMonitor }   from "./jobs/socialMonitor.js";
 import { pool } from "./routes/db.js";
 
 console.log("Starting Panorama Worker...");
@@ -16,6 +17,14 @@ pool.query("SELECT NOW()").then(() => {
         runNewsMonitor().catch(e => console.error("❌ News Monitor error:", e.message));
     });
     console.log("📡 News Intelligence Monitor: running every 60s");
+
+    // Run social monitor immediately on start, then every 30 minutes
+    // YouTube API quota: ~12 units/channel/run × 48 runs/day = safe within 10k free quota
+    runSocialMonitor().catch(e => console.error("❌ Social Monitor initial run failed:", e.message));
+    cron.schedule("*/30 * * * *", () => {
+      runSocialMonitor().catch(e => console.error("❌ Social Monitor error:", e.message));
+    });
+    console.log("📱 Social Intelligence Monitor: running every 30min");
 
 }).catch(err => {
     console.error("❌ Worker DB Connection Failed:", err);

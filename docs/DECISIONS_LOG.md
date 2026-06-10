@@ -5,6 +5,28 @@
 
 ---
 
+## 2026-06-10 — Sprint 7.0
+
+**Decisión:** Retirar Knowledge Base y Topic Intelligence del menú principal. Crear Social Intelligence como módulo de monitoreo de cuentas seleccionadas.
+
+**Problema:** KB y Topic Intelligence no generaban valor operativo diario para el equipo editorial. El flujo real es: news monitor → historias → dossier. KB era una capa intermedia sin uso activo. Topic Intelligence requería carga manual y no generaba insight accionable.
+
+**Decisión sobre Social Intelligence:** El sistema NO monitorea redes sociales de forma abierta. El usuario decide qué cuentas seguir (`social_sources`), el sistema solo procesa esas cuentas. Es el mismo paradigma que `tracked_sources` en RSS Intelligence.
+
+**Plataformas:** YouTube implementado completamente (YouTube Data API v3, 10k quota/día gratuita, ~12 units/canal/run). Instagram, Facebook, X, TikTok: stubs — infraestructura lista, se activan cuando se configuran las credenciales de cada plataforma.
+
+**Quota YouTube:** Usar `playlistItems.list` (1 unit/call) + `videos.list` (~10 units/batch) en vez de `search.list` (100 units/call). Costo: ~12 units/canal. Con 10 canales y 48 runs/día: ~5,760 units/día — dentro del límite gratuito.
+
+**Worker schedule:** Cada 30 minutos (vs 60s del news monitor). Las cuentas sociales se actualizan menos frecuentemente, y hay que respetar las cuotas de API.
+
+**Content Gap Analysis:** Jaccard entre `social_clusters.keywords` y `story_clusters.keywords`, threshold 0.20. Categorías: gap (sin cobertura), partial (historia poor o 1 artículo), covered. Permite responder "qué publican los medios en redes que todavía no tenemos cubierto".
+
+**KB y Topics:** Rutas mantenidas en App.jsx para backward compatibility. Datos intactos. Solo removidos del menú de navegación. Marcados como deprecated.
+
+**Impacto:** 4 tablas nuevas, `SocialFetcher.js`, `socialMonitor.js`, `/social/*` routes, `SocialSources.jsx`, `SocialIntelligence.jsx`, `AdminLayout.jsx` (menú), `App.jsx`, `worker.js`, `app.js`.
+
+---
+
 ## 2026-06-10 — Sprint 6.4.1
 
 **Decisión:** Simplificar caps de story_quality — eliminar el cap de article_count=1.

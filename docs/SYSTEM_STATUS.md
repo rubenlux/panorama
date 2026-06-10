@@ -1,7 +1,7 @@
 # SYSTEM_STATUS.md
 
 > Estado actual del sistema Panorama. Permite entender la plataforma completa en menos de 5 minutos.
-> Última actualización: 2026-06-10 (Sprint 6.4.1)
+> Última actualización: 2026-06-10 (Sprint 7.0)
 
 ---
 
@@ -135,31 +135,53 @@ Research Topic → Research Brief → Entity Mentions → Research Sources
 | 07 | Publicidad v2 | `src/routes/ads_v2.js` | ✓ |
 | 08 | Publicidad legacy | `src/routes/ads.js` | Legacy |
 | 09 | Pixel tracking | `src/routes/pixel.js` | ✓ |
-| 16 | Knowledge Base | `src/routes/knowledge.js` | ✓ |
+| 16 | Knowledge Base | `src/routes/knowledge.js` | ⚠️ Deprecated Sprint 7.0 — datos intactos, nav retirado |
 | 17 | News Intelligence | `src/routes/monitor.js` + worker | ✓ |
 | 18 | Worker background | `src/worker.js` | ✓ |
 | 19 | Editorial Workflow | `src/routes/editorial_workflow.js` | ✓ |
-| 20 | Topic Intelligence | `src/routes/topics.js` | ✓ |
+| 20 | Topic Intelligence | `src/routes/topics.js` | ⚠️ Deprecated Sprint 7.0 — datos intactos, nav retirado |
+| 21 | Social Intelligence | `src/routes/social.js` + `socialMonitor.js` | ✓ Sprint 7.0 |
 | — | Stories | `src/routes/stories.js` | ✓ Sprint 5.5 |
 | — | Events | `src/routes/events.js` | ✓ Sprint 5.6 |
 | — | Opportunities | `src/routes/opportunities.js` | ✓ Sprint 5.6.1 |
 
 ---
 
-## Último Sprint: 6.4.1 — Scoring Integrity Fix
+## Social Intelligence (Sprint 7.0)
+
+| Aspecto | Detalle |
+|---|---|
+| Paradigma | Igual que RSS: usuario configura cuentas, sistema monitorea solo esas |
+| Tabla fuentes | `social_sources` — plataforma, URL, región, categoría, prioridad |
+| Tabla posts | `social_posts` — metadata + métricas de engagement |
+| Clustering | `social_clusters` — Jaccard keywords, threshold 0.20, stale >48h |
+| Worker | `socialMonitor.js` — cron cada 30min (vs 60s de news) |
+| YouTube | Activo: playlistItems.list + videos.list (~12 units/canal/run) |
+| Otros | Stubs listos — activan al configurar credenciales por plataforma |
+| Content Gap | Jaccard entre social_clusters y story_clusters (threshold 0.20) |
+| Rutas CMS | `GET/POST/PUT/DELETE /social/sources`, `/social/clusters`, `/social/content-gap`, `/social/stats`, `/social/top-sources` |
+| Menú CMS | Knowledge Base y Topic Intelligence retirados, Social Intelligence agregado |
+
+---
+
+## Último Sprint: 7.0 — Social Intelligence Platform
 
 **Completado:** 2026-06-10
 
-**Objetivo:** Corregir doble-penalización y 73 huérfanas con score inconsistente introducidos en Sprint 6.4.
+**Objetivo:** Reemplazar módulos editoriales sin uso (Knowledge Base, Topic Intelligence) con Social Intelligence — monitoreo de cuentas sociales seleccionadas por el usuario.
 
 **Implementado:**
-- Eliminado el cap `article_count=1 → max fair` — el score ya refleja la falta de profundidad
-- Cap único simplificado: `source_count=1 AND score≥70 → good` (no excellent)
-- `scripts/fix_story_scoring_integrity.js`: sync + recálculo + reporte de integridad (73 huérfanas corregidas)
-- `GET /monitor/scoring-integrity`: detecta `score_with_no_articles`, `score_with_no_sources`, `quality_mismatch`
-- Distribución post-fix: excellent:4 / good:1214 / fair:113 / poor:0 — 0 inconsistencias
+- 4 tablas: `social_sources`, `social_posts`, `social_clusters`, `social_cluster_posts`
+- `SocialFetcher.js`: YouTube activo (Data API v3, eficiente: playlistItems+statistics, no search), IG/FB/X/TikTok stubs
+- `socialMonitor.js`: fetch → cluster (Jaccard 0.20) → recalc métricas → stale clusters
+- Rutas `/social/*`: sources CRUD, posts, clusters, top-sources, stats, content-gap
+- CMS `SocialSources.jsx`: gestión completa de cuentas (tabla con toggle/check/edit/delete, modal add/edit)
+- CMS `SocialIntelligence.jsx`: dashboard con 4 tabs (🔥 Virales, 📰 Top Medios, 🕳️ Brechas, 📍 Regiones)
+- Worker: social monitor corre cada 30 minutos
+- Menú: KB y Topics retirados del nav, Social Intelligence agregado bajo "📡 Monitoreo de Medios"
+- KB y Topics: datos y rutas intactos (solo nav retirado, deprecados)
 
-**Sprint anterior (6.4):** `story_quality` ← `story_context_score`; `story_confidence` ← source_count; 4 componentes auditables; CTE recalculation; scoring-audit endpoint; badges CMS.
+**Sprint anterior (6.4.1):** fix_story_scoring_integrity.js, scoring-integrity endpoint, cap único source_count=1→max good.
 
 ---
 
@@ -192,6 +214,7 @@ node scripts/migrate_clustering_quality.js     # Sprint 6.2 (si no corrió)
 node scripts/migrate_story_traceability.js     # Sprint 6.3
 node scripts/migrate_editorial_scoring.js      # Sprint 6.4 (añade 5 columnas)
 node scripts/fix_story_scoring_integrity.js    # Sprint 6.4.1 (corrige quality + huérfanas)
+node scripts/migrate_social_intelligence.js   # Sprint 7.0 (crea tablas social_*)
 
 # Auditoría
 node scripts/rebuild_story_clusters.js --dry-run  # Ver estado sin modificar

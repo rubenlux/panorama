@@ -1,11 +1,11 @@
 # DATABASE_MAP.md
 
 > Mapa completo de la base de datos. Actualizar ante cualquier migración.
-> Última actualización: 2026-06-10 (Sprint 6.3) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
+> Última actualización: 2026-06-10 (Sprint 7.0) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
 
 ---
 
-## Tablas del Sistema (52 tablas)
+## Tablas del Sistema (56 tablas)
 
 ### `articles`
 Tabla principal del contenido editorial.
@@ -919,6 +919,76 @@ Trazabilidad de exactamente qué contexto recibió Claude en cada llamada.
 | `scripts/migrate_clustering_quality.js` | Sprint 6.2: `story_quality`, `avg_relevance`, `story_context_score`, `ai_generation_logs` |
 | `scripts/migrate_story_traceability.js` | Sprint 6.3: trazabilidad en `story_cluster_articles`, fix `story_context_score`, stale huérfanas |
 | `scripts/migrate_editorial_scoring.js` | Sprint 6.4: 4 componentes + `story_confidence`, nueva fórmula de `story_quality` con caps duros |
+| `scripts/fix_story_scoring_integrity.js` | Sprint 6.4.1: recalcula story_quality con cap simplificado, corrige 73 huérfanas con score>0 |
+| `scripts/migrate_social_intelligence.js` | Sprint 7.0: `social_sources`, `social_posts`, `social_clusters`, `social_cluster_posts` |
+
+### `social_sources` (Sprint 7.0)
+```
+id           UUID PK
+name         VARCHAR(100) NOT NULL
+platform     VARCHAR(20) CHECK IN (youtube|instagram|facebook|x|tiktok)
+profile_url  TEXT NOT NULL
+handle       VARCHAR(100)
+platform_id  VARCHAR(200)  -- cached platform-specific ID (e.g. YouTube channelId)
+enabled      BOOLEAN DEFAULT true
+priority     INTEGER DEFAULT 5
+region       VARCHAR(50) DEFAULT 'nacional'
+category     VARCHAR(50) DEFAULT 'medio'
+last_checked TIMESTAMPTZ
+last_post_at TIMESTAMPTZ
+post_count   INTEGER DEFAULT 0
+UNIQUE(platform, profile_url)
+```
+
+### `social_posts` (Sprint 7.0)
+```
+id               UUID PK
+source_id        UUID FK → social_sources (CASCADE)
+platform         VARCHAR(20)
+external_id      VARCHAR(500) NOT NULL
+url              TEXT NOT NULL
+published_at     TIMESTAMPTZ
+title            TEXT
+content          TEXT
+thumbnail_url    TEXT
+video_url        TEXT
+views            BIGINT DEFAULT 0
+likes            BIGINT DEFAULT 0
+comments         BIGINT DEFAULT 0
+shares           BIGINT DEFAULT 0
+engagement_score FLOAT DEFAULT 0
+keywords         JSONB DEFAULT '[]'
+captured_at      TIMESTAMPTZ DEFAULT now()
+enriched_at      TIMESTAMPTZ
+UNIQUE(platform, external_id)
+```
+
+### `social_clusters` (Sprint 7.0)
+```
+id               UUID PK
+title            TEXT NOT NULL
+keywords         JSONB DEFAULT '[]'
+post_count       INTEGER DEFAULT 0
+source_count     INTEGER DEFAULT 0
+total_views      BIGINT DEFAULT 0
+total_likes      BIGINT DEFAULT 0
+total_comments   BIGINT DEFAULT 0
+total_shares     BIGINT DEFAULT 0
+total_engagement BIGINT DEFAULT 0   -- views + likes*10 + comments*20 + shares*30
+engagement_score FLOAT DEFAULT 0    -- normalized engagement rate (0-1000)
+growth_rate      FLOAT DEFAULT 0
+status           VARCHAR(20) CHECK IN (active|stale)
+first_seen       TIMESTAMPTZ
+last_seen        TIMESTAMPTZ
+```
+
+### `social_cluster_posts` (Sprint 7.0)
+```
+cluster_id UUID FK → social_clusters (CASCADE)
+post_id    UUID FK → social_posts (CASCADE)
+linked_at  TIMESTAMPTZ
+PRIMARY KEY(cluster_id, post_id)
+```
 
 ## Estado de Índices
 > Pendiente de documentar. Ejecutar: `SELECT indexname, tablename, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename`
