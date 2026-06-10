@@ -10,7 +10,7 @@
     "db:init": "node init_db.js && node seed.js",
     "cms": "cd cms && npm run dev",
     "worker": "nodemon -r dotenv/config src/worker.js",
-    "dev:all": "concurrently \"npm run start\" \"npm run cms\""
+    "dev:all": "concurrently \"npm run dev\" \"npm run cms\" \"npm run worker\""
   },
   "keywords": [],
   "author": "",

@@ -15,7 +15,10 @@ router.get('/stats', requireAuth, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM trending_topics    WHERE last_seen_at > now() - interval '30 minutes')   AS trending_now,
         (SELECT COUNT(*)::int FROM trending_topics
          WHERE mention_count >= 5 AND source_count >= 3
-           AND last_seen_at  > now() - interval '30 minutes')                                               AS opportunities
+           AND last_seen_at  > now() - interval '30 minutes')                                               AS opportunities,
+        (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)                                AS last_worker_run,
+        extract(epoch FROM (now() - (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)))::int
+                                                                                                            AS worker_idle_seconds
     `);
     res.json(r);
   } catch (e) { next(e); }

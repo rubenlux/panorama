@@ -9,10 +9,22 @@ const AUTO_RESEARCH_COOLDOWN = 120; // minutes before same entity can trigger ag
 
 // ── RSS Parser (no external deps) ────────────────────────────────────────────
 
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&amp;/g,   '&')
+    .replace(/&lt;/g,    '<')
+    .replace(/&gt;/g,    '>')
+    .replace(/&quot;/g,  '"')
+    .replace(/&#39;/g,   "'")
+    .replace(/&apos;/g,  "'")
+    .replace(/&#(\d+);/g,   (_, n) => String.fromCharCode(parseInt(n, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
+
 function extractTag(xml, tag) {
   const re = new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`, 'i');
   const m = xml.match(re);
-  return m ? m[1].trim() : '';
+  return m ? decodeHtmlEntities(m[1].trim()) : '';
 }
 
 function parseRssItems(xml) {

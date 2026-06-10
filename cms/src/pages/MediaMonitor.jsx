@@ -328,7 +328,7 @@ export default function MediaMonitor() {
             </p>
           </div>
           {stats && (
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-start' }}>
               {[
                 { label: 'Fuentes activas',  value: `${stats.sources_active}/${stats.sources_total}`, color: '#10b981' },
                 { label: 'Artículos (24h)',  value: stats.articles_today,  color: '#6366f1' },
@@ -340,6 +340,7 @@ export default function MediaMonitor() {
                   <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>{s.label}</div>
                 </div>
               ))}
+              <WorkerStatus idle={stats.worker_idle_seconds} lastRun={stats.last_worker_run} />
             </div>
           )}
         </div>
@@ -504,6 +505,34 @@ export default function MediaMonitor() {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── WorkerStatus ──────────────────────────────────────────────────────────────
+function WorkerStatus({ idle, lastRun }) {
+  if (idle == null) {
+    return (
+      <div style={{ padding: '8px 14px', background: '#fef9c3', border: '1px solid #fde047', borderRadius: 10, textAlign: 'center' }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: '#854d0e' }}>⚠️ Sin datos</div>
+        <div style={{ fontSize: 10, color: '#854d0e', marginTop: 2 }}>Worker nunca corrió</div>
+      </div>
+    );
+  }
+  const mins = Math.floor(idle / 60);
+  const alive = idle < 180; // less than 3 minutes = worker is running
+  return (
+    <div style={{ padding: '8px 14px', background: alive ? '#f0fdf4' : '#fff1f2',
+      border: `1px solid ${alive ? '#86efac' : '#fecaca'}`, borderRadius: 10, textAlign: 'center', minWidth: 120 }}>
+      <div style={{ fontSize: 13, fontWeight: 800, color: alive ? '#166534' : '#dc2626', lineHeight: 1 }}>
+        {alive ? '🟢 Worker activo' : '🔴 Worker detenido'}
+      </div>
+      <div style={{ fontSize: 10, color: alive ? '#166534' : '#dc2626', marginTop: 3 }}>
+        {alive
+          ? `último ciclo hace ${idle < 60 ? idle + 's' : mins + 'min'}`
+          : `sin actividad hace ${mins >= 60 ? Math.floor(mins/60) + 'h ' + (mins%60) + 'min' : mins + ' min'} · correr npm run worker`
+        }
       </div>
     </div>
   );
