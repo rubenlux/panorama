@@ -56,6 +56,55 @@ function parseRssItems(xml) {
   return items;
 }
 
+// ── Google News Sitemap parser ────────────────────────────────────────────────
+
+function parseNewsSitemapItems(xml) {
+  const items = [];
+  const urlRe = /<url>([\s\S]*?)<\/url>/g;
+  let m;
+  while ((m = urlRe.exec(xml)) !== null) {
+    const block   = m[1];
+    const loc     = extractTag(block, 'loc');
+    if (!loc || !loc.startsWith('http')) continue;
+    const title   = extractTag(block, 'news:title') || extractTag(block, 'title');
+    const pubDate = extractTag(block, 'news:publication_date') || extractTag(block, 'lastmod');
+    if (!title) continue;
+    items.push({ title, link: loc, description: '', pubDate, guid: loc });
+  }
+  return items;
+}
+
+function parseSitemapIndexUrls(xml) {
+  const urls = [];
+  const re = /<loc>([\s\S]*?)<\/loc>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const u = decodeHtmlEntities(m[1].trim());
+    if (u.startsWith('http')) urls.push(u);
+  }
+  return urls;
+}
+
+function detectFeedFormat(xml) {
+  const t = xml.trimStart().slice(0, 2000);
+  if (t.includes('<sitemapindex'))  return 'sitemap-index';
+  if (t.includes('<urlset')) {
+    return (t.includes('xmlns:news') || t.includes('news.google.com')) ? 'news-sitemap' : 'urlset';
+  }
+  if (t.includes('<rss') || t.includes('<channel')) return 'rss';
+  if (t.includes('<feed') && t.includes('xmlns'))   return 'atom';
+  return 'rss';
+}
+
+async function fetchFeedXml(url) {
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Panorama-Monitor/2.0)' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) return null;
+  return res.text();
+}
+
 function hashUrl(url) {
   return createHash('sha256').update(url.trim().toLowerCase()).digest('hex');
 }
@@ -144,38 +193,59 @@ function extractMonitorEntities(title) {
 async function processSource(source) {
   const newIds = [];
   try {
-    const res = await fetch(source.rss_url, {
-      headers: { 'User-Agent': 'Panorama-Monitor/1.0' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return newIds;
+    const xml = await fetchFeedXml(source.rss_url);
+    if (!xml) return newIds;
 
-    const xml  = await res.text();
-    const items = parseRssItems(xml);
+    const format = detectFeedFormat(xml);
+    let items = [];
+
+    if (format === 'news-sitemap') {
+      items = parseNewsSitemapItems(xml);
+    } else if (format === 'sitemap-index') {
+      // Fetch up to 3 child sitemaps (most recent entries are last — reverse)
+      const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+      for (const childUrl of childUrls) {
+        try {
+          const childXml = await fetchFeedXml(childUrl);
+          if (!childXml) continue;
+          const childFmt = detectFeedFormat(childXml);
+          items.push(...(childFmt === 'news-sitemap'
+            ? parseNewsSitemapItems(childXml)
+            : parseRssItems(childXml)));
+        } catch {}
+        if (items.length >= 60) break;
+      }
+    } else {
+      items = parseRssItems(xml);
+    }
 
     for (const item of items) {
       const url = item.link;
       if (!url || !item.title) continue;
+
+      let pubDate = null;
+      if (item.pubDate) {
+        const d = new Date(item.pubDate);
+        pubDate = isNaN(d.getTime()) ? null : d;
+      }
 
       const { rows } = await query(
         `INSERT INTO monitored_articles (source_id, external_id, title, url, summary, published_at, hash)
          VALUES ($1,$2,$3,$4,$5,$6,$7)
          ON CONFLICT (hash) DO NOTHING
          RETURNING id`,
-        [
-          source.id,
-          item.guid || null,
-          item.title,
-          url,
-          item.description || null,
-          item.pubDate ? new Date(item.pubDate) : null,
-          hashUrl(url),
-        ]
+        [source.id, item.guid || null, item.title, url,
+         item.description || null, pubDate, hashUrl(url)]
       );
       if (rows[0]) newIds.push(rows[0].id);
     }
 
-    await query(`UPDATE tracked_sources SET last_checked = now() WHERE id = $1`, [source.id]);
+    await query(
+      `UPDATE tracked_sources SET last_checked = now(), last_format_detected = $2 WHERE id = $1`,
+      [source.id, format]
+    );
+    if (items.length > 0)
+      console.log(`[Monitor] "${source.name}" (${format}): ${items.length} items → ${newIds.length} new`);
   } catch (e) {
     console.error(`[Monitor] Source "${source.name}" failed: ${e.message}`);
   }
@@ -423,10 +493,12 @@ async function checkAutoResearchTriggers() {
 
 // ── Story Intelligence (Sprint 5.5) ──────────────────────────────────────────
 
-const STORY_WINDOW_HOURS         = 24;
-const STORY_MATCH_THRESHOLD      = 0.20;
-const STORY_SUMMARY_MIN_ARTICLES = 3;
-const STORY_SUMMARY_MIN_SOURCES  = 2;
+const STORY_WINDOW_HOURS           = 24;
+const STORY_MATCH_THRESHOLD        = 0.20;
+const STORY_SUMMARY_MIN_ARTICLES   = 3;
+const STORY_SUMMARY_MIN_SOURCES    = 2;
+const ENRICHMENT_GATE_COVERAGE     = 0.70; // min fraction of articles with full text before AI runs
+const RELEVANCE_FILTER_THRESHOLD   = 0.30; // articles below this score excluded from AI context
 
 // Aggressive stopwords for keyword-similarity matching — NOT for NER
 const STORY_STOPWORDS = new Set([
@@ -479,6 +551,11 @@ function jaccardSim(arrA, arrB) {
   const intersection = [...a].filter(x => b.has(x)).length;
   const union = new Set([...a, ...b]).size;
   return union === 0 ? 0 : intersection / union;
+}
+
+function jaccardShared(arrA, arrB) {
+  const b = new Set(arrB);
+  return [...new Set(arrA)].filter(x => b.has(x));
 }
 
 function isRecurringContent(title) {
@@ -572,10 +649,12 @@ async function detectStories(newArticleIds) {
     let assignedId;
 
     if (bestScore >= STORY_MATCH_THRESHOLD && bestId) {
+      const sharedKw = jaccardShared(artKw, signatures.find(s => s.id === bestId)?.keywords || []);
       await query(
-        `INSERT INTO story_cluster_articles (story_id, article_id, relevance_score)
-         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-        [bestId, article.id, parseFloat(bestScore.toFixed(3))]
+        `INSERT INTO story_cluster_articles
+           (story_id, article_id, relevance_score, matching_reason, shared_keywords, keyword_similarity, title_similarity)
+         VALUES ($1, $2, $3, 'keyword_jaccard', $4, $5, $5) ON CONFLICT DO NOTHING`,
+        [bestId, article.id, parseFloat(bestScore.toFixed(3)), JSON.stringify(sharedKw), parseFloat(bestScore.toFixed(3))]
       );
       assignedId = bestId;
       // Extend in-memory signature so later articles in same batch can match
@@ -591,9 +670,10 @@ async function detectStories(newArticleIds) {
       );
       assignedId = rows[0].id;
       await query(
-        `INSERT INTO story_cluster_articles (story_id, article_id, relevance_score)
-         VALUES ($1, $2, 1.0) ON CONFLICT DO NOTHING`,
-        [assignedId, article.id]
+        `INSERT INTO story_cluster_articles
+           (story_id, article_id, relevance_score, matching_reason, shared_keywords, keyword_similarity, title_similarity)
+         VALUES ($1, $2, 1.0, 'story_seed', $3, 1.0, 1.0) ON CONFLICT DO NOTHING`,
+        [assignedId, article.id, JSON.stringify(artKw)]
       );
       signatures.push({ id: assignedId, keywords: artKw });
     }
@@ -612,16 +692,45 @@ async function detectStories(newArticleIds) {
     `, [assignedId, article.id]);
   }
 
-  // Recalculate live counts for all affected stories
+  // Recalculate live counts + quality fields for all affected stories
   for (const storyId of affectedIds) {
     await query(`
       UPDATE story_clusters SET
-        article_count = (SELECT COUNT(*)             FROM story_cluster_articles   WHERE story_id = $1),
-        source_count  = (
+        article_count       = (SELECT COUNT(*) FROM story_cluster_articles WHERE story_id = $1),
+        source_count        = (
           SELECT COUNT(DISTINCT ma.source_id)
           FROM story_cluster_articles sca
           JOIN monitored_articles ma ON ma.id = sca.article_id
           WHERE sca.story_id = $1
+        ),
+        avg_relevance       = (
+          SELECT AVG(relevance_score) FROM story_cluster_articles WHERE story_id = $1
+        ),
+        story_quality       = (
+          SELECT CASE
+            WHEN AVG(relevance_score) < 0.40 THEN 'poor'
+            WHEN AVG(relevance_score) < 0.60 THEN 'fair'
+            WHEN AVG(relevance_score) < 0.80 THEN 'good'
+            ELSE 'excellent'
+          END
+          FROM story_cluster_articles WHERE story_id = $1
+        ),
+        story_context_score = (
+          SELECT LEAST(100, GREATEST(0, ROUND(
+            -- relevance component (35 pts): avg_relevance * 35
+            (COALESCE(AVG(sca2.relevance_score), 0) * 35)
+            -- content depth (25 pts): 5000 total words = full score
+            + LEAST(COALESCE(SUM(ma2.content_words), 0)::float / 5000, 1.0) * 25
+            -- source diversity (15 pts): 5+ sources = full score
+            + LEAST(COUNT(DISTINCT ma2.source_id)::float / 5, 1.0) * 15
+            -- enrichment coverage (25 pts): fraction of fetched articles
+            + COALESCE(COUNT(ma2.id) FILTER (
+                WHERE ma2.extraction_method IN ('fetch','playwright')
+              )::float / NULLIF(COUNT(ma2.id), 0), 0) * 25
+          )::integer))
+          FROM story_cluster_articles sca2
+          JOIN monitored_articles ma2 ON ma2.id = sca2.article_id
+          WHERE sca2.story_id = $1
         ),
         last_seen  = now(),
         updated_at = now()
@@ -636,6 +745,13 @@ async function markStaleStories() {
     WHERE status IN ('active','ready')
       AND last_seen < now() - interval '${STORY_WINDOW_HOURS} hours'
   `);
+  // Orphan stories: article_count = 0 should never remain active
+  await query(`
+    UPDATE story_clusters SET status = 'stale', updated_at = now()
+    WHERE article_count = 0
+      AND status NOT IN ('stale','followed')
+      AND is_recurring = false
+  `);
 }
 
 async function summarizePendingStories() {
@@ -648,9 +764,18 @@ async function summarizePendingStories() {
       AND sc.is_recurring = false
       AND (sc.article_count >= $1 OR sc.source_count >= $2)
       AND sc.last_seen > now() - interval '${STORY_WINDOW_HOURS} hours'
+      AND (
+        SELECT CASE WHEN COUNT(*) = 0 THEN false
+               ELSE (COUNT(*) FILTER (WHERE ma.extraction_method IN ('fetch','playwright')))::float
+                    / COUNT(*) >= $3
+               END
+        FROM story_cluster_articles sca
+        JOIN monitored_articles ma ON ma.id = sca.article_id
+        WHERE sca.story_id = sc.id
+      )
     ORDER BY sc.source_count DESC, sc.article_count DESC
     LIMIT 3
-  `, [STORY_SUMMARY_MIN_ARTICLES, STORY_SUMMARY_MIN_SOURCES]);
+  `, [STORY_SUMMARY_MIN_ARTICLES, STORY_SUMMARY_MIN_SOURCES, ENRICHMENT_GATE_COVERAGE]);
 
   for (const story of pending) {
     await query(
@@ -661,11 +786,12 @@ async function summarizePendingStories() {
     const [articlesRes, entitiesRes] = await Promise.all([
       query(`
         SELECT ma.title, ma.url, ma.summary, ma.detected_at, ma.content_text, ma.extraction_method,
-               ts.name AS source_name
+               ma.content_words, ts.name AS source_name
         FROM story_cluster_articles sca
         JOIN monitored_articles ma ON ma.id = sca.article_id
         JOIN tracked_sources    ts ON ts.id = ma.source_id
         WHERE sca.story_id = $1
+          AND sca.relevance_score >= ${RELEVANCE_FILTER_THRESHOLD}
         ORDER BY sca.relevance_score DESC, ma.detected_at DESC
       `, [story.id]),
       query(`
@@ -676,6 +802,17 @@ async function summarizePendingStories() {
         LIMIT 12
       `, [story.id]),
     ]);
+
+    // Log AI context for traceability
+    query(`
+      INSERT INTO ai_generation_logs (story_id, generation_type, article_count, article_titles, total_words_sent)
+      VALUES ($1, 'story_summary', $2, $3, $4)
+    `, [
+      story.id,
+      articlesRes.rows.length,
+      JSON.stringify(articlesRes.rows.map(a => a.title)),
+      articlesRes.rows.reduce((s, a) => s + (a.content_words || 0), 0),
+    ]).catch(() => {});
 
     try {
       const result = await ai.generateStorySummary(articlesRes.rows, entitiesRes.rows);
@@ -735,20 +872,30 @@ async function generateOpportunitiesForStories() {
         WHERE so.story_cluster_id = sc.id
           AND so.created_at > now() - interval '4 hours'
       )
+      AND (
+        SELECT CASE WHEN COUNT(*) = 0 THEN false
+               ELSE (COUNT(*) FILTER (WHERE ma.extraction_method IN ('fetch','playwright')))::float
+                    / COUNT(*) >= $1
+               END
+        FROM story_cluster_articles sca
+        JOIN monitored_articles ma ON ma.id = sca.article_id
+        WHERE sca.story_id = sc.id
+      )
     ORDER BY sc.importance_score DESC, sc.source_count DESC
     LIMIT 5
-  `);
+  `, [ENRICHMENT_GATE_COVERAGE]);
 
   for (const story of stories) {
     try {
       const [articlesRes, entitiesRes] = await Promise.all([
         query(`
           SELECT ma.title, ma.url, ma.summary, ma.detected_at, ma.content_text, ma.extraction_method,
-                 ts.name AS source_name
+                 ma.content_words, ts.name AS source_name
           FROM story_cluster_articles sca
           JOIN monitored_articles ma ON ma.id = sca.article_id
           JOIN tracked_sources    ts ON ts.id = ma.source_id
           WHERE sca.story_id = $1
+            AND sca.relevance_score >= ${RELEVANCE_FILTER_THRESHOLD}
           ORDER BY sca.relevance_score DESC, ma.detected_at DESC
           LIMIT 15
         `, [story.id]),
@@ -760,6 +907,17 @@ async function generateOpportunitiesForStories() {
           LIMIT 10
         `, [story.id]),
       ]);
+
+      // Log AI context for traceability
+      query(`
+        INSERT INTO ai_generation_logs (story_id, generation_type, article_count, article_titles, total_words_sent)
+        VALUES ($1, 'opportunities', $2, $3, $4)
+      `, [
+        story.id,
+        articlesRes.rows.length,
+        JSON.stringify(articlesRes.rows.map(a => a.title)),
+        articlesRes.rows.reduce((s, a) => s + (a.content_words || 0), 0),
+      ]).catch(() => {});
 
       const opps = await ai.generateEditorialOpportunities(
         story, articlesRes.rows, entitiesRes.rows
@@ -872,6 +1030,9 @@ async function detectEvents(affectedStoryIds) {
     const storyEntities = new Set((story.entities || []).map(n => n.toLowerCase()));
     if (storyEntities.size === 0) continue;
 
+    // Skip stories already linked to any active event — prevents creating duplicate events
+    if (eventSigs.some(ev => ev.storyIds.has(String(story.id)))) continue;
+
     let bestEventId = null;
     let bestScore   = 0;
 
@@ -919,7 +1080,7 @@ async function detectEvents(affectedStoryIds) {
   // Recalculate metrics for all affected events
   for (const eventId of affectedEventIds) {
     await query(`
-      UPDATE event_clusters SET
+      UPDATE event_clusters ec SET
         story_count   = (SELECT COUNT(*) FROM event_cluster_stories WHERE event_id = $1),
         article_count = (
           SELECT COALESCE(SUM(sc.article_count), 0)
@@ -934,9 +1095,22 @@ async function detectEvents(affectedStoryIds) {
           JOIN monitored_articles ma ON ma.id = sca.article_id
           WHERE ecs.event_id = $1
         ),
+        editorial_score = LEAST(100, GREATEST(0, ROUND((
+          (ec.importance_score::float / 10 * 40)
+          + LEAST((SELECT COUNT(DISTINCT ma2.source_id)::float / 5
+                   FROM event_cluster_stories ecs2
+                   JOIN story_cluster_articles sca2 ON sca2.story_id = ecs2.story_id
+                   JOIN monitored_articles ma2 ON ma2.id = sca2.article_id
+                   WHERE ecs2.event_id = $1), 1) * 25
+          + CASE ec.coverage_status WHEN 'breaking' THEN 20 WHEN 'growing' THEN 15 ELSE 10 END
+          + LEAST(COALESCE((SELECT SUM(sc2.article_count)::float / 20
+                            FROM event_cluster_stories ecs3
+                            JOIN story_clusters sc2 ON sc2.id = ecs3.story_id
+                            WHERE ecs3.event_id = $1), 0), 1) * 15
+        )::integer))),
         last_updated_at = now(),
         updated_at      = now()
-      WHERE id = $1
+      WHERE ec.id = $1
     `, [eventId]);
   }
 }
@@ -978,12 +1152,13 @@ async function summarizePendingEvents() {
         `, [event.id]),
         query(`
           SELECT DISTINCT ON (ma.id) ma.title, ma.url, ma.summary, ma.detected_at,
-                 ma.content_text, ma.extraction_method, ts.name AS source_name
+                 ma.content_text, ma.extraction_method, ma.content_words, ts.name AS source_name
           FROM event_cluster_stories ecs
           JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
           JOIN monitored_articles ma ON ma.id = sca.article_id
           JOIN tracked_sources ts ON ts.id = ma.source_id
           WHERE ecs.event_id = $1
+            AND sca.relevance_score >= ${RELEVANCE_FILTER_THRESHOLD}
           ORDER BY ma.id, ma.detected_at DESC
           LIMIT 25
         `, [event.id]),
@@ -996,6 +1171,17 @@ async function summarizePendingEvents() {
           LIMIT 15
         `, [event.id]),
       ]);
+
+      // Log AI context for traceability
+      query(`
+        INSERT INTO ai_generation_logs (event_id, generation_type, article_count, article_titles, total_words_sent)
+        VALUES ($1, 'event_summary', $2, $3, $4)
+      `, [
+        event.id,
+        articlesRes.rows.length,
+        JSON.stringify(articlesRes.rows.map(a => a.title)),
+        articlesRes.rows.reduce((s, a) => s + (a.content_words || 0), 0),
+      ]).catch(() => {});
 
       const result = await ai.generateEventSummary(
         storiesRes.rows, articlesRes.rows, entitiesRes.rows
@@ -1072,15 +1258,29 @@ async function summarizePendingEvents() {
 // Background job: fetches full article content for recent unfetched articles.
 // Runs fire-and-forget each monitor cycle. Limit per cycle prevents overloading.
 
-const CONTENT_FETCH_LIMIT = 15;   // max articles fetched per cycle
-const CONTENT_FETCH_AGE_H = 6;    // only fetch articles newer than this
+const CONTENT_FETCH_LIMIT = 20;   // max articles fetched per cycle
 
 async function fetchPendingArticleContent() {
+  // Priority order:
+  // 1. Articles in active stories (last 24h) — these unlock AI generation
+  // 2. Articles from the last 24h
+  // 3. Articles from the last 72h
+  // 4. Historical backlog (oldest last)
   const { rows: pending } = await query(`
-    SELECT id, url FROM monitored_articles
-    WHERE extraction_method IS NULL
-      AND detected_at > now() - interval '${CONTENT_FETCH_AGE_H} hours'
-    ORDER BY detected_at DESC
+    SELECT ma.id, ma.url
+    FROM monitored_articles ma
+    WHERE ma.extraction_method IS NULL
+    ORDER BY
+      (EXISTS(
+        SELECT 1 FROM story_cluster_articles sca
+        JOIN story_clusters sc ON sc.id = sca.story_id
+        WHERE sca.article_id = ma.id
+          AND sc.status IN ('active','summarizing','ready','followed')
+          AND sc.last_seen > now() - interval '24 hours'
+      ))::int DESC,
+      (ma.detected_at > now() - interval '24 hours')::int DESC,
+      (ma.detected_at > now() - interval '72 hours')::int DESC,
+      ma.detected_at DESC
     LIMIT ${CONTENT_FETCH_LIMIT}
   `);
 

@@ -383,35 +383,65 @@ Research Topic (completed) → Dossier Editorial → Story Builder → Article D
 
 ---
 
-## MÓDULO 17 — News Intelligence Engine (Sprint 3)
+## MÓDULO 17 — News Intelligence Engine (Sprint 3 → 6.3)
 
 **Estado:** Activo | **Ubicación:** `src/jobs/newsMonitor.js`, `src/routes/monitor.js`, `cms/src/pages/MediaMonitor.jsx`
 
-**Propósito:** Monitoreo proactivo de medios de comunicación. Detecta artículos nuevos vía RSS, los matchea contra entidades del Knowledge Base usando comparación string, calcula tendencias en ventana de 30 minutos y crea automáticamente `research_topics` cuando una entidad supera los umbrales de trending.
+**Propósito:** Monitoreo proactivo de medios. Detecta artículos vía RSS/Sitemap/Atom, extrae texto completo, matchea entidades, calcula tendencias, agrupa en historias y eventos, genera resúmenes y oportunidades con Claude, y registra la trazabilidad completa del contexto enviado a IA.
 
-**Pipeline (cada 60s):**
-1. `processSource(source)` — Fetch RSS, parse items, INSERT artículos nuevos deduplicados por hash SHA-256
-2. `matchEntities(newIds)` — Carga `knowledge_entities` (más largas primero), busca en título de cada artículo nuevo
-3. `refreshTrendingTopics()` — Cuenta menciones/fuentes en ventana 30min, upsert en `trending_topics`
-4. `checkAutoResearchTriggers()` — Si entidad ≥5 menciones de ≥3 fuentes, crea `research_topic` como `pending`
+**Pipeline completo (cada 60s, `runNewsMonitor()`):**
+1. `processSource(source)` — Fetch RSS/Atom/Sitemap, INSERT deduplicado por SHA-256
+2. `fetchPendingArticleContent()` — Extrae texto completo (fetch→Playwright→rss_only), 20/ciclo con cola de prioridad
+3. `matchResearchEntities()` — Match contra `knowledge_entities` origen RESEARCH
+4. `discoverMonitorEntities()` — NER en títulos → upsert entidades MONITOR → trend clusters
+5. `refreshTrendingTopics()` — Conteo menciones ventana 30min
+6. `checkAutoResearchTriggers()` — ≥5 menciones de ≥3 fuentes → crea research_topic
+7. `markStaleClusters()` / `summarizePendingClusters()` — Resúmenes de trend clusters
+8. `detectStories(newIds)` — Jaccard sobre keywords de títulos (threshold 0.20), guarda trazabilidad completa
+9. `markStaleStories()` — Stale tras 24h + stale huérfanas (article_count=0)
+10. `summarizePendingStories()` — Claude solo si enrichment ≥70% y relevance ≥0.30
+11. `generateOpportunitiesForStories()` — Claude genera oportunidades editoriales
+12. `detectEvents(storyIds)` — Jaccard sobre entidades compartidas (threshold 0.35)
+13. `markStaleEvents()` / `summarizePendingEvents()` — Resúmenes de eventos
 
-**Constantes de umbral:**
-- `TRENDING_WINDOW_MIN=30` — ventana sliding en minutos
-- `AUTO_RESEARCH_MENTIONS=5` — menciones mínimas para auto-trigger
-- `AUTO_RESEARCH_SOURCES=3` — fuentes distintas mínimas
-- `AUTO_RESEARCH_COOLDOWN=120` — minutos de cooldown para evitar spam
+**Constantes clave:**
+- `STORY_MATCH_THRESHOLD=0.20` — Jaccard mínimo para asignar artículo a historia
+- `ENRICHMENT_GATE_COVERAGE=0.70` — 70% de artículos con texto completo antes de IA
+- `RELEVANCE_FILTER_THRESHOLD=0.30` — artículos bajo este score excluidos del contexto Claude
+- `EVENT_ENTITY_THRESHOLD=0.35` — Jaccard de entidades para agrupar en evento
+
+**Formatos de feed soportados:** RSS, Atom, Google News Sitemap (`<urlset xmlns:news>`), Sitemap Index (fetcha los 3 últimos child sitemaps, hasta 60 items), XML urlset genérico
+
+**Trazabilidad (Sprint 6.3):** cada INSERT en `story_cluster_articles` guarda `matching_reason`, `shared_keywords`, `keyword_similarity` y `title_similarity`.
+
+**Logging IA (Sprint 6.2):** antes de cada llamada Claude se inserta en `ai_generation_logs` el tipo, artículos enviados y palabras totales.
 
 **Endpoints API (`/monitor/*`, todos con `requireAuth`):**
-- `GET /monitor/stats` — 5 contadores (sources_active, sources_total, articles_today, trending_now, opportunities)
-- `GET /monitor/sources` — Listado con `seconds_since_check`
-- `POST /monitor/sources` — Agregar fuente
-- `PUT /monitor/sources/:id` — Actualización parcial con COALESCE
-- `DELETE /monitor/sources/:id` — Eliminar fuente
-- `GET /monitor/articles` — Feed con `?hours=&source_id=&entity_id=&limit=` + entities[] como json_agg
-- `GET /monitor/trending` — Tendencias con `?min_mentions=&min_sources=`, ventana 6h
-- `POST /monitor/research` — Crea research_topic desde una tendencia, marca como auto_researched
+- `GET /monitor/stats` — contadores globales
+- `GET /monitor/content-stats` — cobertura de extracción por fuente (`?days=7`)
+- `GET /monitor/sources` — listado con `seconds_since_check`
+- `POST /monitor/sources` — agregar fuente
+- `PUT /monitor/sources/:id` — actualización parcial
+- `DELETE /monitor/sources/:id` — eliminar
+- `POST /monitor/sources/:id/verify` — verifica feed, detecta formato, actualiza trust_score
+- `POST /monitor/sources/:id/approve` — aprobación editorial
+- `GET /monitor/sources/:id/verifications` — historial de verificaciones
+- `GET /monitor/articles` — feed con `?hours=&source_id=&entity_id=&limit=`
+- `GET /monitor/trending` — tendencias con `?min_mentions=&min_sources=`
+- `GET /monitor/clustering-audit` — stats globales + per-story + simulación thresholds 0.20–0.40 (`?hours=`)
+- `GET /monitor/story/:id/explain` — trazabilidad completa de una historia *(Sprint 6.3)*
+- `GET /monitor/clustering-outliers` — huérfanas, contaminadas, weak-link alto, score=0 *(Sprint 6.3)*
+- `POST /monitor/research` — crea research_topic desde trending
 
-**Tablas:** `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics`
+**Tablas principales:** `tracked_sources`, `source_verifications`, `monitored_articles`, `article_entity_matches`, `trending_topics`, `trend_clusters`, `trend_cluster_articles`, `story_clusters`, `story_cluster_articles`, `story_entities`, `story_opportunities`, `event_clusters`, `event_cluster_stories`, `editorial_opportunities`, `ai_generation_logs`
+
+**UI CMS (`MediaMonitor.jsx` — 5 tabs):**
+- **Feed** — artículos recientes con entity badges, auto-refresh 30s
+- **Historias** — story cards con badges enrichment, quality (🔴🟡🟢), context_score, panel diagnóstico para clusters contaminados
+- **Eventos** — event cards con editorial_score y stories agrupadas
+- **Oportunidades** — story_opportunities por composite_score
+- **Tendencias** — trending entities con botón "Investigar"
+- **Fuentes** — gestión tracked_sources con verify/approve, historial de verificaciones
 
 **UI CMS (`MediaMonitor.jsx`):**
 - Tab **Feed** — artículos recientes con entity badges, auto-refresh 30s

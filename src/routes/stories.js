@@ -13,7 +13,7 @@ const router = Router();
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const minArticles = parseInt(req.query.min_articles) || 2;
-    const limit       = Math.min(parseInt(req.query.limit) || 25, 50);
+    const limit       = Math.min(parseInt(req.query.limit) || 25, 200);
     const includeAll  = req.query.include_all === 'true'; // include single-article candidates
 
     const { rows } = await query(`
@@ -32,6 +32,14 @@ router.get('/', requireAuth, async (req, res, next) => {
         sc.is_recurring,
         sc.first_seen,
         sc.last_seen,
+        sc.story_quality,
+        sc.avg_relevance,
+        sc.story_context_score,
+        (
+          SELECT COUNT(sca3.article_id) FILTER (WHERE sca3.relevance_score >= 0.30)::int
+          FROM story_cluster_articles sca3
+          WHERE sca3.story_id = sc.id
+        ) AS valid_article_count,
         (
           SELECT json_agg(DISTINCT ts.name ORDER BY ts.name)
           FROM story_cluster_articles sca
@@ -45,7 +53,17 @@ router.get('/', requireAuth, async (req, res, next) => {
           JOIN knowledge_entities ke ON ke.id = se.entity_id
           WHERE se.story_id = sc.id
           LIMIT 6
-        ) AS entities
+        ) AS entities,
+        (
+          SELECT CASE WHEN COUNT(*) = 0 THEN 0
+                 ELSE ROUND(100.0 * COUNT(*) FILTER (
+                        WHERE ma2.extraction_method IN ('fetch','playwright')
+                      ) / COUNT(*))::int
+                 END
+          FROM story_cluster_articles sca2
+          JOIN monitored_articles ma2 ON ma2.id = sca2.article_id
+          WHERE sca2.story_id = sc.id
+        ) AS enrichment_coverage
       FROM story_clusters sc
       WHERE sc.status IN ('active', 'ready', 'followed')
         AND sc.is_recurring = false
@@ -142,18 +160,49 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
     if (!storyRows[0]) return res.status(404).json({ error: 'Story not found' });
     const story = storyRows[0];
 
-    // Fetch articles — content_text (full) preferred over RSS summary
+    // Enrichment gate — require ≥70% of articles to have full text
+    const { rows: [enr] } = await query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE ma.extraction_method IN ('fetch','playwright'))::int AS enriched
+      FROM story_cluster_articles sca
+      JOIN monitored_articles ma ON ma.id = sca.article_id
+      WHERE sca.story_id = $1
+    `, [storyId]);
+    const enrCoverage = enr.total > 0 ? enr.enriched / enr.total : 0;
+    if (enr.total > 0 && enrCoverage < 0.70) {
+      return res.status(422).json({
+        error: `Esta historia aún está siendo enriquecida (${Math.round(enrCoverage * 100)}% completado). Esperando captura completa de artículos antes de generar el dossier.`,
+        enrichment_coverage: Math.round(enrCoverage * 100),
+        total_articles: enr.total,
+        enriched_articles: enr.enriched,
+      });
+    }
+
+    // Fetch articles — exclude contaminated (relevance < 0.30) from AI context
     const { rows: articles } = await query(`
       SELECT ma.title, ma.url, ma.summary, ma.published_at, ma.content_text, ma.extraction_method,
-             ts.name AS source_name,
+             ma.content_words, ts.name AS source_name,
              sca.relevance_score
       FROM story_cluster_articles sca
       JOIN monitored_articles ma ON ma.id = sca.article_id
       JOIN tracked_sources    ts ON ts.id = ma.source_id
       WHERE sca.story_id = $1
+        AND sca.relevance_score >= 0.30
       ORDER BY sca.relevance_score DESC, ma.detected_at DESC
       LIMIT 12
     `, [storyId]);
+
+    // Log AI context for traceability
+    query(`
+      INSERT INTO ai_generation_logs (story_id, generation_type, article_count, article_titles, total_words_sent)
+      VALUES ($1, 'story_dossier', $2, $3, $4)
+    `, [
+      storyId,
+      articles.length,
+      JSON.stringify(articles.map(a => a.title)),
+      articles.reduce((s, a) => s + (a.content_words || 0), 0),
+    ]).catch(() => {});
 
     // Entities already detected by the monitor
     const { rows: entities } = await query(`

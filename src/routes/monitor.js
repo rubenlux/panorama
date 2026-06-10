@@ -13,9 +13,8 @@ router.get('/stats', requireAuth, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM tracked_sources)                                                         AS sources_total,
         (SELECT COUNT(*)::int FROM monitored_articles WHERE detected_at > now() - interval '24 hours')      AS articles_today,
         (SELECT COUNT(*)::int FROM trending_topics    WHERE last_seen_at > now() - interval '30 minutes')   AS trending_now,
-        (SELECT COUNT(*)::int FROM trending_topics
-         WHERE mention_count >= 5 AND source_count >= 3
-           AND last_seen_at  > now() - interval '30 minutes')                                               AS opportunities,
+        (SELECT COUNT(*)::int FROM story_opportunities
+         WHERE status = 'pending')                                                                          AS opportunities,
         (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)                                AS last_worker_run,
         extract(epoch FROM (now() - (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)))::int
                                                                                                             AS worker_idle_seconds
@@ -359,6 +358,215 @@ router.get('/trending', requireAuth, async (req, res, next) => {
     `, [min_mentions, min_sources]);
 
     res.json({ items: rows });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/clustering-audit — cluster quality report + threshold simulation
+router.get('/clustering-audit', requireAuth, async (req, res, next) => {
+  try {
+    const hours = Math.min(parseInt(req.query.hours || '24'), 168);
+
+    // Global summary
+    const { rows: [global] } = await query(`
+      SELECT
+        COUNT(DISTINCT sc.id)::int                                                     AS total_stories,
+        COUNT(DISTINCT sc.id) FILTER (WHERE sc.story_quality = 'poor')::int           AS poor_stories,
+        COUNT(DISTINCT sc.id) FILTER (WHERE sc.story_quality = 'fair')::int           AS fair_stories,
+        COUNT(DISTINCT sc.id) FILTER (WHERE sc.story_quality = 'good')::int           AS good_stories,
+        COUNT(DISTINCT sc.id) FILTER (WHERE sc.story_quality = 'excellent')::int      AS excellent_stories,
+        ROUND(AVG(sc.article_count))::int                                              AS avg_story_size,
+        ROUND(AVG(sc.avg_relevance)::numeric, 3)                                      AS avg_relevance_global,
+        ROUND(MIN(sc.avg_relevance)::numeric, 3)                                      AS min_relevance_global
+      FROM story_clusters sc
+      WHERE sc.is_recurring = false
+        AND sc.status IN ('active','ready','followed')
+        AND sc.last_seen > now() - ($1 || ' hours')::interval
+    `, [hours]);
+
+    // Per-story breakdown (sorted worst first)
+    const { rows: stories } = await query(`
+      SELECT
+        sc.id                                                                     AS story_id,
+        sc.title,
+        sc.article_count,
+        sc.story_quality,
+        sc.story_context_score,
+        ROUND(sc.avg_relevance::numeric, 3)                                      AS avg_relevance_score,
+        ROUND(MIN(sca.relevance_score)::numeric, 3)                              AS min_relevance_score,
+        ROUND(MAX(sca.relevance_score)::numeric, 3)                              AS max_relevance_score,
+        COALESCE(SUM(ma.content_words), 0)::int                                  AS total_content_words,
+        COUNT(sca.article_id) FILTER (WHERE sca.relevance_score >= 0.30)::int   AS valid_articles,
+        COUNT(sca.article_id) FILTER (WHERE sca.relevance_score  < 0.30)::int   AS discarded_articles
+      FROM story_clusters sc
+      JOIN story_cluster_articles sca ON sca.story_id = sc.id
+      JOIN monitored_articles ma      ON ma.id        = sca.article_id
+      WHERE sc.is_recurring = false
+        AND sc.status IN ('active','ready','followed')
+        AND sc.last_seen > now() - ($1 || ' hours')::interval
+      GROUP BY sc.id, sc.title, sc.article_count, sc.story_quality, sc.story_context_score, sc.avg_relevance
+      ORDER BY sc.avg_relevance ASC NULLS LAST
+      LIMIT 150
+    `, [hours]);
+
+    // Threshold simulation — what each cutoff means for existing links
+    const { rows: simulation } = await query(`
+      WITH base AS (
+        SELECT sca.story_id, sca.relevance_score
+        FROM story_cluster_articles sca
+        JOIN story_clusters sc ON sc.id = sca.story_id
+        WHERE sc.is_recurring = false
+          AND sc.status IN ('active','ready','followed')
+          AND sc.last_seen > now() - ($1 || ' hours')::interval
+      )
+      SELECT
+        t.threshold::float                                                       AS threshold,
+        COUNT(*)::int                                                            AS total_links,
+        COUNT(*) FILTER (WHERE b.relevance_score >= t.threshold)::int           AS valid_links,
+        COUNT(*) FILTER (WHERE b.relevance_score  < t.threshold)::int           AS discarded_links,
+        COUNT(DISTINCT b.story_id) FILTER (
+          WHERE b.story_id IN (
+            SELECT story_id FROM base WHERE relevance_score < t.threshold
+          )
+        )::int                                                                   AS affected_stories,
+        ROUND(COUNT(*) FILTER (WHERE b.relevance_score >= t.threshold)::numeric
+              / NULLIF(COUNT(*), 0) * 100, 1)::float                            AS pct_valid
+      FROM base b
+      CROSS JOIN (VALUES (0.20),(0.25),(0.30),(0.35),(0.40)) AS t(threshold)
+      GROUP BY t.threshold
+      ORDER BY t.threshold
+    `, [hours]);
+
+    const contaminated = stories.filter(s => (s.story_quality === 'poor')).length;
+    const clean        = stories.filter(s => ['good','excellent'].includes(s.story_quality)).length;
+
+    res.json({
+      global: { ...global, contaminated_stories: contaminated, clean_stories: clean, hours },
+      stories,
+      simulation,
+    });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/story/:id/explain — full traceability for a single story
+router.get('/story/:id/explain', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: [story] } = await query(`
+      SELECT id, title, story_quality, story_context_score, avg_relevance,
+             article_count, source_count, status, coverage_status, last_seen
+      FROM story_clusters WHERE id = $1
+    `, [req.params.id]);
+    if (!story) return res.status(404).json({ error: 'Story not found' });
+
+    const { rows: articles } = await query(`
+      SELECT
+        ma.id,
+        ma.title,
+        ma.url,
+        ma.detected_at,
+        ma.content_words,
+        ma.extraction_method,
+        ts.name               AS source_name,
+        sca.relevance_score,
+        sca.matching_reason,
+        sca.shared_keywords,
+        sca.shared_entities,
+        sca.keyword_similarity,
+        sca.entity_similarity,
+        sca.title_similarity,
+        sca.linked_at
+      FROM story_cluster_articles sca
+      JOIN monitored_articles ma ON ma.id = sca.article_id
+      JOIN tracked_sources    ts ON ts.id = ma.source_id
+      WHERE sca.story_id = $1
+      ORDER BY sca.relevance_score DESC, sca.linked_at ASC
+    `, [req.params.id]);
+
+    res.json({ story, articles });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/clustering-outliers — audit of problematic stories + global SQL report
+router.get('/clustering-outliers', requireAuth, async (req, res, next) => {
+  try {
+    // Global audit summary (Fase 5 — SQL audit report)
+    const { rows: [summary] } = await query(`
+      SELECT
+        COUNT(*)::int                                                                       AS total_stories,
+        COUNT(*) FILTER (WHERE article_count = 0 AND status != 'stale')::int               AS orphan_stories,
+        COUNT(*) FILTER (
+          WHERE story_context_score = 0 AND article_count > 0 AND status != 'stale'
+        )::int                                                                             AS context_score_zero,
+        ROUND(AVG(story_context_score) FILTER (
+          WHERE article_count > 0 AND status != 'stale'
+        ))::int                                                                            AS avg_context_score,
+        ROUND(AVG(avg_relevance) FILTER (WHERE status != 'stale')::numeric, 3)            AS avg_relevance,
+        COUNT(*) FILTER (
+          WHERE story_quality = 'poor' AND status != 'stale'
+        )::int                                                                             AS contaminated_stories
+      FROM story_clusters
+      WHERE is_recurring = false
+    `);
+
+    // Orphan stories (article_count = 0, not yet stale)
+    const { rows: orphans } = await query(`
+      SELECT id, title, status, created_at, updated_at
+      FROM story_clusters
+      WHERE article_count = 0
+        AND is_recurring = false
+        AND status NOT IN ('stale','followed')
+      ORDER BY created_at DESC
+      LIMIT 50
+    `);
+
+    // Contaminated stories (avg_relevance < 0.40)
+    const { rows: contaminated } = await query(`
+      SELECT id, title, avg_relevance, story_quality, article_count, story_context_score, status
+      FROM story_clusters
+      WHERE avg_relevance < 0.40
+        AND is_recurring = false
+        AND status != 'stale'
+        AND article_count > 0
+      ORDER BY avg_relevance ASC NULLS LAST
+      LIMIT 50
+    `);
+
+    // High weak-link ratio (>30% links below 0.30)
+    const { rows: high_weak_link } = await query(`
+      SELECT
+        sc.id,
+        sc.title,
+        sc.article_count,
+        sc.avg_relevance,
+        sc.story_quality,
+        COUNT(*) FILTER (WHERE sca.relevance_score < 0.30)::int                           AS weak_links,
+        ROUND(
+          COUNT(*) FILTER (WHERE sca.relevance_score < 0.30)::numeric
+          / NULLIF(COUNT(*), 0) * 100, 1
+        )::float                                                                           AS weak_pct
+      FROM story_clusters sc
+      JOIN story_cluster_articles sca ON sca.story_id = sc.id
+      WHERE sc.is_recurring = false
+        AND sc.status != 'stale'
+      GROUP BY sc.id, sc.title, sc.article_count, sc.avg_relevance, sc.story_quality
+      HAVING COUNT(*) FILTER (WHERE sca.relevance_score < 0.30)::float
+             / NULLIF(COUNT(*), 0) > 0.30
+      ORDER BY weak_pct DESC
+      LIMIT 50
+    `);
+
+    // Active stories with context_score = 0 despite having articles
+    const { rows: context_score_zero } = await query(`
+      SELECT id, title, article_count, avg_relevance, story_quality, story_context_score, status
+      FROM story_clusters
+      WHERE story_context_score = 0
+        AND article_count > 0
+        AND is_recurring = false
+        AND status != 'stale'
+      ORDER BY article_count DESC
+      LIMIT 50
+    `);
+
+    res.json({ summary, orphans, contaminated, high_weak_link, context_score_zero });
   } catch (e) { next(e); }
 });
 

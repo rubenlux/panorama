@@ -11,7 +11,7 @@ const router = Router();
 // GET /opportunities — story-derived editorial opportunities, sorted by composite score
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit) || 30, 100);
+    const limit  = Math.min(parseInt(req.query.limit) || 30, 300);
     const status = req.query.status || 'pending';
     const type   = req.query.type || null;
 
@@ -117,17 +117,48 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
     if (!oppRows[0]) return res.status(404).json({ error: 'Opportunity not found' });
     const opp = oppRows[0];
 
-    // Articles from the parent story
+    // Enrichment gate — require ≥70% of articles to have full text
+    const { rows: [enr] } = await query(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE ma.extraction_method IN ('fetch','playwright'))::int AS enriched
+      FROM story_cluster_articles sca
+      JOIN monitored_articles ma ON ma.id = sca.article_id
+      WHERE sca.story_id = $1
+    `, [opp.story_id]);
+    const enrCoverage = enr.total > 0 ? enr.enriched / enr.total : 0;
+    if (enr.total > 0 && enrCoverage < 0.70) {
+      return res.status(422).json({
+        error: `La historia base aún está siendo enriquecida (${Math.round(enrCoverage * 100)}% completado). Esperando captura completa de artículos antes de generar el dossier.`,
+        enrichment_coverage: Math.round(enrCoverage * 100),
+        total_articles: enr.total,
+        enriched_articles: enr.enriched,
+      });
+    }
+
+    // Articles from the parent story — exclude contaminated (relevance < 0.30)
     const { rows: articles } = await query(`
       SELECT ma.title, ma.url, ma.summary, ma.published_at, ma.content_text, ma.extraction_method,
-             ts.name AS source_name, sca.relevance_score
+             ma.content_words, ts.name AS source_name, sca.relevance_score
       FROM story_cluster_articles sca
       JOIN monitored_articles ma ON ma.id = sca.article_id
       JOIN tracked_sources    ts ON ts.id = ma.source_id
       WHERE sca.story_id = $1
+        AND sca.relevance_score >= 0.30
       ORDER BY sca.relevance_score DESC, ma.detected_at DESC
       LIMIT 12
     `, [opp.story_id]);
+
+    // Log AI context for traceability
+    query(`
+      INSERT INTO ai_generation_logs (story_id, generation_type, article_count, article_titles, total_words_sent)
+      VALUES ($1, 'opportunity_dossier', $2, $3, $4)
+    `, [
+      opp.story_id,
+      articles.length,
+      JSON.stringify(articles.map(a => a.title)),
+      articles.reduce((s, a) => s + (a.content_words || 0), 0),
+    ]).catch(() => {});
 
     // Monitor entities for the story
     const { rows: entities } = await query(`

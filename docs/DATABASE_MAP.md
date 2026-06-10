@@ -1,11 +1,11 @@
 # DATABASE_MAP.md
 
 > Mapa completo de la base de datos. Actualizar ante cualquier migración.
-> Última actualización: 2026-06-09 (Sprint 5) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
+> Última actualización: 2026-06-10 (Sprint 6.3) | Motor: PostgreSQL 15 | DB: newsdb | Port: 5435
 
 ---
 
-## Tablas del Sistema (37 tablas)
+## Tablas del Sistema (52 tablas)
 
 ### `articles`
 Tabla principal del contenido editorial.
@@ -711,6 +711,184 @@ Temas inteligentes que agrupan artículos, investigaciones, entidades y eventos.
 
 ---
 
+---
+
+## Tablas post-Sprint 5 *(Sprints 5.3–6.3)*
+
+### `tracked_sources` — columnas agregadas
+| Columna | Tipo | Default |
+|---|---|---|
+| verification_status | VARCHAR(20) | `'pending'` — pending\|verified\|failed\|approved |
+| verified_at | TIMESTAMPTZ | — |
+| verified_by | INTEGER FK → users.id | — |
+| trust_score | FLOAT | `5.0` |
+| last_verification_notes | TEXT | — |
+| last_format_detected | VARCHAR(30) | — — rss\|atom\|news-sitemap\|sitemap-index\|urlset |
+
+### `source_verifications` *(Sprint 5.x)*
+Historial de verificaciones de fuentes RSS.
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| source_id | UUID FK → tracked_sources | — |
+| status | VARCHAR(20) | — |
+| checked_by | INTEGER FK → users.id | — |
+| notes | TEXT | — |
+| http_status | INTEGER | — |
+| response_ms | INTEGER | — |
+| created_at | TIMESTAMPTZ | now() |
+
+### `monitored_articles` — columnas agregadas *(Sprint 5.8)*
+| Columna | Tipo | Default |
+|---|---|---|
+| content_text | TEXT | — — texto completo del artículo |
+| content_words | INTEGER | — — word count de content_text |
+| extraction_method | VARCHAR(20) | — — fetch\|playwright\|paywall\|rss_only\|NULL(pending) |
+| extracted_at | TIMESTAMPTZ | — |
+
+### `trend_clusters` *(Sprint 5.3)*
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| entity_id | UUID FK → knowledge_entities | — |
+| status | VARCHAR(20) | `'active'` — active\|summarizing\|ready\|stale |
+| headline | TEXT | — |
+| summary | TEXT | — |
+| editorial_angles | JSONB | `'[]'` |
+| article_count | INTEGER | 0 |
+| source_count | INTEGER | 0 |
+| last_seen | TIMESTAMPTZ | now() |
+| created_at / updated_at | TIMESTAMPTZ | — |
+
+### `trend_cluster_articles` *(Sprint 5.3)*
+| Columna | Tipo |
+|---|---|
+| trend_id | UUID FK → trend_clusters |
+| article_id | UUID FK → monitored_articles |
+UNIQUE(trend_id, article_id)
+
+### `story_clusters` *(Sprint 5.5)*
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| title | TEXT | — |
+| slug | TEXT UNIQUE | — |
+| story_type | VARCHAR(50) | — — news\|breaking_news\|event\|politics\|etc |
+| summary | TEXT | — |
+| editorial_opportunities | JSONB | `'[]'` |
+| keywords | JSONB | `'[]'` |
+| importance_score | INTEGER | 0 |
+| coverage_status | VARCHAR(30) | — — monitoring\|growing\|breaking\|cooling\|archived |
+| status | VARCHAR(30) | `'active'` — active\|summarizing\|ready\|stale\|followed |
+| source_count | INTEGER | 0 |
+| article_count | INTEGER | 0 |
+| is_recurring | BOOLEAN | false |
+| first_seen / last_seen | TIMESTAMPTZ | — |
+| story_quality | VARCHAR(10) | `'fair'` — poor\|fair\|good\|excellent *(Sprint 6.2)* |
+| avg_relevance | FLOAT | — — AVG(relevance_score) de artículos *(Sprint 6.2)* |
+| story_context_score | INTEGER | 0 — 0-100: relevance×35 + depth×25 + diversity×15 + enrichment×25 *(Sprint 6.2)* |
+
+### `story_cluster_articles` *(Sprint 5.5)*
+| Columna | Tipo | Default |
+|---|---|---|
+| story_id | UUID FK → story_clusters | — |
+| article_id | UUID FK → monitored_articles | — |
+| relevance_score | FLOAT | 1.0 — Jaccard similarity (0.20–1.0) |
+| linked_at | TIMESTAMPTZ | — |
+| matching_reason | TEXT | — — 'story_seed'\|'keyword_jaccard'\|'legacy' *(Sprint 6.3)* |
+| shared_keywords | JSONB | `'[]'` — keywords que causaron el match *(Sprint 6.3)* |
+| shared_entities | JSONB | `'[]'` — entidades compartidas *(Sprint 6.3)* |
+| keyword_similarity | NUMERIC | — — score Jaccard de keywords *(Sprint 6.3)* |
+| title_similarity | NUMERIC | — — mismo que keyword_similarity para story matches *(Sprint 6.3)* |
+| entity_similarity | NUMERIC | — — para uso futuro *(Sprint 6.3)* |
+UNIQUE(story_id, article_id)
+
+### `story_entities` *(Sprint 5.5)*
+| Columna | Tipo |
+|---|---|
+| story_id | UUID FK → story_clusters |
+| entity_id | UUID FK → knowledge_entities |
+| role | VARCHAR(50) |
+UNIQUE(story_id, entity_id)
+
+### `story_opportunities` *(Sprint 5.6.1)*
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| story_cluster_id | UUID FK → story_clusters | — |
+| title | TEXT NOT NULL | — |
+| description | TEXT | — |
+| opportunity_type | VARCHAR(20) | — — NEWS\|SEO\|ANALYSIS\|EXPLAINER\|SOCIAL\|FACT_CHECK\|LIVE_COVERAGE\|OPINION |
+| traffic_score | INTEGER | — — 0-100 |
+| seo_score | INTEGER | — — 0-100 |
+| urgency_score | INTEGER | — — 0-100 |
+| editorial_score | INTEGER | — — 0-100 |
+| composite_score | FLOAT | — — editorial×0.4 + traffic×0.3 + seo×0.2 + urgency×0.1 |
+| status | VARCHAR(20) | `'pending'` — pending\|in_progress\|done\|dismissed |
+| created_at / updated_at | TIMESTAMPTZ | — |
+
+### `event_clusters` *(Sprint 5.6)*
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| headline | TEXT | — |
+| summary | TEXT | — |
+| event_type | VARCHAR(50) | `'general'` |
+| importance_score | INTEGER | 5 |
+| editorial_score | INTEGER | 0 — calcEditorialScore formula |
+| coverage_status | VARCHAR(30) | `'monitoring'` |
+| status | VARCHAR(30) | `'active'` — active\|summarizing\|followed\|stale |
+| story_count / article_count / source_count | INTEGER | 0 |
+| main_entities | JSONB | `'[]'` |
+| timeline | JSONB | `'[]'` |
+| first_detected_at / last_updated_at / updated_at | TIMESTAMPTZ | — |
+
+### `event_cluster_stories` *(Sprint 5.6)*
+| Columna | Tipo |
+|---|---|
+| event_id | UUID FK → event_clusters |
+| story_id | UUID FK → story_clusters |
+| linked_at | TIMESTAMPTZ |
+UNIQUE(event_id, story_id)
+
+### `editorial_opportunities` *(Sprint 5.6 — eventos)*
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| event_id | UUID FK → event_clusters | — |
+| type | VARCHAR(50) | — — noticia\|analisis\|reportaje\|etc |
+| title | TEXT | — |
+| reason | TEXT | — |
+| seo_value / traffic_potential | FLOAT | — |
+| difficulty | VARCHAR(20) | — |
+| status | VARCHAR(20) | `'pending'` — pending\|in_progress\|done\|dismissed |
+| created_at | TIMESTAMPTZ | — |
+
+### `research_topics` — columnas agregadas *(Sprint 5.7)*
+| Columna | Tipo |
+|---|---|
+| source_type | VARCHAR(20) | — story\|event\|opportunity\|manual |
+| source_id | UUID | — ID del objeto origen |
+| source_title | TEXT | — |
+| source_score | INTEGER | — importance/editorial score del origen |
+
+### `ai_generation_logs` *(Sprint 6.2)*
+Trazabilidad de exactamente qué contexto recibió Claude en cada llamada.
+| Columna | Tipo | Default |
+|---|---|---|
+| id | UUID PK | gen_random_uuid() |
+| story_id | UUID FK → story_clusters (nullable) | — |
+| event_id | UUID FK → event_clusters (nullable) | — |
+| generation_type | VARCHAR(50) NOT NULL | — — story_summary\|opportunities\|event_summary\|story_dossier\|event_dossier\|opportunity_dossier |
+| article_count | INTEGER | 0 |
+| article_titles | JSONB | `'[]'` |
+| total_words_sent | INTEGER | 0 |
+| created_at | TIMESTAMPTZ | now() |
+
+**Índices:** ai_gen_logs_story_idx, ai_gen_logs_event_idx, ai_gen_logs_created_idx
+
+---
+
 ## Migraciones Conocidas
 
 | Script | Propósito |
@@ -727,6 +905,14 @@ Temas inteligentes que agrupan artículos, investigaciones, entidades y eventos.
 | `scripts/migrate_news_intelligence.js` | Sprint 3: `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics` |
 | `scripts/migrate_editorial_workflow.js` | Sprint 4: `editorial_dossiers` + columnas `origin`/`dossier_id` en `articles` |
 | `scripts/migrate_topic_intelligence.js` | Sprint 5: `topics`, `topic_articles`, `topic_research`, `topic_entities`, `topic_events` + columnas `coverage_scope`/`region` en `articles` |
+| `scripts/migrate_story_clusters.js` | Sprint 5.5: `story_clusters`, `story_cluster_articles`, `story_entities` |
+| `scripts/migrate_source_verification.js` | Sprint 5.x: `source_verifications`, columnas de verificación en `tracked_sources` |
+| `scripts/migrate_article_content.js` | Sprint 5.8: `content_text`, `content_words`, `extraction_method`, `extracted_at` en `monitored_articles` |
+| `scripts/migrate_event_clusters.js` | Sprint 5.6: `event_clusters`, `event_cluster_stories`, `editorial_opportunities` |
+| `scripts/migrate_story_opportunities.js` | Sprint 5.6.1: `story_opportunities` |
+| `scripts/migrate_dossier_traceability.js` | Sprint 5.7: columnas `source_type/id/title/score` en `research_topics` |
+| `scripts/migrate_clustering_quality.js` | Sprint 6.2: `story_quality`, `avg_relevance`, `story_context_score`, `ai_generation_logs` |
+| `scripts/migrate_story_traceability.js` | Sprint 6.3: trazabilidad en `story_cluster_articles`, fix `story_context_score`, stale huérfanas |
 
 ## Estado de Índices
 > Pendiente de documentar. Ejecutar: `SELECT indexname, tablename, indexdef FROM pg_indexes WHERE schemaname = 'public' ORDER BY tablename`

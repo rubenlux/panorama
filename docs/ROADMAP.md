@@ -1,7 +1,7 @@
 # ROADMAP.md
 
 > Estado del producto y próximos pasos.
-> Última actualización: 2026-06-09 (Sprint 5 completado)
+> Última actualización: 2026-06-10 (Sprint 6.3 completado)
 
 ---
 
@@ -16,6 +16,17 @@
 - [x] **Sprint 3 — News Intelligence Engine** (monitor RSS proactivo: `tracked_sources`, `monitored_articles`, `article_entity_matches`, `trending_topics` + worker 60s + panel `MediaMonitor.jsx`)
 - [x] **Sprint 4 — Editorial Workflow Engine** (`editorial_dossiers` + Story Builder + Article Generator + PostEditor prefill con SEO completo + métricas por origen)
 - [x] **Sprint 5 — Topic Intelligence Engine** (`topics` + 4 relation tables + hubs regionales NEA + `/topic/:slug` + `/region/:slug` en web público + coverage_scope/region en articles)
+- [x] **Sprint 5.3 — Trend Clusters** (`trend_clusters`, `trend_cluster_articles`, `summarizePendingClusters()`)
+- [x] **Sprint 5.5 — Story Intelligence Engine** (`story_clusters`, `story_cluster_articles`, `story_entities`, Jaccard keyword matching, `detectStories()`, `summarizePendingStories()`)
+- [x] **Sprint 5.6 — Event Intelligence Engine** (`event_clusters`, `event_cluster_stories`, `detectEvents()`, `summarizePendingEvents()`)
+- [x] **Sprint 5.6.1 — Editorial Opportunity Engine** (`story_opportunities`, `generateOpportunitiesForStories()`, rutas `/opportunities`)
+- [x] **Sprint 5.7 — Dossier desde Monitor** (`POST /:id/create-dossier` en stories/events/opportunities → pipeline completo)
+- [x] **Sprint 5.8 — Full Article Acquisition** (`content_text`, `content_words`, `extraction_method` en `monitored_articles`, `ArticleFetcher.js`, `fetchPendingArticleContent()`)
+- [x] **Sprint 5.x — Source Verification** (`verification_status`, `trust_score` en `tracked_sources`, `source_verifications`, endpoints verify/approve)
+- [x] **Sprint 6.0 — News Sitemap + Enrichment Gate** (parsers Google News Sitemap, `ENRICHMENT_GATE_COVERAGE=0.70`, gate en worker y rutas)
+- [x] **Sprint 6.1 — Bug fixes** (duplicate events, editorial_score=0, EventCard coverageOk scope, display limits 150)
+- [x] **Sprint 6.2 — Story Clustering Quality Engine** (`story_quality`, `avg_relevance`, `story_context_score` en `story_clusters`, `ai_generation_logs`, `RELEVANCE_FILTER_THRESHOLD=0.30`, `GET /monitor/clustering-audit`, badges CMS)
+- [x] **Sprint 6.3 — Story Quality Forensics** (trazabilidad en `story_cluster_articles`, fix `story_context_score`, huérfanas → stale, `GET /monitor/story/:id/explain`, `GET /monitor/clustering-outliers`, docs actualizados)
 - [x] Branding: título "PANORAMA" + favicon P/punto rojo en DB y `web/index.html`
 - [x] Repositorio GitHub conectado (`panorama.git`) + `.gitignore` raíz
 - [x] Docker-compose: `restart: unless-stopped` (fix CPU spike VmmemWSL)

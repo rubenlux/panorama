@@ -226,7 +226,7 @@ export default function MediaMonitor() {
   }, []);
 
   const loadArticles = useCallback(async () => {
-    try { const d = await apiJson('/monitor/articles?hours=24&limit=80', { auth: true }); setArticles(d.items || []); } catch {}
+    try { const d = await apiJson('/monitor/articles?hours=24&limit=150', { auth: true }); setArticles(d.items || []); } catch {}
   }, []);
 
   const loadTrending = useCallback(async () => {
@@ -234,15 +234,15 @@ export default function MediaMonitor() {
   }, []);
 
   const loadStories = useCallback(async () => {
-    try { const d = await getStories({ minArticles: 2, limit: 30 }); setStories(d.items || []); } catch {}
+    try { const d = await getStories({ minArticles: 2, limit: 150 }); setStories(d.items || []); } catch {}
   }, []);
 
   const loadEvents = useCallback(async () => {
-    try { const d = await getEvents({ limit: 25 }); setEvents(d.items || []); } catch {}
+    try { const d = await getEvents({ limit: 150 }); setEvents(d.items || []); } catch {}
   }, []);
 
   const loadOpps = useCallback(async () => {
-    try { const d = await getOpportunities({ limit: 40 }); setEditOpps(d.items || []); } catch {}
+    try { const d = await getOpportunities({ limit: 300 }); setEditOpps(d.items || []); } catch {}
   }, []);
 
   useEffect(() => {
@@ -388,7 +388,7 @@ export default function MediaMonitor() {
     { id: 'events',  label: '🎯 Eventos',       count: events.length },
     { id: 'feed',    label: '📰 Feed',          count: articles.length },
     { id: 'trending',label: '📖 Historias',     count: stories.length },
-    { id: 'opps',    label: '⚡ Oportunidades', count: editOpps.filter(o => o.status === 'pending').length, alert: editOpps.filter(o => o.status === 'pending').length > 0 },
+    { id: 'opps',    label: '⚡ Oportunidades', count: stats?.opportunities ?? editOpps.filter(o => o.status === 'pending').length, alert: (stats?.opportunities ?? editOpps.filter(o => o.status === 'pending').length) > 0 },
     { id: 'sources', label: '📡 Fuentes',       count: sources.length },
   ];
 
@@ -1008,14 +1008,29 @@ const STORY_TYPE_ICON = {
   international: '🌍', culture: '🎭', news: '📰',
 };
 
+const QUALITY_STYLE = {
+  poor:      { emoji: '🔴', label: 'Cluster contaminado', bg: '#fee2e2', color: '#b91c1c' },
+  fair:      { emoji: '🟡', label: 'Revisar cluster',     bg: '#fef9c3', color: '#a16207' },
+  good:      { emoji: '🟢', label: 'Cluster limpio',      bg: '#d1fae5', color: '#065f46' },
+  excellent: { emoji: '🟢', label: 'Cluster limpio',      bg: '#d1fae5', color: '#065f46' },
+};
+
 function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
-  const isReady    = s.status === 'ready';
-  const isFollowed = s.status === 'followed';
+  const isReady       = s.status === 'ready';
+  const isFollowed    = s.status === 'followed';
   const isSummarizing = s.status === 'summarizing';
-  const covStyle   = COVERAGE_STYLE[s.coverage_status] || COVERAGE_STYLE.monitoring;
-  const typeIcon   = STORY_TYPE_ICON[s.story_type] || '📰';
-  const sourceBadges = (Array.isArray(s.sources) ? s.sources : []).slice(0, 4);
+  const covStyle      = COVERAGE_STYLE[s.coverage_status] || COVERAGE_STYLE.monitoring;
+  const typeIcon      = STORY_TYPE_ICON[s.story_type] || '📰';
+  const sourceBadges  = (Array.isArray(s.sources) ? s.sources : []).slice(0, 4);
   const opportunities = Array.isArray(s.editorial_opportunities) ? s.editorial_opportunities : [];
+  const coverage      = s.enrichment_coverage ?? null;  // 0-100 or null
+  const coverageOk    = coverage === null || coverage >= 70;
+  const quality       = s.story_quality || null;
+  const qStyle        = QUALITY_STYLE[quality] || null;
+  const contextScore  = s.story_context_score ?? null;
+  const validCount    = s.valid_article_count ?? s.article_count;
+  const discarded     = s.article_count - validCount;
+  const avgRelPct     = s.avg_relevance != null ? Math.round(s.avg_relevance * 100) : null;
 
   return (
     <div style={{
@@ -1030,10 +1045,46 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
         <span style={{ fontSize: 11, fontWeight: 700, background: covStyle.bg, color: covStyle.color, padding: '2px 9px', borderRadius: 20 }}>
           {covStyle.label}
         </span>
-        <div style={{ fontSize: 11, color: '#9ca3af' }}>
-          {typeIcon} {s.article_count} arts · {s.source_count} {s.source_count === 1 ? 'fuente' : 'fuentes'} · {timeAgo(s.last_seen)}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {coverage !== null && (
+            <span title={`Enriquecimiento: ${coverage}% de artículos con texto completo`} style={{
+              fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 10,
+              background: coverageOk ? '#d1fae5' : '#fef3c7',
+              color:      coverageOk ? '#065f46' : '#92400e',
+            }}>
+              {coverageOk ? '✓' : '⏳'} {coverage}%
+            </span>
+          )}
+          {qStyle && (
+            <span title={`Calidad del cluster: ${qStyle.label}. Relevancia promedio: ${avgRelPct}%`} style={{
+              fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 10,
+              background: qStyle.bg, color: qStyle.color,
+            }}>
+              {qStyle.emoji} {avgRelPct}%
+            </span>
+          )}
+          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+            {typeIcon} {s.article_count} arts · {s.source_count} {s.source_count === 1 ? 'fuente' : 'fuentes'} · {timeAgo(s.last_seen)}
+          </div>
         </div>
       </div>
+
+      {/* Cluster diagnostic row — only shown when contamination detected */}
+      {quality === 'poor' && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '6px 10px', borderRadius: 8, background: '#fff1f2', border: '1px solid #fecdd3' }}>
+          <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 700 }}>⚠ Cluster contaminado</span>
+          <span style={{ fontSize: 11, color: '#6b7280' }}>·</span>
+          <span style={{ fontSize: 11, color: '#374151' }}>{validCount} válidos</span>
+          {discarded > 0 && <span style={{ fontSize: 11, color: '#b91c1c' }}>{discarded} descartados (relevancia &lt; 30%)</span>}
+          {contextScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>· Contexto: {contextScore}/100</span>}
+        </div>
+      )}
+      {quality === 'fair' && discarded > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '4px 8px', borderRadius: 8, background: '#fefce8', border: '1px solid #fef08a' }}>
+          <span style={{ fontSize: 11, color: '#a16207', fontWeight: 600 }}>🟡 {discarded} artículo{discarded > 1 ? 's' : ''} de baja relevancia excluido{discarded > 1 ? 's' : ''} del contexto IA</span>
+          {contextScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>· Score: {contextScore}/100</span>}
+        </div>
+      )}
 
       {/* Title / AI headline */}
       <div>
@@ -1096,9 +1147,15 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
         ) : (
           <span style={{ padding: '7px 10px', fontSize: 11, color: '#10b981', fontWeight: 700 }}>✓ Siguiendo</span>
         )}
-        <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
-          {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
-        </button>
+        {coverageOk ? (
+          <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+            {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
+          </button>
+        ) : (
+          <div title={`Solo ${coverage}% enriquecido. Requiere ≥70%.`} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, background: '#fef3c7', border: '1px solid #fde68a', fontSize: 11, color: '#92400e', textAlign: 'center', lineHeight: 1.3 }}>
+            ⏳ Enriqueciendo ({coverage}%)
+          </div>
+        )}
       </div>
     </div>
   );

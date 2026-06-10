@@ -5,6 +5,68 @@
 
 ---
 
+## 2026-06-10 — Sprints 5.3–6.3
+
+**Decisión:** Story Context Score como métrica compuesta de calidad editorial.
+
+**Problema:** `avg_relevance` solo mide la cohesión del clustering. No refleja si el cluster tiene suficiente contenido para generar un buen resumen. Se necesitaba una métrica que capturara múltiples dimensiones de calidad.
+
+**Decisión tomada:** `story_context_score` = `avg_relevance×35 + content_depth×25 + source_diversity×15 + enrichment×25` (0-100). Pesos elegidos para priorizar relevancia (lo más importante para calidad editorial) sobre profundidad de contenido y diversidad de fuentes.
+
+**Alternativas consideradas:** Solo `avg_relevance` (descartada: no captura profundidad), percentil de artículos enriquecidos (descartada: no diferencia entre cluster pequeño y grande).
+
+---
+
+**Decisión:** Filtro `RELEVANCE_FILTER_THRESHOLD = 0.30` — exclusión de contexto IA sin borrar de DB.
+
+**Problema:** El threshold de matching Jaccard (0.20) permite artículos de baja relevancia en historias. Esos artículos contaminan los prompts enviados a Claude, degradando la calidad de resúmenes y oportunidades.
+
+**Decisión tomada:** Artículos con `relevance_score < 0.30` se excluyen de toda query que construye contexto para Claude (worker + rutas dossier). Los links se preservan en DB para auditoría.
+
+**Por qué 0.30 y no un threshold más alto:** 0.30 elimina los outliers claros (0.20–0.29) sin afectar la mayoría de links válidos (0.30+). Simulación de thresholds disponible en `GET /monitor/clustering-audit`.
+
+---
+
+**Decisión:** Trazabilidad en `story_cluster_articles` — guardar el "porqué" de cada asociación.
+
+**Problema:** Con solo `relevance_score` no podemos auditar qué keywords/entidades causaron que un artículo entrara a una historia. Imposible validar manualmente si el matching fue correcto.
+
+**Decisión tomada:** Al crear cada link se guardan `matching_reason`, `shared_keywords`, `keyword_similarity` y `title_similarity`. Links históricos marcados como `'legacy'`. Endpoint `GET /monitor/story/:id/explain` expone la información en forma legible.
+
+---
+
+**Decisión:** Enrichment Gate 70% antes de IA.
+
+**Problema:** Claude generaba resúmenes solo con títulos y snippets RSS (200 chars), produciendo oportunidades genéricas sin valor editorial real.
+
+**Decisión tomada:** `ENRICHMENT_GATE_COVERAGE = 0.70`. Una historia no avanza a summarization hasta que 70% de sus artículos tienen `extraction_method IN ('fetch','playwright')`. Las rutas dossier devuelven HTTP 422 si no se cumple el gate.
+
+---
+
+**Decisión:** Story Intelligence via Jaccard de keywords de título (Sprint 5.5).
+
+**Problema:** RSS de múltiples fuentes publica el mismo evento bajo titulares distintos. Sin clustering, cada artículo sobre "Milei en el G7" era un ítem independiente sin contexto histórico.
+
+**Decisión tomada:** Clustering automático por similitud Jaccard de keywords extraídas de títulos. Threshold 0.20 calibrado para capturar cobertura amplia; threshold 0.30 como filtro de calidad para IA. NLP sin modelos — lista de stopwords + mínimo 4 caracteres. Funciona en tiempo real en cada ciclo de 60s.
+
+---
+
+**Decisión:** Source Verification — trust_score y verificación editorial.
+
+**Problema:** Cualquier URL RSS podía agregarse al monitor. Sin mecanismo de verificación, fuentes caídas o con HTML en lugar de XML degradaban el pipeline.
+
+**Decisión tomada:** `POST /monitor/sources/:id/verify` detecta el formato del feed (RSS/Atom/Sitemap/etc.), asigna `trust_score` basado en latencia y HTTP status. `POST /monitor/sources/:id/approve` es una capa editorial adicional. `trust_score` persiste en DB para métricas de calidad de fuentes.
+
+---
+
+**Decisión:** Separación RESEARCH vs MONITOR entities.
+
+**Problema:** Las entidades creadas manualmente en Knowledge Base (RESEARCH) tenían requisitos distintos a las descubiertas automáticamente por NER en titulares (MONITOR). Mezclarlas contaminaría el KB con ruido.
+
+**Decisión tomada:** `knowledge_entities.entity_origin` distingue 'RESEARCH' (manual, curada) de 'MONITOR' (automática, efímera). El matcheo de artículos busca primero RESEARCH, luego MONITOR. Auto-research triggers solo se crean desde entidades MONITOR con suficiente masa.
+
+---
+
 ## 2026-06-09
 
 **Decisión:** Sprint 5 — Topic Intelligence Engine: temas periodísticos como capa de agregación.

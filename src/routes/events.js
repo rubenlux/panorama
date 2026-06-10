@@ -12,7 +12,7 @@ const router = Router();
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const minStories = parseInt(req.query.min_stories) || 1;
-    const limit      = Math.min(parseInt(req.query.limit) || 25, 50);
+    const limit      = Math.min(parseInt(req.query.limit) || 25, 200);
 
     const { rows } = await query(`
       SELECT
@@ -199,18 +199,51 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
     if (!eventRows[0]) return res.status(404).json({ error: 'Event not found' });
     const event = eventRows[0];
 
-    // Articles across all stories in the event
+    // Enrichment gate — require ≥70% of articles across all event stories
+    const { rows: [enr] } = await query(`
+      SELECT
+        COUNT(DISTINCT ma.id)::int AS total,
+        COUNT(DISTINCT ma.id) FILTER (WHERE ma.extraction_method IN ('fetch','playwright'))::int AS enriched
+      FROM event_cluster_stories ecs
+      JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
+      JOIN monitored_articles ma ON ma.id = sca.article_id
+      WHERE ecs.event_id = $1
+    `, [eventId]);
+    const enrCoverage = enr.total > 0 ? enr.enriched / enr.total : 0;
+    if (enr.total > 0 && enrCoverage < 0.70) {
+      return res.status(422).json({
+        error: `El evento aún está siendo enriquecido (${Math.round(enrCoverage * 100)}% completado). Esperando captura completa de artículos antes de generar el dossier.`,
+        enrichment_coverage: Math.round(enrCoverage * 100),
+        total_articles: enr.total,
+        enriched_articles: enr.enriched,
+      });
+    }
+
+    // Articles across all stories in the event — exclude contaminated (relevance < 0.30)
     const { rows: articles } = await query(`
       SELECT DISTINCT ON (ma.id) ma.title, ma.url, ma.summary, ma.published_at,
-             ma.content_text, ma.extraction_method, ts.name AS source_name, sca.relevance_score
+             ma.content_text, ma.extraction_method, ma.content_words,
+             ts.name AS source_name, sca.relevance_score
       FROM event_cluster_stories ecs
       JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
       JOIN monitored_articles ma ON ma.id = sca.article_id
       JOIN tracked_sources ts ON ts.id = ma.source_id
       WHERE ecs.event_id = $1
+        AND sca.relevance_score >= 0.30
       ORDER BY ma.id, sca.relevance_score DESC
       LIMIT 15
     `, [eventId]);
+
+    // Log AI context for traceability
+    query(`
+      INSERT INTO ai_generation_logs (event_id, generation_type, article_count, article_titles, total_words_sent)
+      VALUES ($1, 'event_dossier', $2, $3, $4)
+    `, [
+      eventId,
+      articles.length,
+      JSON.stringify(articles.map(a => a.title)),
+      articles.reduce((s, a) => s + (a.content_words || 0), 0),
+    ]).catch(() => {});
 
     // Entities from all stories in the event (deduplicated)
     const { rows: entities } = await query(`
