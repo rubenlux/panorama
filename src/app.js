@@ -30,6 +30,10 @@ import knowledgeRoutes from "./routes/knowledge.js";
 import monitorRoutes   from "./routes/monitor.js";
 import editorialWorkflowRoutes from "./routes/editorial_workflow.js";
 import topicsRoutes from "./routes/topics.js";
+import trendsRoutes from "./routes/trends.js";
+import storiesRoutes from "./routes/stories.js";
+import eventsRoutes from "./routes/events.js";
+import opportunitiesRoutes from "./routes/opportunities.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -75,6 +79,10 @@ export function createApp() {
   app.use("/monitor",   monitorRoutes);
   app.use("/editorial-workflow", editorialWorkflowRoutes);
   app.use("/topics", topicsRoutes);
+  app.use("/trends", trendsRoutes);
+  app.use("/stories", storiesRoutes);
+  app.use("/events", eventsRoutes);
+  app.use("/opportunities", opportunitiesRoutes);
 
 
   app.use(commentsRoutes);

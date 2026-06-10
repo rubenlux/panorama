@@ -112,3 +112,107 @@ export async function uploadFile(formData) {
   return data.media || data;
 }
 
+// ── Trends (Sprint 5.3) ───────────────────────────────────────────────────────
+
+export const getTrends = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.minArticles) qs.set('min_articles', params.minArticles);
+  if (params.limit)       qs.set('limit', params.limit);
+  return apiJson(`/trends?${qs}`, { auth: true });
+};
+
+export const getTrend = (id) =>
+  apiJson(`/trends/${id}`, { auth: true });
+
+export const getTrendArticles = (id, params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit)  qs.set('limit', params.limit);
+  if (params.offset) qs.set('offset', params.offset);
+  return apiJson(`/trends/${id}/articles?${qs}`, { auth: true });
+};
+
+export const followTrend = (id) =>
+  apiJson(`/trends/${id}/follow`, { method: 'POST', auth: true });
+
+export const createDossierFromTrend = (id) =>
+  apiJson(`/trends/${id}/create-dossier`, { method: 'POST', auth: true });
+
+// ── Stories (Sprint 5.5) ─────────────────────────────────────────────────────
+
+export const getStories = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.minArticles) qs.set('min_articles', params.minArticles);
+  if (params.limit)       qs.set('limit', params.limit);
+  if (params.includeAll)  qs.set('include_all', 'true');
+  return apiJson(`/stories?${qs}`, { auth: true });
+};
+
+export const getStory = (id) =>
+  apiJson(`/stories/${id}`, { auth: true });
+
+export const getStoryArticles = (id, params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit)  qs.set('limit', params.limit);
+  if (params.offset) qs.set('offset', params.offset);
+  return apiJson(`/stories/${id}/articles?${qs}`, { auth: true });
+};
+
+export const followStory = (id) =>
+  apiJson(`/stories/${id}/follow`, { method: 'POST', auth: true });
+
+export const createDossierFromStory = (id) =>
+  apiJson(`/stories/${id}/create-dossier`, { method: 'POST', auth: true });
+
+// ── Events (Sprint 5.6) ──────────────────────────────────────────────────────
+
+export const getEvents = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.minStories) qs.set('min_stories', params.minStories);
+  if (params.limit)      qs.set('limit', params.limit);
+  return apiJson(`/events?${qs}`, { auth: true });
+};
+
+export const getEvent = (id) =>
+  apiJson(`/events/${id}`, { auth: true });
+
+export const getEventStories = (id) =>
+  apiJson(`/events/${id}/stories`, { auth: true });
+
+export const getEventArticles = (id, params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit)  qs.set('limit', params.limit);
+  if (params.offset) qs.set('offset', params.offset);
+  return apiJson(`/events/${id}/articles?${qs}`, { auth: true });
+};
+
+export const getEventOpportunities = (id) =>
+  apiJson(`/events/${id}/opportunities`, { auth: true });
+
+export const updateOpportunityStatus = (eventId, oppId, status) =>
+  apiJson(`/events/${eventId}/opportunities/${oppId}`, { method: 'PATCH', body: { status }, auth: true });
+
+export const followEvent = (id) =>
+  apiJson(`/events/${id}/follow`, { method: 'POST', auth: true });
+
+export const createDossierFromEvent = (id) =>
+  apiJson(`/events/${id}/create-dossier`, { method: 'POST', auth: true });
+
+// ── Editorial Opportunities (Sprint 5.6.1) ───────────────────────────────────
+
+export const getOpportunities = (params = {}) => {
+  const qs = new URLSearchParams();
+  if (params.limit)  qs.set('limit', params.limit);
+  if (params.status) qs.set('status', params.status);
+  if (params.type)   qs.set('type', params.type);
+  return apiJson(`/opportunities?${qs}`, { auth: true });
+};
+
+export const getOpportunitiesSummary = () =>
+  apiJson('/opportunities/summary', { auth: true });
+
+export const updateStoryOpportunityStatus = (id, status) =>
+  apiJson(`/opportunities/${id}`, { method: 'PATCH', body: { status }, auth: true });
+
+export const createDossierFromOpportunity = (id) =>
+  apiJson(`/opportunities/${id}/create-dossier`, { method: 'POST', auth: true });
+

@@ -1191,10 +1191,23 @@ OUTPUT (JSON ONLY, sin markdown, sin texto extra):
       throw new Error("Missing ANTHROPIC_API_KEY in environment");
     }
 
+    // Build source blocks — use full content when available, RSS snippet as fallback.
+    // content_fetched=true means the source went through ArticleFetcher (Sprint 5.2).
     const sourcesText = sources
       .slice(0, 12)
-      .map((s, i) => `[${i + 1}] ${s.source_name} — ${s.title}\n${s.content?.slice(0, 300) || ''}`)
-      .join('\n\n');
+      .map((s, i) => {
+        const label   = s.content_fetched ? '📄 artículo completo' : '📰 extracto RSS';
+        const content = s.content || '';
+        // Full articles: up to 1500 words; RSS snippets: up to 300 chars
+        const body    = s.content_fetched
+          ? content.split(/\s+/).slice(0, 1500).join(' ')
+          : content.slice(0, 300);
+        return `[${i + 1}] ${s.source_name} — ${s.title} (${label})\n${body}`;
+      })
+      .join('\n\n---\n\n');
+
+    const fullCount = sources.filter(s => s.content_fetched).length;
+    const rssCount  = sources.length - fullCount;
 
     const prompt = `Eres un investigador periodístico senior. Tu tarea es sintetizar múltiples fuentes en un brief ejecutivo estructurado.
 
@@ -1203,32 +1216,34 @@ REGLAS CRÍTICAS:
 🚫 NO mezcles hechos de diferentes eventos
 ✅ CITA el número de fuente [1], [2]... cuando uses datos específicos
 ✅ INDICA cuando la información es parcial o requiere verificación
+✅ Las fuentes marcadas "artículo completo" tienen el texto íntegro — aprovéchalas para citas y datos específicos
 
 TEMA DE INVESTIGACIÓN: ${topic}
 
-FUENTES ENCONTRADAS (${sources.length} total, analizando las más relevantes):
+CORPUS DE INVESTIGACIÓN (${sources.length} fuentes: ${fullCount} artículos completos, ${rssCount} extractos RSS):
+
 ${sourcesText}
 
 Genera un brief con este JSON ESTRICTO:
 {
-  "executive_summary": "Resumen ejecutivo de 3-4 oraciones que capture el estado actual del tema. Sé específico.",
-  "key_facts": ["Hecho 1 con fuente [N]", "Hecho 2", "Hecho 3", "..."],
-  "controversies": ["Controversia o punto de debate 1", "..."],
-  "timeline": ["Evento más reciente - descripción breve", "..."],
-  "opportunities": "Ángulos periodísticos que vale la pena desarrollar",
-  "risks": "Información no verificada, contradicciones entre fuentes o vacíos importantes"
+  "executive_summary": "Resumen ejecutivo de 4-6 oraciones que capture el estado actual del tema con datos específicos. Cita hechos concretos de las fuentes.",
+  "key_facts": ["Hecho verificado con fuente [N] y dato específico", "..."],
+  "controversies": ["Punto de debate o tensión identificado en las fuentes", "..."],
+  "timeline": ["Fecha/período — evento concreto extraído de las fuentes", "..."],
+  "opportunities": "Ángulos periodísticos que vale la pena desarrollar, basados en vacíos o datos relevantes encontrados",
+  "risks": "Información no verificada, contradicciones entre fuentes, vacíos importantes o limitaciones del corpus"
 }
 
-Si las fuentes no cubren bien el tema, indicarlo en risks. JSON ONLY, sin markdown.`;
+JSON ONLY, sin markdown. Si hay artículos completos disponibles, el brief debe ser denso y específico.`;
 
     const msg = await this.anthropic.messages.create({
-      model: this.model,
-      max_tokens: 2000,
+      model:       this.model,
+      max_tokens:  3000,
       temperature: 0.2,
-      messages: [{ role: 'user', content: prompt }],
+      messages:    [{ role: 'user', content: prompt }],
     });
 
-    const text = msg.content[0].text;
+    const text  = msg.content[0].text;
     const match = text.match(/\{[\s\S]*\}/);
     if (match) return JSON.parse(match[0]);
     return JSON.parse(text);
@@ -1358,5 +1373,280 @@ REPORTE DESDE EL LUGAR:
   ]
 }
 `;
+  }
+
+  // Sprint 5.3 — Trend Intelligence
+  // Generates headline, summary, and editorial angles for a trending entity cluster.
+  async generateTrendSummary(entityName, articles) {
+    const articleList = articles
+      .map((a, i) => {
+        const date = a.published_at
+          ? new Date(a.published_at).toLocaleDateString('es-AR', { day: '2-digit', month: 'short' })
+          : 'sin fecha';
+        return `[${i + 1}] ${a.source_name} — ${date}\n${a.title}`;
+      })
+      .join('\n\n');
+
+    const sourceNames = [...new Set(articles.map(a => a.source_name).filter(Boolean))];
+
+    const prompt = `Eres un editor periodístico de Argentina. Analiza estos artículos sobre "${entityName}" y genera inteligencia editorial estructurada.
+
+ARTÍCULOS (${articles.length} artículos de ${sourceNames.length} medios: ${sourceNames.join(', ')}):
+
+${articleList}
+
+Responde SOLO con JSON válido, sin texto adicional:
+{
+  "headline": "Titular periodístico en español (máx 80 chars, sin clickbait, informativo)",
+  "summary": "Párrafo de 2-3 oraciones explicando qué está pasando, por qué es noticia, y el contexto clave",
+  "why_trending": "Una oración explicando qué disparó la cobertura ahora",
+  "editorial_angles": [
+    {
+      "type": "noticia",
+      "title": "Ángulo 1 (máx 60 chars)",
+      "description": "Qué cubriría este ángulo (1 oración)"
+    },
+    {
+      "type": "análisis",
+      "title": "Ángulo 2",
+      "description": "Qué cubriría este ángulo"
+    },
+    {
+      "type": "explicador",
+      "title": "Ángulo 3",
+      "description": "Qué cubriría este ángulo"
+    }
+  ]
+}`;
+
+    const resp = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 800,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text = resp.content[0]?.text?.trim() || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('generateTrendSummary: no JSON in response');
+
+    return JSON.parse(jsonMatch[0]);
+  }
+
+  // Sprint 5.5 — Story Intelligence Engine
+  // Generates structured editorial intelligence for a story cluster.
+  async generateStorySummary(articles, entities) {
+    const sourceNames = [...new Set(articles.map(a => a.source_name).filter(Boolean))];
+
+    const articleList = articles.map((a, i) => {
+      const age = a.detected_at
+        ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h ago'
+        : '';
+      const snippet = a.summary ? `\n   ${a.summary.slice(0, 180)}` : '';
+      return `[${i + 1}] ${a.source_name}${age ? ` (${age})` : ''}\n   ${a.title}${snippet}`;
+    }).join('\n\n');
+
+    const entityList = entities.length > 0
+      ? entities.map(e => `${e.name} (${e.entity_type}${e.role !== 'participant' ? `, ${e.role}` : ''})`).join(', ')
+      : 'no detectadas';
+
+    const prompt = `Eres editor jefe de un diario de alcance nacional en Argentina. Se detectó una historia emergente. Analiza los artículos y genera inteligencia editorial accionable.
+
+ARTÍCULOS AGRUPADOS (${articles.length} artículos · ${sourceNames.length} fuentes: ${sourceNames.join(', ')}):
+
+${articleList}
+
+ENTIDADES INVOLUCRADAS: ${entityList}
+
+INSTRUCCIONES:
+- El "headline" debe describir EL EVENTO o DESARROLLO CONCRETO, no una entidad genérica. Ej: "Valentín Barco marca ante Islandia en amistoso pre-Mundial" en lugar de "Selección Argentina".
+- El "importance_score" refleja relevancia para lectores argentinos: 9-10 = crisis o acontecimiento histórico, 7-8 = noticia relevante del día, 5-6 = interés general, 3-4 = nicho o regional, 1-2 = irrelevante o rutinario.
+- "editorial_opportunities" debe tener MÍNIMO 3 ítems concretos y publicables HOY, adaptados al evento real.
+- Si los artículos cubren el mismo evento desde distintos ángulos (ej: el partido + el gol + las tácticas), agrúpalos en UNA historia coherente.
+
+Responde SOLO con JSON válido, sin texto adicional:
+{
+  "headline": "Titular descriptivo del evento (máx 85 chars, sin clickbait)",
+  "summary": "2-3 oraciones: qué ocurre exactamente, quiénes son los protagonistas, por qué importa hoy",
+  "story_type": "uno de: news|breaking_news|event|live_event|investigation|analysis|politics|sports|technology|entertainment|economy|health|science|international|culture",
+  "importance_score": 7,
+  "coverage_status": "uno de: monitoring|growing|breaking|cooling",
+  "editorial_opportunities": [
+    {
+      "type": "noticia|análisis|fact_check|explicador|cobertura_viva|entrevista|columna",
+      "title": "Título concreto y publicable (máx 65 chars)",
+      "description": "Una oración: qué cubriría y qué valor aporta al lector"
+    }
+  ]
+}`;
+
+    const resp = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text      = resp.content[0]?.text?.trim() || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('generateStorySummary: no JSON in response');
+
+    return JSON.parse(jsonMatch[0]);
+  }
+
+  // Sprint 5.6 — Event Intelligence Engine
+  // Receives multiple story clusters + their articles and produces event-level metadata.
+  async generateEventSummary(stories, articles, entities) {
+    const sourceNames = [...new Set(articles.map(a => a.source_name).filter(Boolean))];
+
+    const storyList = stories.map((s, i) =>
+      `[Historia ${i + 1}] ${s.title}\n   Artículos: ${s.article_count} · Fuentes: ${s.source_count}`
+    ).join('\n\n');
+
+    const articleList = articles.slice(0, 20).map((a, i) => {
+      const age = a.detected_at
+        ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h'
+        : '';
+      const snippet = a.summary ? `\n   ${a.summary.slice(0, 150)}` : '';
+      return `[${i + 1}] ${a.source_name}${age ? ` (${age})` : ''}: ${a.title}${snippet}`;
+    }).join('\n\n');
+
+    const entityList = entities.length > 0
+      ? entities.map(e => e.name).join(', ')
+      : 'no detectadas';
+
+    const prompt = `Eres editor jefe de un diario nacional argentino. Se detectaron múltiples ángulos del mismo evento en distintos medios. Tu tarea es identificar EL EVENTO SUBYACENTE y generar inteligencia editorial completa.
+
+FRAGMENTOS DE COBERTURA DETECTADOS:
+${storyList}
+
+ARTÍCULOS INDIVIDUALES (${articles.length} total · ${sourceNames.length} medios: ${sourceNames.join(', ')}):
+${articleList}
+
+ENTIDADES INVOLUCRADAS: ${entityList}
+
+INSTRUCCIONES CRÍTICAS:
+1. "event_name" es el NOMBRE DEL EVENTO, no un titular de artículo. Ej: "Argentina vs Islandia", "Crisis del dólar blue", "Paro general docente". Máximo 60 chars.
+2. "headline" es el titular editorial del evento completo (más descriptivo que event_name, máx 90 chars).
+3. "importance_score": 9-10=crisis o histórico, 7-8=noticia del día, 5-6=interés general, 3-4=nicho, 1-2=rutinario.
+4. "editorial_score" se calcula: (importance_score * 4) + (fuentes >= 5 ? 25 : fuentes * 5) + (artículos >= 20 ? 15 : artículos * 0.75). Redondear.
+5. "editorial_opportunities" MÍNIMO 5 ítems. Deben ser concretos y publicables HOY. Variedad obligatoria: noticia, analisis, seo, redes, explicador.
+6. "timeline" son los hitos clave del evento en orden cronológico (máx 5 ítems).
+
+Responde SOLO con JSON válido, sin texto adicional:
+{
+  "event_name": "Nombre corto del evento (máx 60 chars)",
+  "headline": "Titular editorial completo del evento (máx 90 chars)",
+  "summary": "2-3 oraciones: qué ocurrió exactamente, quiénes son los protagonistas, por qué importa hoy en Argentina",
+  "event_type": "uno de: sports_live|sports|politics|economy|culture|science|international|breaking|investigation|analysis|entertainment|health|technology|general",
+  "importance_score": 7,
+  "editorial_score": 65,
+  "coverage_status": "uno de: monitoring|growing|breaking|cooling",
+  "main_entities": ["Nombre 1", "Nombre 2", "Nombre 3"],
+  "timeline": [
+    { "label": "Hito 1", "detail": "qué pasó" },
+    { "label": "Hito 2", "detail": "qué pasó" }
+  ],
+  "editorial_opportunities": [
+    {
+      "type": "noticia|analisis|seo|redes|explicador|entrevista|opinion|multimedia|cobertura_viva",
+      "title": "Título concreto publicable (máx 70 chars)",
+      "reason": "Por qué este contenido es valioso ahora (1 oración)",
+      "seo_value": 8,
+      "traffic_potential": "alto|medio|bajo",
+      "difficulty": "facil|medio|dificil"
+    }
+  ]
+}`;
+
+    const resp = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text      = resp.content[0]?.text?.trim() || '';
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('generateEventSummary: no JSON in response');
+
+    return JSON.parse(jsonMatch[0]);
+  }
+
+  // Sprint 5.6.1 — Editorial Opportunity Engine
+  // Generates 3-7 concrete, actionable editorial opportunities from a story cluster.
+  async generateEditorialOpportunities(story, articles, entities) {
+    const sourceNames = [...new Set(articles.map(a => a.source_name).filter(Boolean))];
+
+    const articleList = articles.slice(0, 15).map((a, i) => {
+      const age = a.detected_at
+        ? Math.round((Date.now() - new Date(a.detected_at)) / 3600000) + 'h'
+        : '';
+      const snippet = a.summary ? `\n   ${a.summary.slice(0, 120)}` : '';
+      return `[${i + 1}] ${a.source_name}${age ? ` (${age})` : ''}: ${a.title}${snippet}`;
+    }).join('\n\n');
+
+    const entityList = entities.length > 0
+      ? entities.map(e => e.name).join(', ')
+      : 'no detectadas';
+
+    const prompt = `Eres editor digital senior en un medio de comunicación argentino. Se detectó la siguiente historia y debes generar oportunidades editoriales concretas y publicables.
+
+HISTORIA DETECTADA:
+Título: ${story.title}
+${story.summary ? `Resumen: ${story.summary}` : ''}
+Tipo: ${story.story_type || 'news'} | Importancia: ${story.importance_score || 5}/10 | Estado: ${story.coverage_status || 'monitoring'}
+Fuentes que la cubren: ${sourceNames.join(', ')} (${sourceNames.length} medios)
+
+ARTÍCULOS DETECTADOS:
+${articleList}
+
+ENTIDADES INVOLUCRADAS: ${entityList}
+
+INSTRUCCIONES CRÍTICAS:
+1. Genera entre 3 y 7 oportunidades CONCRETAS. Cada una debe ser un contenido publicable HOY.
+2. Los títulos deben ser específicos y publicables, no genéricos. Incluir nombres propios y datos reales.
+3. OBLIGATORIO incluir al menos: 1 NEWS, 1 SEO, 1 ANALYSIS o EXPLAINER.
+4. Los scores (0-100) reflejan el potencial real para medios digitales en Argentina:
+   - traffic_score: ¿cuántas personas buscarán este contenido activamente?
+   - seo_score: ¿tiene keywords con alto volumen de búsqueda en Google Argentina?
+   - urgency_score: ¿pierde valor si se publica mañana en lugar de hoy?
+   - editorial_score: ¿qué valor periodístico aporta? (originalidad, profundidad, diferenciación)
+5. PROHIBIDO repetir enfoques. Cada oportunidad debe abordar un ángulo distinto.
+6. Descripción: 1 oración explicando POR QUÉ este contenido es valioso para el lector.
+
+Tipos permitidos (usar exactamente estos valores en mayúsculas):
+- NEWS: noticia informativa del momento
+- SEO: contenido optimizado para búsquedas (resumen, resultado, guía)
+- ANALYSIS: análisis en profundidad o contexto
+- EXPLAINER: explicar quién/qué/por qué para lectores sin contexto previo
+- SOCIAL: contenido diseñado para viralizar en redes (datos, listas, rankings)
+- FACT_CHECK: verificación de datos o rumores circulando
+- LIVE_COVERAGE: cobertura en tiempo real
+- OPINION: columna de opinión o editorial
+
+Responde SOLO con JSON válido, array en la raíz, sin texto adicional:
+[
+  {
+    "title": "Título concreto y publicable en español (máx 80 chars)",
+    "description": "Una oración: qué cubre este contenido y por qué es valioso para el lector argentino",
+    "opportunity_type": "NEWS",
+    "traffic_score": 92,
+    "seo_score": 78,
+    "urgency_score": 95,
+    "editorial_score": 85
+  }
+]`;
+
+    const resp = await this.anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1200,
+      messages: [{ role: 'user', content: prompt }],
+    });
+
+    const text      = resp.content[0]?.text?.trim() || '';
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error('generateEditorialOpportunities: no JSON array in response');
+
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(parsed)) throw new Error('generateEditorialOpportunities: response is not an array');
+    return parsed;
   }
 }

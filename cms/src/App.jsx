@@ -33,6 +33,9 @@ import DossierDetail from "./pages/DossierDetail.jsx";
 import Topics from "./pages/Topics.jsx";
 import TopicDetail from "./pages/TopicDetail.jsx";
 import Regions from "./pages/Regions.jsx";
+import TrendDetail from "./pages/TrendDetail.jsx";
+import StoryDetail from "./pages/StoryDetail.jsx";
+import EventDetail from "./pages/EventDetail.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -73,6 +76,9 @@ export default function App() {
         <Route path="knowledge" element={<KnowledgeBase />} />
         <Route path="knowledge/entities/:id" element={<EntityDetail />} />
         <Route path="monitor" element={<MediaMonitor />} />
+        <Route path="trends/:id" element={<TrendDetail />} />
+        <Route path="stories/:id" element={<StoryDetail />} />
+        <Route path="events/:id" element={<EventDetail />} />
         <Route path="dossiers" element={<Dossiers />} />
         <Route path="dossiers/:id" element={<DossierDetail />} />
         <Route path="topics" element={<Topics />} />

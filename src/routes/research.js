@@ -3,6 +3,7 @@ import { query } from './db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { investigate } from '../connectors/index.js';
 import { AiService } from '../services/AiService.js';
+import { fetchArticleContent } from '../services/ArticleFetcher.js';
 
 const router = Router();
 const ai = new AiService();
@@ -115,34 +116,81 @@ router.post('/topics/:id/retry', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// Enrich top-N sources with full article content via ArticleFetcher.
+// Falls back to RSS description if fetch fails (blocked, timeout, paywall).
+const FULL_TEXT_TOP_N = 10;
+
+async function _enrichSources(sources) {
+  const enriched = [];
+  let fetched = 0, fallback = 0, errors = 0;
+
+  for (let i = 0; i < sources.length; i++) {
+    const s = { ...sources[i], content_fetched: false };
+
+    if (i < FULL_TEXT_TOP_N && s.url) {
+      try {
+        const result = await fetchArticleContent(s.url);
+        if (result && result.word_count >= 50) {
+          s.content         = result.content;
+          s.word_count      = result.word_count;
+          s.content_fetched = true;
+          fetched++;
+        } else {
+          fallback++;
+        }
+      } catch {
+        errors++;
+      }
+    } else {
+      fallback++;
+    }
+
+    enriched.push(s);
+  }
+
+  console.log(`[Research] Content enrichment: ${fetched} full-text, ${fallback} RSS fallback, ${errors} errors`);
+  return enriched;
+}
+
 async function _runPipeline(topic, title, connectors) {
   try {
-    // Fetch sources from connectors
-    const sources = await investigate(title, connectors);
+    // Use tracked_sources from DB instead of hardcoded DEFAULT_FEEDS (Phase 2 fix — W1)
+    const { rows: trackedFeeds } = await query(
+      `SELECT name, rss_url AS url FROM tracked_sources
+       WHERE enabled = true AND rss_url IS NOT NULL
+       ORDER BY trust_score DESC NULLS LAST`
+    );
+    const feedsToUse = trackedFeeds.length > 0 ? trackedFeeds : undefined;
 
-    // Save sources (Fix B: word_count captured)
+    // Fetch sources from connectors
+    const rawSources = await investigate(title, connectors, { feeds: feedsToUse });
+
+    // Enrich with full article content (Sprint 5.2)
+    const sources = await _enrichSources(rawSources);
+
+    // Save sources
     if (sources.length > 0) {
       const capped = sources.slice(0, 20);
       const placeholders = capped
-        .map((_, i) => `($1, $${i * 7 + 2}, $${i * 7 + 3}, $${i * 7 + 4}, $${i * 7 + 5}, $${i * 7 + 6}, $${i * 7 + 7}, $${i * 7 + 8})`)
+        .map((_, i) => `($1, $${i * 8 + 2}, $${i * 8 + 3}, $${i * 8 + 4}, $${i * 8 + 5}, $${i * 8 + 6}, $${i * 8 + 7}, $${i * 8 + 8}, $${i * 8 + 9})`)
         .join(', ');
 
       const params = [topic.id];
       capped.forEach(s => {
-        const text = s.content?.slice(0, 2000) || '';
+        const text      = s.content || '';
         const wordCount = text.split(/\s+/).filter(Boolean).length;
-        params.push(s.url, s.title, s.source_name, s.published_at, text, s.relevance_score, wordCount);
+        params.push(s.url, s.title, s.source_name, s.published_at, text, s.relevance_score, wordCount, s.content_fetched ?? false);
       });
 
       await query(
         `INSERT INTO research_sources
-           (topic_id, url, title, source_name, published_at, content, relevance_score, word_count)
+           (topic_id, url, title, source_name, published_at, content, relevance_score, word_count, content_fetched)
          VALUES ${placeholders}`,
         params
       );
     }
 
-    // Generate brief with Claude (Fix B: 90s timeout via AbortController)
+    // Generate brief with Claude
     let brief = null;
     if (sources.length > 0 && process.env.ANTHROPIC_API_KEY) {
       try {
@@ -165,7 +213,7 @@ async function _runPipeline(topic, title, connectors) {
             JSON.stringify(briefData.timeline || []),
             briefData.opportunities,
             briefData.risks,
-            'claude-sonnet-4-5-20250929',
+            'claude-sonnet-4-6',
           ]
         );
         brief = briefRes.rows[0];
@@ -213,9 +261,9 @@ async function _extractAndSaveEntities(topicId, topicTitle, brief) {
 
     // Upsert entity: if same name+type exists, bump mention_count and last_seen_at
     const { rows } = await query(
-      `INSERT INTO knowledge_entities (name, entity_type, description, first_seen_at, last_seen_at, mention_count)
-       VALUES ($1, $2, $3, now(), now(), 1)
-       ON CONFLICT (lower(name), entity_type)
+      `INSERT INTO knowledge_entities (name, entity_type, entity_origin, description, first_seen_at, last_seen_at, mention_count)
+       VALUES ($1, $2, 'RESEARCH', $3, now(), now(), 1)
+       ON CONFLICT (lower(name), entity_type, entity_origin)
        DO UPDATE SET
          mention_count = knowledge_entities.mention_count + 1,
          last_seen_at  = now(),

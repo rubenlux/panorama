@@ -326,7 +326,7 @@ async function _generateDossier(dossierId, topic) {
       );
     }
 
-    console.log(`[Dossier] Generated: ${dossierId} | ${angles.length} angles persisted`);
+    console.log(`[Dossier] Generated: ${dossierId} | ${noticiaFirst.length} angles persisted`);
   } catch (e) {
     console.error(`[Dossier] Generation failed for ${dossierId}:`, e.message);
     await query(

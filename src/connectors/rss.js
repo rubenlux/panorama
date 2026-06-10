@@ -35,9 +35,18 @@ function parseItems(xml) {
   return items;
 }
 
+// Common words that inflate relevance scores when matched against query stopwords (W2 fix)
+const RELEVANCE_STOPWORDS = new Set([
+  'de', 'la', 'el', 'los', 'las', 'un', 'una', 'en', 'a', 'y', 'o', 'que',
+  'por', 'con', 'del', 'al', 'se', 'su', 'sus', 'es', 'son', 'ha', 'han',
+  'no', 'si', 'más', 'ya', 'pero', 'como', 'cuando', 'donde', 'cual',
+  'the', 'of', 'is', 'in', 'and', 'or', 'to', 'for', 'at', 'by', 'on',
+]);
+
 function scoreRelevance(item, query) {
   const text = `${item.title} ${item.description}`.toLowerCase();
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 2 && !RELEVANCE_STOPWORDS.has(w));
+  if (words.length === 0) return 0;
   const matches = words.filter(w => text.includes(w)).length;
   return matches / words.length;
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { apiJson } from '../api.js';
+import { apiJson, getStories, followStory, createDossierFromStory, getEvents, followEvent, createDossierFromEvent, getOpportunities, updateStoryOpportunityStatus, createDossierFromOpportunity } from '../api.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const SOURCE_TYPE_STYLE = {
@@ -199,11 +199,17 @@ function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifyi
 // ── Main component ────────────────────────────────────────────────────────────
 export default function MediaMonitor() {
   const navigate   = useNavigate();
-  const [tab, setTab]       = useState('feed');
+  const [tab, setTab]       = useState('events');
   const [stats, setStats]   = useState(null);
   const [sources, setSources]   = useState([]);
   const [articles, setArticles] = useState([]);
   const [trending, setTrending] = useState([]);
+  const [stories, setStories]     = useState([]);
+  const [storyBusy, setStoryBusy] = useState({});
+  const [events,  setEvents]      = useState([]);
+  const [eventBusy, setEventBusy] = useState({});
+  const [editOpps,  setEditOpps]  = useState([]);
+  const [oppBusy,   setOppBusy]   = useState({});
   const [addForm, setAddForm]   = useState({ name: '', type: 'news', rss_url: '', homepage: '' });
   const [addOpen, setAddOpen]   = useState(false);
   const [researchingId, setResearchingId] = useState(null);
@@ -227,10 +233,22 @@ export default function MediaMonitor() {
     try { const d = await apiJson('/monitor/trending', { auth: true }); setTrending(d.items || []); } catch {}
   }, []);
 
+  const loadStories = useCallback(async () => {
+    try { const d = await getStories({ minArticles: 2, limit: 30 }); setStories(d.items || []); } catch {}
+  }, []);
+
+  const loadEvents = useCallback(async () => {
+    try { const d = await getEvents({ limit: 25 }); setEvents(d.items || []); } catch {}
+  }, []);
+
+  const loadOpps = useCallback(async () => {
+    try { const d = await getOpportunities({ limit: 40 }); setEditOpps(d.items || []); } catch {}
+  }, []);
+
   useEffect(() => {
-    loadStats(); loadSources(); loadArticles(); loadTrending();
+    loadStats(); loadSources(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
     refreshRef.current = setInterval(() => {
-      loadStats(); loadArticles(); loadTrending();
+      loadStats(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
     }, 30_000);
     return () => clearInterval(refreshRef.current);
   }, []);
@@ -298,6 +316,64 @@ export default function MediaMonitor() {
     }
   }
 
+  async function handleFollowStory(id) {
+    setStoryBusy(p => ({ ...p, [id]: 'follow' }));
+    try { await followStory(id); loadStories(); }
+    catch (e) { alert('Error: ' + e.message); }
+    finally { setStoryBusy(p => ({ ...p, [id]: null })); }
+  }
+
+  async function handleDossierFromStory(id) {
+    setStoryBusy(p => ({ ...p, [id]: 'dossier' }));
+    try {
+      await createDossierFromStory(id);
+      navigate('/editorial-workflow');
+    } catch (e) {
+      alert('Error: ' + e.message);
+    } finally {
+      setStoryBusy(p => ({ ...p, [id]: null }));
+    }
+  }
+
+  async function handleFollowEvent(id) {
+    setEventBusy(p => ({ ...p, [id]: 'follow' }));
+    try { await followEvent(id); loadEvents(); }
+    catch (e) { alert('Error: ' + e.message); }
+    finally { setEventBusy(p => ({ ...p, [id]: null })); }
+  }
+
+  async function handleDossierFromEvent(id) {
+    setEventBusy(p => ({ ...p, [id]: 'dossier' }));
+    try {
+      await createDossierFromEvent(id);
+      navigate('/editorial-workflow');
+    } catch (e) {
+      alert('Error: ' + e.message);
+    } finally {
+      setEventBusy(p => ({ ...p, [id]: null }));
+    }
+  }
+
+  async function handleOppStatus(id, status) {
+    setOppBusy(p => ({ ...p, [id]: status }));
+    try {
+      await updateStoryOpportunityStatus(id, status);
+      setEditOpps(prev => prev.map(o => o.id === id ? { ...o, status } : o));
+    } catch (e) { alert('Error: ' + e.message); }
+    finally { setOppBusy(p => ({ ...p, [id]: null })); }
+  }
+
+  async function handleOppDossier(id) {
+    setOppBusy(p => ({ ...p, [id]: 'dossier' }));
+    try {
+      await createDossierFromOpportunity(id);
+      setEditOpps(prev => prev.map(o => o.id === id ? { ...o, status: 'in_progress' } : o));
+      navigate('/dossiers');
+    } catch (e) { alert('Error: ' + e.message); }
+    finally { setOppBusy(p => ({ ...p, [id]: null })); }
+  }
+
+  // Legacy: used only for header stat chip; editorial opps replace the tab
   const opportunities = trending.filter(t => t.source_count >= 3 && t.mention_count >= 5);
 
   // Stats for sources tab
@@ -309,11 +385,14 @@ export default function MediaMonitor() {
   };
 
   const TABS = [
-    { id: 'feed',    label: '📰 Feed',         count: articles.length },
-    { id: 'trending',label: '🔥 Tendencias',   count: trending.length },
-    { id: 'opps',    label: '⚡ Oportunidades', count: opportunities.length, alert: opportunities.length > 0 },
+    { id: 'events',  label: '🎯 Eventos',       count: events.length },
+    { id: 'feed',    label: '📰 Feed',          count: articles.length },
+    { id: 'trending',label: '📖 Historias',     count: stories.length },
+    { id: 'opps',    label: '⚡ Oportunidades', count: editOpps.filter(o => o.status === 'pending').length, alert: editOpps.filter(o => o.status === 'pending').length > 0 },
     { id: 'sources', label: '📡 Fuentes',       count: sources.length },
   ];
+
+  const defaultTab = 'events';
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 60px)', overflow: 'hidden' }}>
@@ -370,6 +449,54 @@ export default function MediaMonitor() {
       {/* Content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
 
+        {/* ── EVENTOS ──────────────────────────────────────────────────── */}
+        {tab === 'events' && (
+          <div>
+            {events.length === 0 && (
+              <EmptyState
+                icon="🎯"
+                title="Sin eventos detectados aún"
+                body="Los eventos se detectan cuando 2+ historias comparten entidades. El worker debe estar corriendo y haber acumulado suficiente cobertura."
+              />
+            )}
+            {events.length > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                  {events.filter(e => e.editorial_score >= 70).length} eventos prioritarios · {events.length} eventos activos
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {['breaking', 'growing', 'monitoring'].map(cs => {
+                    const n = events.filter(e => e.coverage_status === cs).length;
+                    if (!n) return null;
+                    const style = cs === 'breaking'
+                      ? { background: '#fee2e2', color: '#dc2626' }
+                      : cs === 'growing'
+                      ? { background: '#fef3c7', color: '#d97706' }
+                      : { background: '#f3f4f6', color: '#6b7280' };
+                    return (
+                      <span key={cs} style={{ ...style, fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 20 }}>
+                        {cs === 'breaking' ? '🔴' : cs === 'growing' ? '📈' : '●'} {cs}: {n}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))', gap: 16 }}>
+              {events.map(ev => (
+                <EventCard
+                  key={ev.id}
+                  event={ev}
+                  busy={eventBusy[ev.id]}
+                  onDetail={() => navigate(`/events/${ev.id}`)}
+                  onFollow={() => handleFollowEvent(ev.id)}
+                  onDossier={() => handleDossierFromEvent(ev.id)}
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ── FEED ─────────────────────────────────────────────────────── */}
         {tab === 'feed' && (
           <div>
@@ -416,31 +543,95 @@ export default function MediaMonitor() {
           </div>
         )}
 
-        {/* ── TRENDING ──────────────────────────────────────────────────── */}
+        {/* ── HISTORIAS ACTIVAS ──────────────────────────────────────────── */}
         {tab === 'trending' && (
           <div>
-            {trending.length === 0 && (
-              <EmptyState icon="🔥" title="Sin tendencias detectadas" body="Las tendencias aparecen cuando una entidad es mencionada en múltiples fuentes en los últimos 30 minutos." />
+            {stories.length === 0 && (
+              <EmptyState
+                icon="📖"
+                title="Sin historias activas"
+                body="Las historias se detectan automáticamente cuando 2+ artículos comparten el mismo evento. El worker debe estar corriendo."
+              />
             )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: 12 }}>
-              {trending.map(t => <TrendingCard key={t.id} item={t} onResearch={handleResearch} researchingId={researchingId} />)}
+            {stories.length > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+                <div style={{ fontSize: 12, color: '#9ca3af' }}>
+                  {stories.filter(s => s.status === 'ready').length} con resumen IA · {stories.length} historias activas
+                </div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {['breaking', 'growing', 'monitoring'].map(cs => {
+                    const n = stories.filter(s => s.coverage_status === cs).length;
+                    if (!n) return null;
+                    const style = cs === 'breaking'
+                      ? { background: '#fee2e2', color: '#dc2626' }
+                      : cs === 'growing'
+                      ? { background: '#fef3c7', color: '#d97706' }
+                      : { background: '#f3f4f6', color: '#6b7280' };
+                    return (
+                      <span key={cs} style={{ ...style, fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 20 }}>
+                        {cs === 'breaking' ? '🔴' : cs === 'growing' ? '📈' : '●'} {cs}: {n}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 16 }}>
+              {stories.map(s => (
+                <StoryCard
+                  key={s.id}
+                  story={s}
+                  busy={storyBusy[s.id]}
+                  onDetail={() => navigate(`/stories/${s.id}`)}
+                  onFollow={() => handleFollowStory(s.id)}
+                  onDossier={() => handleDossierFromStory(s.id)}
+                />
+              ))}
             </div>
           </div>
         )}
 
-        {/* ── OPORTUNIDADES ─────────────────────────────────────────────── */}
+        {/* ── OPORTUNIDADES EDITORIALES ─────────────────────────────────── */}
         {tab === 'opps' && (
           <div>
-            {opportunities.length === 0 && (
-              <EmptyState icon="⚡" title="No hay oportunidades ahora" body="Aparece cuando una entidad supera 5 menciones en 3+ fuentes distintas en los últimos 30 minutos." />
+            {editOpps.length === 0 && (
+              <EmptyState
+                icon="⚡"
+                title="Sin oportunidades editoriales todavía"
+                body="Las oportunidades se generan automáticamente cuando una historia acumula suficiente cobertura y el AI la analiza. El worker debe estar corriendo."
+              />
             )}
-            {opportunities.length > 0 && (
-              <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 12, padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#991b1b', fontWeight: 600 }}>
-                {opportunities.length} {opportunities.length === 1 ? 'oportunidad editorial detectada' : 'oportunidades editoriales detectadas'} — el sistema recomienda investigarlas.
-              </div>
-            )}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
-              {opportunities.map(t => <TrendingCard key={t.id} item={t} onResearch={handleResearch} researchingId={researchingId} highlight />)}
+            {editOpps.length > 0 && (() => {
+              const pending = editOpps.filter(o => o.status === 'pending');
+              const types = [...new Set(pending.map(o => o.opportunity_type))];
+              return (
+                <div style={{ marginBottom: 16 }}>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <div style={{ fontSize: 13, color: '#374151', fontWeight: 700 }}>
+                      {pending.length} {pending.length === 1 ? 'oportunidad disponible' : 'oportunidades disponibles'}
+                    </div>
+                    {types.map(t => {
+                      const cfg = OPP_TYPE_CONFIG[t] || OPP_TYPE_CONFIG.NEWS;
+                      return (
+                        <span key={t} style={{ fontSize: 11, fontWeight: 700, background: cfg.bg, color: cfg.color, padding: '2px 9px', borderRadius: 20 }}>
+                          {cfg.icon} {cfg.label}: {pending.filter(o => o.opportunity_type === t).length}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 14 }}>
+              {editOpps.map(opp => (
+                <OpportunityCard
+                  key={opp.id}
+                  opp={opp}
+                  busy={oppBusy[opp.id]}
+                  onDossier={() => handleOppDossier(opp.id)}
+                  onStatus={(status) => handleOppStatus(opp.id, status)}
+                />
+              ))}
             </div>
           </div>
         )}
@@ -539,6 +730,380 @@ function WorkerStatus({ idle, lastRun }) {
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
+
+const OPP_TYPE_CONFIG = {
+  NEWS:          { label: 'Noticia',         icon: '📰', color: '#dc2626', bg: '#fee2e2' },
+  SEO:           { label: 'SEO',             icon: '🔍', color: '#059669', bg: '#d1fae5' },
+  ANALYSIS:      { label: 'Análisis',        icon: '🔎', color: '#1d4ed8', bg: '#dbeafe' },
+  EXPLAINER:     { label: 'Explicador',      icon: '💡', color: '#d97706', bg: '#fef3c7' },
+  SOCIAL:        { label: 'Redes Sociales',  icon: '📱', color: '#7c3aed', bg: '#ede9fe' },
+  FACT_CHECK:    { label: 'Verificación',    icon: '✓',  color: '#0891b2', bg: '#e0f2fe' },
+  LIVE_COVERAGE: { label: 'Cobertura viva',  icon: '📡', color: '#be123c', bg: '#ffe4e6' },
+  OPINION:       { label: 'Opinión',         icon: '✍️', color: '#6b7280', bg: '#f3f4f6' },
+};
+
+const STATUS_OPP_CFG = {
+  pending:     { label: 'Pendiente',   color: '#6b7280' },
+  in_progress: { label: 'En proceso',  color: '#d97706' },
+  done:        { label: '✓ Hecho',     color: '#059669' },
+  dismissed:   { label: 'Descartada',  color: '#9ca3af' },
+};
+
+function ScorePill({ label, value, color }) {
+  return (
+    <div style={{ textAlign: 'center' }}>
+      <div style={{ fontSize: 16, fontWeight: 900, color, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 9, color: '#9ca3af', marginTop: 1, textTransform: 'uppercase', letterSpacing: '.03em' }}>{label}</div>
+    </div>
+  );
+}
+
+function OpportunityCard({ opp, busy, onDossier, onStatus }) {
+  const cfg       = OPP_TYPE_CONFIG[opp.opportunity_type] || OPP_TYPE_CONFIG.NEWS;
+  const statusCfg = STATUS_OPP_CFG[opp.status] || STATUS_OPP_CFG.pending;
+  const isDone    = opp.status === 'done';
+  const isInProgress = opp.status === 'in_progress';
+
+  const cs  = parseFloat(opp.composite_score || 0);
+  const csColor = cs >= 80 ? '#059669' : cs >= 60 ? '#d97706' : cs >= 40 ? '#6366f1' : '#9ca3af';
+
+  return (
+    <div style={{
+      background: isDone ? '#f9fffe' : 'white',
+      borderRadius: 14, padding: '16px 18px',
+      border: `1px solid ${isDone ? '#a7f3d0' : isInProgress ? '#fde68a' : '#e5e7eb'}`,
+      opacity: isDone ? 0.75 : 1,
+      display: 'flex', flexDirection: 'column', gap: 10,
+    }}>
+
+      {/* Type badge + composite score */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, background: cfg.bg, color: cfg.color, padding: '3px 10px', borderRadius: 20 }}>
+          {cfg.icon} {cfg.label}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ fontSize: 10, color: '#9ca3af' }}>Score</span>
+          <span style={{ fontSize: 18, fontWeight: 900, color: csColor, lineHeight: 1 }}>{Math.round(cs)}</span>
+        </div>
+      </div>
+
+      {/* Title */}
+      <div style={{ fontWeight: 700, fontSize: 14, color: isDone ? '#6b7280' : '#111827', lineHeight: 1.4 }}>
+        {opp.title}
+      </div>
+
+      {/* Description */}
+      {opp.description && (
+        <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.5 }}>{opp.description}</div>
+      )}
+
+      {/* Story origin */}
+      {opp.story_title && (
+        <div style={{ fontSize: 11, color: '#9ca3af', borderTop: '1px solid #f3f4f6', paddingTop: 8, display: 'flex', gap: 4, alignItems: 'center' }}>
+          <span style={{ color: '#d1d5db' }}>Historia:</span>
+          <span style={{ fontWeight: 600, color: '#6b7280', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {opp.story_title}
+          </span>
+          {opp.story_source_count > 0 && (
+            <span style={{ flexShrink: 0, marginLeft: 'auto' }}>
+              📡 {opp.story_source_count} {opp.story_source_count === 1 ? 'fuente' : 'fuentes'}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Scores */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, padding: '8px 0', borderTop: '1px solid #f3f4f6' }}>
+        <ScorePill label="SEO"      value={opp.seo_score}      color="#059669" />
+        <ScorePill label="Tráfico"  value={opp.traffic_score}  color="#6366f1" />
+        <ScorePill label="Urgencia" value={opp.urgency_score}  color="#dc2626" />
+        <ScorePill label="Editorial" value={opp.editorial_score} color="#d97706" />
+      </div>
+
+      {/* Actions */}
+      {!isDone && (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={onDossier} disabled={!!busy} style={{
+            flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none',
+            background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700,
+            cursor: busy ? 'not-allowed' : 'pointer', opacity: busy === 'dossier' ? .7 : 1,
+          }}>
+            {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
+          </button>
+          {opp.status === 'pending' && (
+            <button onClick={() => onStatus('dismissed')} disabled={!!busy} style={{
+              padding: '7px 10px', borderRadius: 8, border: '1px solid #e5e7eb',
+              background: 'white', color: '#9ca3af', fontSize: 12, cursor: 'pointer',
+            }} title="Descartar">
+              ✕
+            </button>
+          )}
+          {opp.status === 'in_progress' && (
+            <button onClick={() => onStatus('done')} disabled={!!busy} style={{
+              padding: '7px 10px', borderRadius: 8, border: '1px solid #a7f3d0',
+              background: '#ecfdf5', color: '#059669', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}>
+              ✓ Hecho
+            </button>
+          )}
+        </div>
+      )}
+      {isDone && (
+        <div style={{ fontSize: 12, color: '#059669', fontWeight: 700, textAlign: 'center' }}>✓ Publicado / Finalizado</div>
+      )}
+    </div>
+  );
+}
+
+const EVENT_TYPE_ICON = {
+  sports_live: '⚽🔴', sports: '⚽', politics: '🏛️', economy: '📊',
+  culture: '🎭', science: '🔬', international: '🌍', breaking: '🔴',
+  investigation: '🕵️', analysis: '🔍', entertainment: '🎬',
+  health: '🏥', technology: '💻', general: '📰',
+};
+
+const SCORE_COLOR = (s) =>
+  s >= 80 ? '#059669' : s >= 60 ? '#d97706' : s >= 40 ? '#6366f1' : '#9ca3af';
+
+function EditorialScoreBadge({ score }) {
+  const s = score || 0;
+  const color = SCORE_COLOR(s);
+  const pct   = s;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ width: 36, height: 36, borderRadius: '50%', background: `conic-gradient(${color} ${pct}%, #e5e7eb 0)`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <div style={{ width: 26, height: 26, borderRadius: '50%', background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color }}>
+          {s}
+        </div>
+      </div>
+      <div style={{ fontSize: 10, color: '#9ca3af', lineHeight: 1.2 }}>Score<br/>editorial</div>
+    </div>
+  );
+}
+
+function EventCard({ event: ev, busy, onDetail, onFollow, onDossier }) {
+  const isFollowed = ev.status === 'followed';
+  const covStyle   = COVERAGE_STYLE[ev.coverage_status] || COVERAGE_STYLE.monitoring;
+  const typeIcon   = EVENT_TYPE_ICON[ev.event_type] || '📰';
+  const sources    = Array.isArray(ev.sources) ? ev.sources.filter(Boolean) : [];
+  const opps       = Array.isArray(ev.opportunities) ? ev.opportunities.filter(o => o?.status !== 'dismissed') : [];
+  const entities   = Array.isArray(ev.main_entities) ? ev.main_entities : [];
+
+  return (
+    <div style={{
+      background: 'white', borderRadius: 16, padding: '18px 20px',
+      border: `1px solid ${isFollowed ? '#bbf7d0' : ev.coverage_status === 'breaking' ? '#fecaca' : ev.editorial_score >= 70 ? '#c7d2fe' : '#e5e7eb'}`,
+      boxShadow: ev.coverage_status === 'breaking' ? '0 0 0 2px rgba(220,38,38,.1)' : ev.editorial_score >= 70 ? '0 0 0 2px rgba(99,102,241,.07)' : 'none',
+      display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+
+      {/* Status + score row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, background: covStyle.bg, color: covStyle.color, padding: '2px 9px', borderRadius: 20 }}>
+          {ev.coverage_status === 'breaking' ? '🔴' : ''} {covStyle.label}
+        </span>
+        <EditorialScoreBadge score={ev.editorial_score} />
+      </div>
+
+      {/* Headline */}
+      <div>
+        <div style={{ fontWeight: 800, fontSize: 16, color: '#111827', lineHeight: 1.3, marginBottom: 6 }}>
+          {typeIcon} {ev.headline || '(procesando…)'}
+        </div>
+        {ev.summary && (
+          <div style={{ fontSize: 13, color: '#4b5563', lineHeight: 1.55, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {ev.summary}
+          </div>
+        )}
+      </div>
+
+      {/* Stats row */}
+      <div style={{ display: 'flex', gap: 14, fontSize: 12, color: '#6b7280', flexWrap: 'wrap' }}>
+        <span>📰 {ev.article_count} artículos</span>
+        <span>📡 {ev.source_count} fuentes</span>
+        <span>📖 {ev.story_count} ángulos</span>
+        {opps.length > 0 && <span style={{ color: '#6366f1', fontWeight: 700 }}>⚡ {opps.length} oportunidades</span>}
+        <span style={{ marginLeft: 'auto', color: '#9ca3af' }}>{timeAgo(ev.last_updated_at)}</span>
+      </div>
+
+      {/* Top opportunities */}
+      {opps.length > 0 && (
+        <div style={{ background: '#f8f9ff', borderRadius: 10, padding: '10px 12px' }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: '#6366f1', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>
+            Oportunidades editoriales
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {opps.slice(0, 3).map((op, i) => (
+              <div key={i} style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <span style={{ color: '#6366f1', fontWeight: 700, flexShrink: 0, fontSize: 11 }}>
+                  {op.type === 'seo' ? '🔍' : op.type === 'redes' ? '📱' : op.type === 'analisis' ? '🔎' : op.type === 'explicador' ? '💡' : '✓'}
+                </span>
+                <span style={{ color: '#374151' }}>{op.title}</span>
+                {op.traffic_potential === 'alto' && (
+                  <span style={{ fontSize: 9, fontWeight: 700, color: '#059669', background: '#d1fae5', padding: '1px 5px', borderRadius: 8, flexShrink: 0 }}>ALTO</span>
+                )}
+              </div>
+            ))}
+            {opps.length > 3 && <div style={{ fontSize: 11, color: '#9ca3af' }}>+{opps.length - 3} más</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Key entities */}
+      {entities.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {entities.slice(0, 5).map((e, i) => (
+            <span key={i} style={{ fontSize: 10, fontWeight: 600, background: '#ede9fe', color: '#7c3aed', padding: '2px 8px', borderRadius: 10 }}>
+              {e}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Sources */}
+      {sources.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {sources.slice(0, 5).map((src, i) => (
+            <span key={i} style={{ fontSize: 10, fontWeight: 600, background: '#f3f4f6', color: '#4b5563', padding: '2px 8px', borderRadius: 10 }}>
+              {src}
+            </span>
+          ))}
+          {sources.length > 5 && <span style={{ fontSize: 10, color: '#9ca3af' }}>+{sources.length - 5}</span>}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        <button onClick={onDetail} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: '1px solid #e5e7eb', background: 'white', color: '#374151', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+          Ver evento
+        </button>
+        {!isFollowed ? (
+          <button onClick={onFollow} disabled={!!busy} title="Seguir evento" style={{ padding: '7px 11px', borderRadius: 8, border: '1px solid #e5e7eb', background: 'white', color: '#6b7280', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+            {busy === 'follow' ? '…' : '🔔'}
+          </button>
+        ) : (
+          <span style={{ padding: '7px 10px', fontSize: 11, color: '#10b981', fontWeight: 700 }}>✓ Siguiendo</span>
+        )}
+        <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+          {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const COVERAGE_STYLE = {
+  breaking:   { label: 'En vivo',         color: '#dc2626', bg: '#fee2e2' },
+  growing:    { label: 'Cobertura creciendo', color: '#d97706', bg: '#fef3c7' },
+  monitoring: { label: 'Monitoreando',    color: '#6b7280', bg: '#f3f4f6' },
+  cooling:    { label: 'Enfriando',       color: '#9ca3af', bg: '#f9fafb' },
+  archived:   { label: 'Archivado',       color: '#d1d5db', bg: '#f9fafb' },
+};
+
+const STORY_TYPE_ICON = {
+  breaking_news: '🔴', event: '📅', live_event: '📡',
+  investigation: '🕵️', analysis: '🔍', politics: '🏛️',
+  sports: '⚽', technology: '💻', entertainment: '🎬',
+  economy: '📊', health: '🏥', science: '🔬',
+  international: '🌍', culture: '🎭', news: '📰',
+};
+
+function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
+  const isReady    = s.status === 'ready';
+  const isFollowed = s.status === 'followed';
+  const isSummarizing = s.status === 'summarizing';
+  const covStyle   = COVERAGE_STYLE[s.coverage_status] || COVERAGE_STYLE.monitoring;
+  const typeIcon   = STORY_TYPE_ICON[s.story_type] || '📰';
+  const sourceBadges = (Array.isArray(s.sources) ? s.sources : []).slice(0, 4);
+  const opportunities = Array.isArray(s.editorial_opportunities) ? s.editorial_opportunities : [];
+
+  return (
+    <div style={{
+      background: 'white', borderRadius: 16, padding: '18px 20px',
+      border: `1px solid ${isFollowed ? '#bbf7d0' : s.coverage_status === 'breaking' ? '#fecaca' : isReady ? '#c7d2fe' : '#e5e7eb'}`,
+      boxShadow: s.coverage_status === 'breaking' ? '0 0 0 2px rgba(220,38,38,.1)' : isReady ? '0 0 0 2px rgba(99,102,241,.07)' : 'none',
+      display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+
+      {/* Status bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, background: covStyle.bg, color: covStyle.color, padding: '2px 9px', borderRadius: 20 }}>
+          {covStyle.label}
+        </span>
+        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+          {typeIcon} {s.article_count} arts · {s.source_count} {s.source_count === 1 ? 'fuente' : 'fuentes'} · {timeAgo(s.last_seen)}
+        </div>
+      </div>
+
+      {/* Title / AI headline */}
+      <div>
+        <div style={{ fontWeight: 700, fontSize: 15, color: '#111827', lineHeight: 1.35, marginBottom: isReady ? 8 : 0 }}>
+          {s.title || '(sin título)'}
+        </div>
+        {isReady && s.summary && (
+          <div style={{ fontSize: 13, color: '#4b5563', lineHeight: 1.55, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {s.summary}
+          </div>
+        )}
+        {isSummarizing && (
+          <div style={{ fontSize: 12, color: '#f59e0b', fontStyle: 'italic', marginTop: 4 }}>⏳ Generando inteligencia editorial…</div>
+        )}
+      </div>
+
+      {/* Editorial opportunities */}
+      {isReady && opportunities.length > 0 && (
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '.04em' }}>
+            Oportunidades editoriales
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {opportunities.slice(0, 4).map((op, i) => (
+              <div key={i} style={{ fontSize: 12, color: '#374151', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                <span style={{ color: '#6366f1', fontWeight: 700, flexShrink: 0 }}>✓</span>
+                <span>{op.title}</span>
+              </div>
+            ))}
+            {opportunities.length > 4 && (
+              <div style={{ fontSize: 11, color: '#9ca3af' }}>+{opportunities.length - 4} más</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Source badges */}
+      {sourceBadges.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {sourceBadges.map((src, i) => (
+            <span key={i} style={{ fontSize: 10, fontWeight: 600, background: '#f3f4f6', color: '#4b5563', padding: '2px 8px', borderRadius: 10 }}>
+              {src}
+            </span>
+          ))}
+          {(s.sources || []).length > 4 && (
+            <span style={{ fontSize: 10, color: '#9ca3af' }}>+{s.sources.length - 4}</span>
+          )}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: 6, marginTop: 2 }}>
+        <button onClick={onDetail} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: '1px solid #e5e7eb', background: 'white', color: '#374151', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+          Ver historia
+        </button>
+        {!isFollowed ? (
+          <button onClick={onFollow} disabled={!!busy} title="Seguir historia" style={{ padding: '7px 11px', borderRadius: 8, border: '1px solid #e5e7eb', background: 'white', color: '#6b7280', fontSize: 13, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+            {busy === 'follow' ? '…' : '🔔'}
+          </button>
+        ) : (
+          <span style={{ padding: '7px 10px', fontSize: 11, color: '#10b981', fontWeight: 700 }}>✓ Siguiendo</span>
+        )}
+        <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+          {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function TrendingCard({ item, onResearch, researchingId, highlight }) {
   const color = ENTITY_TYPE_COLOR[item.entity_type] || '#374151';
   const busy  = researchingId === item.entity_id;
