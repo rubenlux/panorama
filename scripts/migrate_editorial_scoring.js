@@ -111,9 +111,9 @@ async function run() {
       COUNT(*) FILTER (WHERE story_confidence = 'high'   AND status != 'stale')::int AS conf_high,
       COUNT(*) FILTER (WHERE story_confidence = 'medium' AND status != 'stale')::int AS conf_medium,
       COUNT(*) FILTER (WHERE story_confidence = 'low'    AND status != 'stale')::int AS conf_low,
-      ROUND(AVG(story_context_score) FILTER (WHERE status != 'stale'))::int          AS avg_score,
-      ROUND(AVG(article_count::float) FILTER (WHERE status != 'stale'), 1)           AS avg_articles,
-      ROUND(AVG(source_count::float)  FILTER (WHERE status != 'stale'), 1)           AS avg_sources
+      ROUND(AVG(story_context_score) FILTER (WHERE status != 'stale'))::int                        AS avg_score,
+      ROUND((AVG(article_count::float) FILTER (WHERE status != 'stale'))::numeric, 1)              AS avg_articles,
+      ROUND((AVG(source_count::float)  FILTER (WHERE status != 'stale'))::numeric, 1)              AS avg_sources
     FROM story_clusters
     WHERE is_recurring = false
   `);
