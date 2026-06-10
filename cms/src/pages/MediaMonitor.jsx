@@ -25,6 +25,15 @@ const VERIFY_STATUS = {
   approved: { label: 'Aprobada editorialmente',emoji: '★',  color: '#059669', bg: '#d1fae5' },
 };
 
+const FORMAT_LABELS = {
+  'rss':           { label: 'RSS Feed',              color: '#f97316' },
+  'atom':          { label: 'Atom Feed',             color: '#f97316' },
+  'sitemap-index': { label: 'Sitemap Index',         color: '#8b5cf6' },
+  'news-sitemap':  { label: 'Google News Sitemap',   color: '#8b5cf6' },
+  'urlset':        { label: 'XML Sitemap',           color: '#8b5cf6' },
+  'xml-generic':   { label: 'XML',                   color: '#6b7280' },
+};
+
 function timeAgo(dateStr) {
   if (!dateStr) return '—';
   const secs = Math.floor((Date.now() - new Date(dateStr)) / 1000);
@@ -56,6 +65,7 @@ function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifyi
 
   const st   = SOURCE_TYPE_STYLE[s.type] || SOURCE_TYPE_STYLE.news;
   const vs   = VERIFY_STATUS[s.verification_status] || VERIFY_STATUS.pending;
+  const fmt  = FORMAT_LABELS[s.last_format_detected] || null;
   const busy = verifying === s.id || approving === s.id;
 
   async function loadHistory() {
@@ -87,6 +97,11 @@ function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifyi
             <span style={{ fontSize: 11, fontWeight: 700, color: vs.color, background: vs.bg, padding: '1px 8px', borderRadius: 10 }}>
               {vs.emoji} {vs.label}
             </span>
+            {fmt && (
+              <span style={{ fontSize: 11, fontWeight: 600, color: fmt.color, background: '#f9fafb', border: `1px solid ${fmt.color}40`, padding: '1px 7px', borderRadius: 10 }}>
+                {fmt.label}
+              </span>
+            )}
             <TrustBar score={s.trust_score} />
           </div>
           <div style={{ fontSize: 12, color: '#6b7280', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -98,10 +113,16 @@ function SourceRow({ source: s, onToggle, onDelete, onVerify, onApprove, verifyi
             )}
             {s.seconds_since_check != null && (
               <span style={{ color: s.seconds_since_check < 120 ? '#10b981' : '#f59e0b' }}>
-                · RSS {s.seconds_since_check < 60 ? 'hace ' + s.seconds_since_check + 's' : 'hace ' + Math.floor(s.seconds_since_check / 60) + 'min'}
+                · feed {s.seconds_since_check < 60 ? 'hace ' + s.seconds_since_check + 's' : 'hace ' + Math.floor(s.seconds_since_check / 60) + 'min'}
               </span>
             )}
           </div>
+          {/* Inline failure reason */}
+          {s.verification_status === 'failed' && s.last_verification_notes && (
+            <div style={{ marginTop: 5, fontSize: 11, color: '#dc2626', background: '#fff1f2', border: '1px solid #fecaca', borderRadius: 6, padding: '4px 8px', lineHeight: 1.5 }}>
+              {s.last_verification_notes}
+            </div>
+          )}
         </div>
 
         {/* Actions */}

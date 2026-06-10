@@ -80,56 +80,119 @@ router.delete('/sources/:id', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /monitor/sources/:id/verify — HTTP-probe the RSS URL, update status + trust_score
+// ── XML format detector ──────────────────────────────────────────────────────
+// Returns: 'rss' | 'atom' | 'sitemap-index' | 'news-sitemap' | 'urlset' | 'xml-generic' | null
+function detectXmlFormat(text) {
+  const t = text.trimStart().slice(0, 1000);
+  if (!t.startsWith('<') && !t.startsWith('﻿<')) return null; // not XML (BOM-safe)
+  if (t.includes('<sitemapindex'))                    return 'sitemap-index';
+  if (t.includes('<urlset')) {
+    if (t.includes('xmlns:news') || t.includes('news.google.com')) return 'news-sitemap';
+    return 'urlset';
+  }
+  if (t.includes('<rss') || t.includes('<channel'))  return 'rss';
+  if (t.includes('<feed') && t.includes('xmlns'))    return 'atom';
+  // Generic XML that starts with <? or any element
+  if (t.match(/^[﻿\s]*<(\?xml|[a-zA-Z])/))     return 'xml-generic';
+  return null;
+}
+
+const XML_FORMAT_LABELS = {
+  'rss':          'RSS Feed',
+  'atom':         'Atom Feed',
+  'sitemap-index':'Sitemap Index',
+  'news-sitemap': 'Google News Sitemap',
+  'urlset':       'XML Sitemap (urlset)',
+  'xml-generic':  'XML genérico',
+};
+
+// POST /monitor/sources/:id/verify
 router.post('/sources/:id/verify', requireAuth, async (req, res, next) => {
   try {
     const { rows: [source] } = await query('SELECT * FROM tracked_sources WHERE id = $1', [req.params.id]);
     if (!source) return res.status(404).json({ error: 'Source not found' });
 
-    const userId = req.user?.sub ? parseInt(req.user.sub) : null;
+    const userId = parseInt(req.user?.sub) || null;
     const start  = Date.now();
     let http_status = null, response_ms = null;
-    let newStatus = 'failed', notes = null;
+    let newStatus = 'failed', notes = null, formatDetected = null;
     let trustScore = parseFloat(source.trust_score || 5);
 
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 10_000);
-      const resp  = await fetch(source.rss_url, {
+      const timer = setTimeout(() => controller.abort(), 12_000);
+
+      // Use a realistic browser User-Agent to avoid bot-blocking
+      const resp = await fetch(source.rss_url, {
         signal: controller.signal,
-        headers: { 'User-Agent': 'PanoramaBot/1.0' },
         redirect: 'follow',
+        headers: {
+          'User-Agent':      'Mozilla/5.0 (compatible; NewsBot/2.0; +https://panorama.com/bot)',
+          'Accept':          'application/rss+xml, application/xml, text/xml, application/atom+xml, */*',
+          'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
+          'Cache-Control':   'no-cache',
+        },
       });
       clearTimeout(timer);
-      response_ms  = Date.now() - start;
-      http_status  = resp.status;
+      response_ms = Date.now() - start;
+      http_status = resp.status;
 
       if (resp.ok) {
         const ct   = resp.headers.get('content-type') || '';
         const text = await resp.text();
-        const isXml = ct.includes('xml') || ct.includes('rss') || ct.includes('atom') || text.trimStart().startsWith('<');
-        if (isXml) {
+        formatDetected = detectXmlFormat(text);
+        const isValidFeed = formatDetected !== null
+          || ct.includes('xml') || ct.includes('rss') || ct.includes('atom');
+
+        if (isValidFeed) {
           newStatus  = 'verified';
           trustScore = Math.min(10, 5 + (response_ms < 800 ? 2 : 1) + (response_ms < 300 ? 1 : 0) + 1);
-          notes = `OK ${http_status} · ${response_ms}ms · ${ct || 'text/xml'}`;
+          const label = XML_FORMAT_LABELS[formatDetected] || formatDetected || ct;
+          notes = `✓ ${label} · HTTP ${http_status} · ${response_ms}ms`;
         } else {
-          notes = `HTTP ${http_status} pero sin XML · ${ct}`;
+          // Responded 200 but looks like HTML, not a feed
+          const preview = text.trimStart().slice(0, 80).replace(/\n/g, ' ');
+          notes = `HTTP ${http_status} pero la respuesta no es un feed XML válido. Content-Type: "${ct}". Inicio: "${preview}…"`;
           trustScore = Math.max(0, trustScore - 0.5);
         }
-      } else {
-        notes = `HTTP ${http_status}`;
+      } else if (http_status === 403) {
+        notes = `HTTP 403 Acceso denegado — el servidor bloquea el acceso al feed. Verificar manualmente si la URL es correcta.`;
+        trustScore = Math.max(0, trustScore - 1);
+      } else if (http_status === 404) {
+        notes = `HTTP 404 No encontrado — la URL del feed no existe. Revisar si cambió de ubicación.`;
         trustScore = Math.max(0, trustScore - 2);
+      } else if (http_status >= 500) {
+        notes = `HTTP ${http_status} Error del servidor — el sitio está caído o con problemas temporales.`;
+        trustScore = Math.max(0, trustScore - 1);
+      } else {
+        notes = `HTTP ${http_status} — respuesta inesperada.`;
+        trustScore = Math.max(0, trustScore - 1.5);
       }
     } catch (fetchErr) {
-      notes = fetchErr.name === 'AbortError' ? 'Timeout (>10s)' : fetchErr.message;
+      if (fetchErr.name === 'AbortError') {
+        notes = 'Timeout (>12s) — el servidor no respondió a tiempo.';
+      } else if (fetchErr.cause?.code === 'CERT_HAS_EXPIRED' || fetchErr.message?.includes('certificate')) {
+        notes = `Error SSL/TLS: certificado inválido o expirado. (${fetchErr.message})`;
+      } else if (fetchErr.cause?.code === 'ENOTFOUND' || fetchErr.message?.includes('ENOTFOUND')) {
+        notes = `DNS no resuelto — el dominio no existe o no está accesible desde el servidor.`;
+      } else if (fetchErr.cause?.code === 'ECONNREFUSED') {
+        notes = `Conexión rechazada — el servidor no acepta la conexión.`;
+      } else {
+        notes = `Error de red: ${fetchErr.message}`;
+      }
       trustScore = Math.max(0, trustScore - 2);
     }
 
     const { rows: [updated] } = await query(
       `UPDATE tracked_sources
-         SET verification_status = $1, verified_at = NOW(), verified_by = $2, trust_score = $3
-       WHERE id = $4 RETURNING *`,
-      [newStatus, userId, trustScore, req.params.id]
+         SET verification_status       = $1,
+             verified_at               = NOW(),
+             verified_by               = $2,
+             trust_score               = $3,
+             last_verification_notes   = $4,
+             last_format_detected      = $5
+       WHERE id = $6 RETURNING *`,
+      [newStatus, userId, trustScore, notes, formatDetected, req.params.id]
     );
 
     await query(
@@ -138,7 +201,7 @@ router.post('/sources/:id/verify', requireAuth, async (req, res, next) => {
       [req.params.id, newStatus, userId, notes, http_status, response_ms]
     );
 
-    res.json({ source: updated, result: { status: newStatus, notes, http_status, response_ms } });
+    res.json({ source: updated, result: { status: newStatus, notes, http_status, response_ms, format: formatDetected } });
   } catch (e) { next(e); }
 });
 
@@ -146,7 +209,7 @@ router.post('/sources/:id/verify', requireAuth, async (req, res, next) => {
 router.post('/sources/:id/approve', requireAuth, async (req, res, next) => {
   try {
     const { notes } = req.body;
-    const userId = req.user?.sub ? parseInt(req.user.sub) : null;
+    const userId = parseInt(req.user?.sub) || null;
 
     const { rows: [updated] } = await query(
       `UPDATE tracked_sources
