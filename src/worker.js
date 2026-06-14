@@ -4,12 +4,17 @@ import { calculateAdRevenue } from "./jobs/calculateAdRevenue.js";
 import { runNewsMonitor }     from "./jobs/newsMonitor.js";
 import { runSocialMonitor }   from "./jobs/socialMonitor.js";
 import { pool } from "./routes/db.js";
+import { ensureObservabilitySchema, logEvent } from "./jobs/workerUtils.js";
 
 console.log("Starting Panorama Worker...");
 
 // Verify DB Connection
-pool.query("SELECT NOW()").then(() => {
+pool.query("SELECT NOW()").then(async () => {
     console.log("✅ Worker connected to Database.");
+
+    // Initialize observability tables once on startup (idempotent)
+    await ensureObservabilitySchema().catch(e => console.warn("⚠️ Observability schema init failed:", e.message));
+    await logEvent('worker_started', 'system', { pid: process.pid });
 
     // Run news monitor immediately on start, then every minute
     runNewsMonitor().catch(e => console.error("❌ News Monitor initial run failed:", e.message));
@@ -19,7 +24,6 @@ pool.query("SELECT NOW()").then(() => {
     console.log("📡 News Intelligence Monitor: running every 60s");
 
     // Run social monitor immediately on start, then every 30 minutes
-    // YouTube API quota: ~12 units/channel/run × 48 runs/day = safe within 10k free quota
     runSocialMonitor().catch(e => console.error("❌ Social Monitor initial run failed:", e.message));
     cron.schedule("*/30 * * * *", () => {
       runSocialMonitor().catch(e => console.error("❌ Social Monitor error:", e.message));
@@ -48,8 +52,9 @@ cron.schedule("5 0 * * *", async () => {
 
 console.log("📅 Revenue Job Scheduled: Daily at 00:05 AM");
 
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
     console.log("🛑 Worker stopping...");
+    await logEvent('worker_stopped', 'system', { pid: process.pid }).catch(() => {});
     pool.end();
     process.exit();
 });

@@ -3,11 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { apiJson } from '../api.js';
 
 const PLATFORM_META = {
-  youtube:   { label: 'YouTube',   color: '#dc2626', bg: '#fee2e2', active: true, placeholder: 'https://www.youtube.com/@CanalNoticias' },
-  instagram: { label: 'Instagram', color: '#7c3aed', bg: '#ede9fe', active: true, placeholder: 'https://www.instagram.com/medionoticia' },
-  facebook:  { label: 'Facebook',  color: '#1d4ed8', bg: '#dbeafe', active: true, placeholder: 'https://www.facebook.com/medionoticia' },
-  x:         { label: 'X',         color: '#111827', bg: '#f3f4f6', active: true, placeholder: 'https://x.com/medionoticia' },
-  tiktok:    { label: 'TikTok',    color: '#be123c', bg: '#ffe4e6', active: true, placeholder: 'https://www.tiktok.com/@medionoticia' },
+  youtube:   { label: 'YouTube',   color: '#dc2626', bg: '#fee2e2', active: true,  placeholder: 'https://www.youtube.com/@CanalNoticias/videos' },
+  facebook:  { label: 'Facebook',  color: '#1d4ed8', bg: '#dbeafe', active: true,  placeholder: 'https://www.facebook.com/medionoticia' },
+  instagram: { label: 'Instagram', color: '#7c3aed', bg: '#ede9fe', active: false, placeholder: 'https://www.instagram.com/medionoticia' },
+  x:         { label: 'X',         color: '#111827', bg: '#f3f4f6', active: false, placeholder: 'https://x.com/medionoticia' },
+  tiktok:    { label: 'TikTok',    color: '#be123c', bg: '#ffe4e6', active: false, placeholder: 'https://www.tiktok.com/@medionoticia' },
 };
 
 const REGION_OPTIONS = ['nacional', 'internacional', 'formosa', 'nea', 'noa', 'cuyo', 'patagonia', 'bsas'];
@@ -96,15 +96,21 @@ function SourceModal({ source, onSave, onClose }) {
           </label>
 
           <label style={{ display: 'grid', gap: 5 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>URL del perfil</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>URL de la cuenta (obligatoria)</span>
             <input value={form.profile_url} onChange={e => set('profile_url', e.target.value)}
-              placeholder={platformMeta?.placeholder || 'URL del perfil'} style={inputStyle} />
-            {!platformMeta?.active && (
-              <span style={{ fontSize: 11, color: '#f59e0b' }}>
-                ⚠️ {platformMeta?.label} no está activo aún — podés agregar la fuente para cuando se active.
-              </span>
-            )}
+              placeholder={platformMeta?.placeholder || 'https://...'} style={inputStyle} />
           </label>
+
+          {form.platform === 'youtube' && (
+            <label style={{ display: 'grid', gap: 5 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Pestaña a extraer (Content Type)</span>
+              <select value={form.content_type || 'videos'} onChange={e => set('content_type', e.target.value)} style={inputStyle}>
+                <option value="videos">Videos (Largos)</option>
+                <option value="shorts">Shorts</option>
+                <option value="posts">Pestaña Comunidad (Posts)</option>
+              </select>
+            </label>
+          )}
 
           <label style={{ display: 'grid', gap: 5 }}>
             <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Handle (opcional)</span>
@@ -199,6 +205,7 @@ export default function SocialSources() {
 
   const enabledCount  = sources.filter(s => s.enabled).length;
   const ytCount       = sources.filter(s => s.platform === 'youtube').length;
+  const fbCount       = sources.filter(s => s.platform === 'facebook').length;
 
   return (
     <div style={{ padding: 24, maxWidth: 1100, margin: '0 auto' }}>
@@ -208,7 +215,7 @@ export default function SocialSources() {
         <div>
           <h1 style={{ margin: 0, fontWeight: 800, fontSize: '1.6rem' }}>Fuentes Sociales</h1>
           <p style={{ margin: 0, color: '#6b7280', fontSize: 13 }}>
-            {enabledCount} activas · {sources.length} total · {ytCount} YouTube
+            {enabledCount} activas · {sources.length} total · {ytCount} YouTube · {fbCount} Facebook
           </p>
         </div>
         <button onClick={() => setModal('new')} style={{ ...btnPrimary, marginLeft: 'auto' }}>+ Agregar fuente</button>

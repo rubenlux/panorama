@@ -1,4 +1,4 @@
-# DATABASE_MAP.md — Panorama News Platform
+# DATABASE_MAP.md — INSPYRA NEWS AUTONOMOUS EDITORIAL PLATFORM
 
 Schema reference. PostgreSQL 15, host port 5435, DB `newsdb`.
 
@@ -66,6 +66,18 @@ active → summarizing → ready → followed
   active/ready → stale  (6h TTL with no new articles)
 ```
 Summarization triggers when `article_count >= 3 OR source_count >= 2`.
+
+---
+
+## Social Intelligence (Fase 4)
+
+| Table | PK | Purpose |
+|---|---|---|
+| `social_sources` | UUID | Curated accounts to monitor (platform, profile_url, enabled, etc.) |
+| `social_posts` | UUID | Individual posts captured from those accounts |
+| `social_clusters` | UUID | Topic groups formed by Jaccard keyword clustering on social posts. **Fields:** viral_score, engagement_score, growth_rate, sources_count |
+| `social_cluster_posts` | `cluster_id`, `post_id` | Junction table |
+| `social_fetch_logs` | UUID | Observability: Logs each fetch attempt per source (success, posts_found, errors) - Sprint 7.1 |
 
 ---
 

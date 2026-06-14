@@ -38,6 +38,9 @@ import StoryDetail from "./pages/StoryDetail.jsx";
 import EventDetail from "./pages/EventDetail.jsx";
 import SocialIntelligence from "./pages/SocialIntelligence.jsx";
 import SocialSources from "./pages/SocialSources.jsx";
+import SocialOpportunities from "./pages/SocialOpportunities.jsx";
+import EditorialDossierPage from "./pages/EditorialDossierPage.jsx";
+import KnowledgeGraph       from "./pages/KnowledgeGraph.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -93,6 +96,13 @@ export default function App() {
         {/* Social Intelligence */}
         <Route path="social" element={<SocialIntelligence />} />
         <Route path="social/sources" element={<SocialSources />} />
+        <Route path="social/opportunities" element={<SocialOpportunities />} />
+
+        {/* Editorial Intelligence — Sprint 8.5 */}
+        <Route path="editorial-intelligence" element={<EditorialDossierPage />} />
+
+        {/* Knowledge Graph — Sprint 8.6A */}
+        <Route path="knowledge-graph" element={<KnowledgeGraph />} />
 
 
         <Route path="ads" element={<AdsDashboardV2 />} /> {/* Replaced V1 with V2 default */}

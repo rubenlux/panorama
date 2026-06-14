@@ -1,4 +1,4 @@
-# MODULE_REGISTRY.md — Panorama News Platform
+# MODULE_REGISTRY.md — INSPYRA NEWS AUTONOMOUS EDITORIAL PLATFORM
 
 One-line description of every non-trivial module. Use this to find where a feature lives before grepping.
 
@@ -25,6 +25,7 @@ One-line description of every non-trivial module. Use this to find where a featu
 | `knowledge.js` | `/knowledge` | Knowledge base CRUD |
 | `monitor.js` | `/monitor` | RSS monitor stats, sources, articles, trending |
 | `trends.js` | `/trends` | Trend cluster API (Sprint 5.3) |
+| `social.js` | `/social` | Social Intelligence API + Diagnostic (Fase 4) |
 | `topics.js` | `/topics` | Editorial topics |
 | `analytics.js` | `/analytics` | v1 analytics |
 | `analytics_v2.js` | `/analytics/v2` | Pixel-based campaign analytics |

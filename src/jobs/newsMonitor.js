@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { query } from '../routes/db.js';
 import { AiService } from '../services/AiService.js';
 import { fetchArticleContentForMonitor } from '../services/ArticleFetcher.js';
+import { startRun, finishRun } from './workerUtils.js';
 
 const ai = new AiService();
 
@@ -1147,16 +1148,12 @@ async function summarizePendingEvents() {
     WHERE ec.status = 'active'
       AND ec.story_count >= $1
       AND ec.last_updated_at > now() - interval '${EVENT_WINDOW_HOURS} hours'
+      AND (ec.last_summarized_at IS NULL OR ec.last_summarized_at < now() - interval '2 hours')
     ORDER BY ec.source_count DESC, ec.article_count DESC
     LIMIT 3
   `, [EVENT_SUMMARY_MIN_STORIES]);
 
   for (const event of pending) {
-    await query(
-      `UPDATE event_clusters SET status = 'summarizing', updated_at = now() WHERE id = $1`,
-      [event.id]
-    );
-
     try {
       const [storiesRes, articlesRes, entitiesRes] = await Promise.all([
         query(`
@@ -1211,16 +1208,17 @@ async function summarizePendingEvents() {
 
       await query(`
         UPDATE event_clusters SET
-          headline         = $1,
-          summary          = $2,
-          event_type       = $3,
-          importance_score = $4,
-          editorial_score  = $5,
-          coverage_status  = $6,
-          main_entities    = $7,
-          timeline         = $8,
-          status           = 'active',
-          updated_at       = now()
+          headline           = $1,
+          summary            = $2,
+          event_type         = $3,
+          importance_score   = $4,
+          editorial_score    = $5,
+          coverage_status    = $6,
+          main_entities      = $7,
+          timeline           = $8,
+          status             = 'active',
+          last_summarized_at = now(),
+          updated_at         = now()
         WHERE id = $9
       `, [
         result.headline      || result.event_name || event.headline,
@@ -1261,10 +1259,6 @@ async function summarizePendingEvents() {
       console.log(`[Monitor] Event ready: "${result.event_name || result.headline}" (score: ${editScore})`);
     } catch (e) {
       console.error(`[Monitor] Event summarization failed for "${event.headline}":`, e.message);
-      await query(
-        `UPDATE event_clusters SET status = 'active', updated_at = now() WHERE id = $1`,
-        [event.id]
-      );
     }
   }
 }
@@ -1346,6 +1340,23 @@ async function fetchPendingArticleContent() {
 // ── Main job ──────────────────────────────────────────────────────────────────
 
 export async function runNewsMonitor() {
+  // Respect pause flag — lets the CMS pause AI consumption without stopping the process
+  const { rows: pauseFlag } = await query(`SELECT value FROM settings WHERE key = 'news_monitor_paused'`).catch(() => ({ rows: [] }));
+  if (pauseFlag[0]?.value === 'true') {
+    console.log('[Monitor] ⏸ Pausado — ciclo omitido');
+    // Record skipped run so health endpoint can confirm worker is alive
+    const runId = await startRun('news_monitor');
+    await finishRun(runId, { status: 'skipped' });
+    return;
+  }
+
+  // Self-healing: add last_summarized_at if missing (replaces broken 'summarizing' status)
+  await query(`ALTER TABLE event_clusters ADD COLUMN IF NOT EXISTS last_summarized_at TIMESTAMP`).catch(() => {});
+
+  const runId = await startRun('news_monitor');
+  let sourcesProcessed = 0;
+  let itemsFound = 0;
+
   try {
     const { rows: sources } = await query(`
       SELECT * FROM tracked_sources
@@ -1354,15 +1365,24 @@ export async function runNewsMonitor() {
              OR last_checked < now() - (check_interval || ' seconds')::interval)
     `);
 
-    if (sources.length === 0) return;
+    if (sources.length === 0) {
+      await finishRun(runId, { status: 'success' });
+      return;
+    }
 
     const allNewIds = [];
     for (const source of sources) {
       const ids = await processSource(source);
       allNewIds.push(...ids);
+      sourcesProcessed++;
     }
 
-    if (allNewIds.length === 0) return;
+    itemsFound = allNewIds.length;
+
+    if (allNewIds.length === 0) {
+      await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed });
+      return;
+    }
 
     console.log(`[Monitor] ${allNewIds.length} new articles from ${sources.length} sources`);
 
@@ -1401,7 +1421,10 @@ export async function runNewsMonitor() {
     await markStaleEvents();
     summarizePendingEvents().catch(e => console.error('[Monitor] Event summarization error:', e.message));
 
+    await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed, items_found: itemsFound });
+
   } catch (e) {
     console.error('[Monitor] Job error:', e.message);
+    await finishRun(runId, { status: 'error', sources_processed: sourcesProcessed, items_found: itemsFound, errors_count: 1, error_message: e.message.slice(0, 500) });
   }
 }

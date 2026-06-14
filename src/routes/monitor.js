@@ -727,4 +727,268 @@ router.post('/research', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /monitor/worker-pause — returns pause status + metadata
+router.get('/worker-pause', requireAuth, async (req, res, next) => {
+  try {
+    const { rows } = await query(`
+      SELECT key, value FROM settings
+      WHERE key IN ('news_monitor_paused', 'news_monitor_paused_at', 'news_monitor_paused_by', 'news_monitor_pause_reason')
+    `);
+    const info = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    res.json({
+      paused:       info['news_monitor_paused'] === 'true',
+      paused_since: info['news_monitor_paused_at']     || null,
+      paused_by:    info['news_monitor_paused_by']     || null,
+      pause_reason: info['news_monitor_pause_reason']  || null,
+    });
+  } catch (e) { next(e); }
+});
+
+// POST /monitor/worker-pause — toggle pause with optional reason + audit log
+router.post('/worker-pause', requireAuth, async (req, res, next) => {
+  try {
+    const paused = req.body.paused === true;
+    const reason = req.body.reason?.trim() || null;
+    const actor  = req.user?.email || req.user?.sub || 'admin';
+
+    await query(`
+      INSERT INTO settings (key, value, type, group_name)
+      VALUES ('news_monitor_paused', $1, 'boolean', 'system')
+      ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()
+    `, [paused ? 'true' : 'false']);
+
+    if (paused) {
+      for (const [k, v] of [
+        ['news_monitor_paused_at',     new Date().toISOString()],
+        ['news_monitor_paused_by',     actor],
+        ['news_monitor_pause_reason',  reason || ''],
+      ]) {
+        await query(`
+          INSERT INTO settings (key, value, type, group_name) VALUES ($1, $2, 'text', 'system')
+          ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = NOW()
+        `, [k, v]);
+      }
+    }
+
+    await query(
+      `INSERT INTO system_events (event_type, actor, metadata) VALUES ($1, $2, $3)`,
+      [paused ? 'news_monitor_paused' : 'news_monitor_resumed', actor, JSON.stringify({ reason })]
+    ).catch(() => {});
+
+    res.json({ ok: true, paused, paused_by: paused ? actor : null, pause_reason: reason });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/health — full operational dashboard data
+router.get('/health', requireAuth, async (req, res, next) => {
+  try {
+    // Last run per worker (most recent row per worker_name)
+    const { rows: lastRuns } = await query(`
+      SELECT DISTINCT ON (worker_name)
+        worker_name, started_at, finished_at, duration_ms, status,
+        sources_processed, items_found, items_saved, errors_count, error_message
+      FROM worker_runs
+      ORDER BY worker_name, started_at DESC
+    `).catch(() => ({ rows: [] }));
+
+    const runMap = Object.fromEntries(lastRuns.map(r => [r.worker_name, r]));
+
+    // Last ACTIVE (non-skipped success) run for news monitor
+    const { rows: [lastActiveNews] } = await query(`
+      SELECT started_at, items_found, sources_processed, duration_ms
+      FROM worker_runs
+      WHERE worker_name = 'news_monitor' AND status = 'success' AND items_found > 0
+      ORDER BY started_at DESC LIMIT 1
+    `).catch(() => ({ rows: [null] }));
+
+    // Aggregated stats per worker for last 24h
+    const { rows: runStats } = await query(`
+      SELECT
+        worker_name,
+        COUNT(*) FILTER (WHERE status != 'skipped')::int AS total_runs,
+        COUNT(*) FILTER (WHERE status = 'success')::int  AS success_runs,
+        COUNT(*) FILTER (WHERE status = 'error')::int    AS error_runs,
+        COUNT(*) FILTER (WHERE status = 'skipped')::int  AS skipped_runs,
+        ROUND(AVG(duration_ms) FILTER (WHERE status = 'success'))::int AS avg_duration_ms
+      FROM worker_runs
+      WHERE started_at > NOW() - INTERVAL '24 hours'
+      GROUP BY worker_name
+    `).catch(() => ({ rows: [] }));
+
+    const statsMap = Object.fromEntries(runStats.map(r => [r.worker_name, r]));
+
+    // Pause info from settings
+    const { rows: pauseRows } = await query(`
+      SELECT key, value FROM settings
+      WHERE key IN ('news_monitor_paused','news_monitor_paused_at','news_monitor_paused_by','news_monitor_pause_reason')
+    `).catch(() => ({ rows: [] }));
+    const pauseInfo = Object.fromEntries(pauseRows.map(r => [r.key, r.value]));
+    const isPaused  = pauseInfo['news_monitor_paused'] === 'true';
+
+    // Worker alive: any news_monitor run (skipped counts) within last 2 min
+    const newsLastRun  = runMap['news_monitor'];
+    const socialLastRun = runMap['social_monitor'];
+    const workerAlive  = newsLastRun && (Date.now() - new Date(newsLastRun.started_at).getTime()) < 120_000;
+    const socialAlive  = socialLastRun && (Date.now() - new Date(socialLastRun.started_at).getTime()) < 35 * 60_000;
+
+    let newsStatus;
+    if (isPaused)       newsStatus = 'paused';
+    else if (!workerAlive) newsStatus = 'stopped';
+    else                   newsStatus = 'active';
+
+    // Transcript coverage
+    const { rows: [txStats] } = await query(`
+      SELECT
+        COUNT(sp.id) FILTER (WHERE ss.content_type IN ('videos','shorts'))::int                                                          AS eligible,
+        COUNT(sp.id) FILTER (WHERE ss.content_type IN ('videos','shorts') AND sp.transcript_available = true)::int                       AS with_transcript,
+        COUNT(sp.id) FILTER (WHERE ss.content_type IN ('videos','shorts') AND sp.transcript_available = false)::int                      AS without_transcript,
+        COUNT(sp.id) FILTER (WHERE ss.content_type IN ('videos','shorts') AND sp.transcript_fetched_at IS NULL)::int                     AS pending,
+        ROUND(AVG(vt.transcript_length) FILTER (WHERE vt.transcript_length > 0))::int                                                   AS avg_length
+      FROM social_posts sp
+      JOIN social_sources ss ON ss.id = sp.source_id
+      LEFT JOIN video_transcripts vt ON vt.post_id = sp.id
+    `).catch(() => ({ rows: [{ eligible: 0, with_transcript: 0, without_transcript: 0, pending: 0, avg_length: 0 }] }));
+
+    const { rows: txBySrc } = await query(`
+      SELECT ss.name, ss.content_type,
+        COUNT(sp.id)::int                                                                                     AS total,
+        COUNT(sp.id) FILTER (WHERE sp.transcript_available = true)::int                                      AS with_transcript,
+        COUNT(sp.id) FILTER (WHERE sp.transcript_fetched_at IS NULL)::int                                    AS pending,
+        ROUND(100.0 * COUNT(sp.id) FILTER (WHERE sp.transcript_available = true)
+          / NULLIF(COUNT(sp.id), 0), 1)::float                                                               AS coverage_pct
+      FROM social_posts sp
+      JOIN social_sources ss ON ss.id = sp.source_id
+      WHERE ss.content_type IN ('videos','shorts')
+      GROUP BY ss.id, ss.name, ss.content_type
+      ORDER BY ss.name
+    `).catch(() => ({ rows: [] }));
+
+    // RSS source health
+    const { rows: [srcStats] } = await query(`
+      SELECT
+        COUNT(*)::int                                                          AS total,
+        COUNT(*) FILTER (WHERE enabled = true)::int                           AS active,
+        COUNT(*) FILTER (WHERE enabled = false)::int                          AS inactive,
+        COUNT(*) FILTER (WHERE last_checked > NOW() - INTERVAL '1 hour')::int AS checked_last_hour,
+        COUNT(*) FILTER (WHERE last_checked > NOW() - INTERVAL '24 hours')::int AS checked_last_day
+      FROM tracked_sources
+    `).catch(() => ({ rows: [{ total: 0, active: 0, inactive: 0, checked_last_hour: 0, checked_last_day: 0 }] }));
+
+    // Backlog estimate
+    const { rows: [backlog] } = await query(`
+      SELECT
+        GREATEST(EXTRACT(EPOCH FROM (NOW() - MAX(detected_at))) / 3600, 0) AS hours_gap,
+        COALESCE(COUNT(*) FILTER (WHERE detected_at > NOW() - INTERVAL '7 days') / 168.0, 0) AS avg_per_hour
+      FROM monitored_articles
+    `).catch(() => ({ rows: [{ hours_gap: 0, avg_per_hour: 0 }] }));
+
+    const hoursGap   = parseFloat(backlog?.hours_gap  || 0);
+    const avgPerHour = parseFloat(backlog?.avg_per_hour || 0);
+
+    // Compute real-time alerts
+    const alerts = [];
+    if (!workerAlive)
+      alerts.push({ type: 'worker_stopped', severity: 'critical', message: 'Worker sin actividad en los últimos 2 minutos' });
+    if (isPaused && pauseInfo['news_monitor_paused_at']) {
+      const pausedHrs = (Date.now() - new Date(pauseInfo['news_monitor_paused_at']).getTime()) / 3_600_000;
+      if (pausedHrs > 0.5)
+        alerts.push({ type: 'news_monitor_paused', severity: 'warning', message: `News Monitor pausado hace ${pausedHrs.toFixed(1)}h` });
+    }
+    if (!isPaused && lastActiveNews) {
+      const idleMin = (Date.now() - new Date(lastActiveNews.started_at).getTime()) / 60_000;
+      if (idleMin > 30)
+        alerts.push({ type: 'news_monitor_idle', severity: 'warning', message: `News Monitor sin actividad hace ${Math.round(idleMin)} min` });
+    }
+    if (!socialAlive)
+      alerts.push({ type: 'social_monitor_idle', severity: 'warning', message: 'Social Monitor sin actividad en los últimos 35 minutos' });
+    const coveragePct = txStats?.eligible > 0 ? (txStats.with_transcript / txStats.eligible * 100) : 100;
+    if (txStats?.eligible > 5 && coveragePct < 30)
+      alerts.push({ type: 'transcript_coverage_low', severity: 'warning', message: `Cobertura de transcripts: ${coveragePct.toFixed(0)}%` });
+    if (srcStats?.total > 0 && (srcStats.active / srcStats.total) < 0.8)
+      alerts.push({ type: 'rss_sources_low', severity: 'warning', message: `Fuentes RSS activas: ${srcStats.active}/${srcStats.total}` });
+
+    res.json({
+      worker: {
+        status:        workerAlive ? 'active' : 'stopped',
+        last_seen_at:  newsLastRun?.started_at || null,
+      },
+      news_monitor: {
+        status:               newsStatus,
+        paused:               isPaused,
+        paused_since:         isPaused ? (pauseInfo['news_monitor_paused_at']    || null) : null,
+        paused_by:            isPaused ? (pauseInfo['news_monitor_paused_by']    || null) : null,
+        pause_reason:         isPaused ? (pauseInfo['news_monitor_pause_reason'] || null) : null,
+        last_run_at:          newsLastRun?.started_at    || null,
+        last_active_at:       lastActiveNews?.started_at || null,
+        last_run_duration_ms: newsLastRun?.duration_ms   || null,
+        last_sources_processed: newsLastRun?.sources_processed || 0,
+        last_items_found:     newsLastRun?.items_found   || 0,
+        cycles_24h:           statsMap['news_monitor']?.total_runs    || 0,
+        success_rate_pct:     statsMap['news_monitor']?.total_runs > 0
+          ? Math.round(statsMap['news_monitor'].success_runs / statsMap['news_monitor'].total_runs * 100) : null,
+        avg_duration_ms:      statsMap['news_monitor']?.avg_duration_ms || null,
+      },
+      social_monitor: {
+        status:               socialAlive ? 'active' : 'stopped',
+        last_run_at:          socialLastRun?.started_at    || null,
+        last_run_duration_ms: socialLastRun?.duration_ms   || null,
+        last_sources_processed: socialLastRun?.sources_processed || 0,
+        last_items_found:     socialLastRun?.items_found   || 0,
+        last_items_saved:     socialLastRun?.items_saved   || 0,
+        cycles_24h:           statsMap['social_monitor']?.total_runs    || 0,
+        success_rate_pct:     statsMap['social_monitor']?.total_runs > 0
+          ? Math.round(statsMap['social_monitor'].success_runs / statsMap['social_monitor'].total_runs * 100) : null,
+        avg_duration_ms:      statsMap['social_monitor']?.avg_duration_ms || null,
+      },
+      transcripts: {
+        total_eligible:        txStats?.eligible        || 0,
+        total_with_transcript: txStats?.with_transcript || 0,
+        total_without:         txStats?.without_transcript || 0,
+        total_pending:         txStats?.pending         || 0,
+        coverage_pct:          txStats?.eligible > 0 ? Math.round(txStats.with_transcript / txStats.eligible * 100) : 0,
+        avg_length:            txStats?.avg_length      || 0,
+        by_source:             txBySrc,
+      },
+      rss_sources:   srcStats || { total: 0, active: 0, inactive: 0, checked_last_hour: 0, checked_last_day: 0 },
+      backlog: {
+        hours_since_last_article: hoursGap > 0 ? parseFloat(hoursGap.toFixed(1)) : 0,
+        avg_articles_per_hour:    parseFloat(avgPerHour.toFixed(1)),
+        estimated_pending:        isPaused && hoursGap > 0 ? Math.round(hoursGap * avgPerHour) : 0,
+      },
+      alerts,
+    });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/worker-runs — execution history
+router.get('/worker-runs', requireAuth, async (req, res, next) => {
+  try {
+    const worker = req.query.worker || null;
+    const limit  = Math.min(parseInt(req.query.limit || '50'), 200);
+    const { rows } = await query(`
+      SELECT id, worker_name, started_at, finished_at, duration_ms, status,
+             sources_processed, items_found, items_saved, errors_count, error_message
+      FROM worker_runs
+      WHERE ($1::text IS NULL OR worker_name = $1)
+      ORDER BY started_at DESC
+      LIMIT $2
+    `, [worker, limit]).catch(() => ({ rows: [] }));
+    res.json({ items: rows });
+  } catch (e) { next(e); }
+});
+
+// GET /monitor/system-events — audit event log
+router.get('/system-events', requireAuth, async (req, res, next) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit || '50'), 200);
+    const { rows } = await query(`
+      SELECT id, event_type, actor, metadata, created_at
+      FROM system_events
+      ORDER BY created_at DESC
+      LIMIT $1
+    `, [limit]).catch(() => ({ rows: [] }));
+    res.json({ items: rows });
+  } catch (e) { next(e); }
+});
+
 export default router;

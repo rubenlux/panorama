@@ -1,77 +1,157 @@
-# ROADMAP.md — Panorama News Platform
+# ROADMAP MAESTRO — INSPYRA NEWS AUTONOMOUS EDITORIAL PLATFORM
 
-Sprint history and planned work. Last updated: 2026-06-09.
+## OBJETIVO FINAL
 
----
+Construir una plataforma editorial autónoma capaz de:
 
-## Completed Sprints
+* Detectar noticias.
+* Monitorear medios.
+* Monitorear redes sociales.
+* Detectar tendencias.
+* Detectar oportunidades editoriales.
+* Corroborar información.
+* Generar contenido.
+* Generar SEO.
+* Generar contenido para redes.
+* Publicar automáticamente contenido de bajo riesgo.
+* Escalar únicamente los casos sensibles a revisión humana.
 
-### Sprint 1–4 — Core Platform
-- Express 5 API + PostgreSQL schema
-- CMS (React 19 + Vite) with TipTap rich editor
-- JWT auth, role-based access
-- Ad system v2 with pixel tracking and user interest profiles
-- Editorial Studio (AI article generation)
-- Research Center (topic investigation with RSS + AI brief)
-- Knowledge Base (entity tracking)
-- Media Monitor v1 (RSS polling, trending entities)
-- Dossier workflow C1 → C2 → C3
+La intervención humana debe tender al mínimo posible.
 
-### Sprint 5.1 — Entity Origin Separation (2026-06-09)
-**Problem:** Trending topics were contaminated by entities created during manual research (e.g. "Claude Fable 5" appeared as trending because a researcher had investigated it, pre-seeding the entity before the monitor saw it in RSS).
+====================================================
+## PRINCIPIOS ARQUITECTÓNICOS
+==========================
 
-**Solution:**
-- Added `entity_origin VARCHAR(20)` to `knowledge_entities` with values `RESEARCH | MONITOR | SOCIAL | MANUAL`
-- New 3-column unique index: `(lower(name), entity_type, entity_origin)` — same entity can exist as both RESEARCH and MONITOR independently
-- Two separate entity pipelines in `newsMonitor.js`:
-  - `matchResearchEntities()` — matches RESEARCH entities to articles (knowledge base context only, not trending)
-  - `discoverMonitorEntities()` — NER extraction → creates/updates MONITOR entities → drives trending
-- `refreshTrendingTopics()` now filters `WHERE ke.entity_origin = 'MONITOR'`
-- Fixed W1: Research connector now reads `tracked_sources` from DB instead of hardcoded `DEFAULT_FEEDS`
-- Fixed W2: Relevance scoring in `rss.js` filters Spanish/English stopwords
+1. La IA NO es la fuente de verdad.
+La verdad proviene de:
+* fuentes monitoreadas
+* corroboración
+* clustering
+* scoring
+* social intelligence
 
-### Sprint 5.2 — Full Article Research Engine (2026-06-09)
-**Problem:** Research was sending only RSS descriptions (~150-300 chars) to Claude, producing superficial briefs.
+2. Ninguna noticia debe publicarse porque la IA la inventó.
+3. Toda afirmación debe poder trazarse hasta artículos reales.
+4. Todo proceso debe ser auditable.
+5. Ningún proveedor AI debe quedar acoplado al sistema.
 
-**Solution:**
-- New `ArticleFetcher.js` service: fetches full HTML, extracts content via JSON-LD → `<article>` → `<main>` → `<body>` fallback, with paywall detection and 2000-word cap
-- 72h cache in `article_content_cache` table
-- `_enrichSources()` in `research.js` enriches top 10 sources before sending to Claude
-- `generateResearchBrief()` updated: removed `.slice(0, 300)`, full articles up to 1500 words, `max_tokens` 2000 → 3000
-- Result: 86% success rate, average content per source 32 words → 747 words (~23x improvement)
+====================================================
+## FASE 1 — NEWS INTELLIGENCE
+==========================
+Estado esperado: COMPLETADO
+Módulos:
+tracked_sources, monitored_articles, story_clusters, events, opportunities, dossiers
+Objetivo: Detectar y agrupar noticias.
 
-### Sprint 5.3 — Trend Intelligence (2026-06-09)
-**Problem:** Trending tab showed flat entity mention cards with no editorial context.
+====================================================
+## FASE 2 — CONTENT ENRICHMENT
+===========================
+Estado esperado: COMPLETADO
+Objetivo: Nunca depender únicamente de RSS.
+Implementar: fetch completo, playwright fallback, extraction_method, content_words, enrichment coverage
+Métricas: coverage %, content completeness, source quality
 
-**Solution:**
-- New tables: `trend_clusters`, `trend_cluster_articles`
-- NER stopwords expanded: "Horóscopo", "Video", "Impactante", clickbait adjectives, etc.
-- `upsertTrendCluster()` in newsMonitor: groups articles into 6h cycles per entity
-- `summarizePendingClusters()`: triggers Claude when cluster reaches 3 articles or 2 sources — generates headline, summary, editorial_angles JSONB
-- `AiService.generateTrendSummary()`: new method
-- `GET/POST /trends` API (5 endpoints)
-- CMS trending tab replaced with `TrendClusterCard` — shows AI headline, source badges, [Ver detalle] [Seguir] [Crear dossier]
-- New page `TrendDetail.jsx` at `/trends/:id` — full cluster view with article timeline and editorial angles
+====================================================
+## FASE 3 — CLUSTER QUALITY
+========================
+Estado esperado: COMPLETADO
+Objetivo: Eliminar contaminación.
+Implementar: relevance_score, story_quality, story_confidence, story_context_score, clustering_audit
+Todo cluster debe ser explicable.
 
----
+====================================================
+## FASE 4 — SOCIAL INTELLIGENCE
+============================
+Objetivo: Monitorear únicamente cuentas definidas por el usuario.
+Plataformas: YouTube, Instagram, Facebook, TikTok, X, WhatsApp Channels
+Entidades: social_sources, social_posts, social_clusters
+Capacidades: clustering social, trending topics, engagement, content gap
+Preguntas que debe responder:
+¿Qué publica la competencia?
+¿Qué publica Formosa?
+¿Qué tema está creciendo?
+¿Qué tema no estamos cubriendo?
 
-## Planned / Backlog
+====================================================
+## FASE 5 — WHATSAPP INTELLIGENCE
+==============================
+Objetivo: Monitorear canales públicos.
+Implementar: platform = whatsapp
+Capturar: texto, imágenes, videos, links, fecha
+Integrar con Social Intelligence.
 
-### Sprint 6 — Live Coverage Engine (deprioritized)
-Real-time coverage for dynamic events. Full spec preserved in conversation history.
+====================================================
+## FASE 6 — AI PROVIDER LAYER
+==========================
+Objetivo: Desacoplar completamente la IA.
+Proveedores soportados: Anthropic API, OpenAI, OpenClaw, Ollama
+Configuración: AI_PROVIDER=
+Cambiar proveedor sin tocar lógica editorial.
 
-### Near-term improvements
-- **NER quality**: Replace regex NER with `compromise.js` or `@nlpjs/ner` for Spanish for fewer false positives
-- **Cluster merging**: Merge clusters for the same entity when they fire close together (< 1h gap)
-- **Trend alerts**: Push notification / Slack webhook when a cluster hits 'ready' status
-- **Trend analytics**: Track which trends became dossiers, measure editorial conversion rate
-- **Web public trending**: Expose anonymized trending data on the public web frontend
+====================================================
+## FASE 7 — PUBLICATION ENGINE
+===========================
+Objetivo: Preparar distribución automática.
+Nuevas tablas: publication_queue, publication_targets, publication_logs
+Destinos: web, facebook, instagram, x, whatsapp, youtube
+Capacidades: schedule, retry, failure tracking, audit trail
 
-### Technical debt
-| ID | Issue | Priority |
-|---|---|---|
-| D1 | Clarín partial paywall — truncated content | Low |
-| D2 | Agenfor blocked — RSS-only for Formosa coverage | Low |
-| D3 | Content extractor is pure regex, not Readability | Medium |
-| D4 | No User-Agent rotation | Low |
-| D5 | Sources >10 in research still use RSS snippets | Medium |
+====================================================
+## FASE 8 — FACT CONSISTENCY ENGINE
+================================
+Objetivo: Reducir errores. Detectar: contradicciones, fechas incompatibles, resultados incompatibles, personas incompatibles.
+Resultado: FACT_CONFLICT -> Bloquear autopublicación.
+
+====================================================
+## FASE 9 — RISK CLASSIFIER
+========================
+Clasificar contenido: LOW RISK, MEDIUM RISK, HIGH RISK. La clasificación debe ser automática.
+
+====================================================
+## FASE 10 — PUBLICATION CONFIDENCE
+================================
+Nuevo score: publication_confidence (0-100)
+Factores: story_confidence, story_context_score, source_count, content coverage, fact consistency, social corroboration
+
+====================================================
+## FASE 11 — AUTONOMOUS PUBLISHING
+===============================
+Reglas:
+confidence >= 90 AND risk = low -> AUTO PUBLISH
+confidence 75-89 -> AUTO PUBLISH + AUDIT
+confidence 50-74 -> REVIEW QUEUE
+confidence < 50 -> BLOCK
+
+====================================================
+## FASE 12 — CONTENT GENERATION
+============================
+Generar automáticamente: noticia, SEO, meta description, schema.org, facebook post, instagram caption, x thread, whatsapp summary, youtube community post
+Todo basado únicamente en fuentes verificadas.
+
+====================================================
+## FASE 13 — DISTRIBUTION ENGINE
+=============================
+Una vez publicado: Web -> Facebook -> Instagram -> X -> WhatsApp -> YouTube Community
+Distribución automática.
+
+====================================================
+## FASE 14 — EDITORIAL COMMAND CENTER
+==================================
+Dashboard central. Mostrar: Historias activas, Temas virales, Competencia, Content gap, Publicaciones pendientes, Automáticas, Alertas, Riesgos, Conflictos.
+
+====================================================
+## FASE 15 — AUTONOMOUS NEWSROOM
+=============================
+Estado final esperado. Pipeline: Detectar -> Corroborar -> Clusterizar -> Analizar -> Generar -> SEO -> Redes -> Publicar -> Distribuir. Intervención humana: Solo excepciones.
+
+====================================================
+## REGLA OBLIGATORIA
+=================
+Ninguna fase puede considerarse terminada sin:
+1. Migración ejecutada.
+2. Auditoría SQL.
+3. Endpoint de diagnóstico.
+4. Actualización de: ROADMAP.md, DATABASE_MAP.md, MODULE_REGISTRY.md, SYSTEM_STATUS.md, DECISIONS_LOG.md.
+5. Definition of Done verificable.
+6. Evidencia real de funcionamiento.
+No aceptar "implementado" sin pruebas.

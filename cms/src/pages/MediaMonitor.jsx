@@ -215,11 +215,85 @@ export default function MediaMonitor() {
   const [researchingId, setResearchingId] = useState(null);
   const [verifying,  setVerifying]  = useState(null);
   const [approving,  setApproving]  = useState(null);
+  const [monPaused,     setMonPaused]     = useState(false);
+  const [pauseBusy,     setPauseBusy]     = useState(false);
+  const [pauseForm,     setPauseForm]     = useState(false);
+  const [pauseReason,   setPauseReason]   = useState('');
+  const [healthData,    setHealthData]    = useState(null);
+  const [workerRuns,    setWorkerRuns]    = useState([]);
+  const [systemEvents,  setSystemEvents]  = useState([]);
   const refreshRef = useRef(null);
 
   const loadStats    = useCallback(async () => {
     try { setStats(await apiJson('/monitor/stats', { auth: true })); } catch {}
   }, []);
+
+  const loadPauseStatus = useCallback(async () => {
+    try {
+      const d = await apiJson('/monitor/worker-pause', { auth: true });
+      setMonPaused(d.paused);
+    } catch {}
+  }, []);
+
+  const loadHealth = useCallback(async () => {
+    try {
+      const d = await apiJson('/monitor/health', { auth: true });
+      setHealthData(d);
+      setMonPaused(d.news_monitor?.paused ?? false);
+    } catch {}
+  }, []);
+
+  const loadWorkerRuns = useCallback(async () => {
+    try {
+      const d = await apiJson('/monitor/worker-runs?limit=30', { auth: true });
+      setWorkerRuns(d.items || []);
+    } catch {}
+  }, []);
+
+  const loadSystemEvents = useCallback(async () => {
+    try {
+      const d = await apiJson('/monitor/system-events?limit=30', { auth: true });
+      setSystemEvents(d.items || []);
+    } catch {}
+  }, []);
+
+  async function handlePauseToggle() {
+    if (!monPaused && !pauseForm) {
+      setPauseForm(true);
+      return;
+    }
+    setPauseBusy(true);
+    const next = !monPaused;
+    try {
+      const d = await apiJson('/monitor/worker-pause', {
+        method: 'POST', auth: true,
+        body: { paused: next, reason: next ? pauseReason : undefined },
+      });
+      setMonPaused(d.paused);
+      setPauseForm(false);
+      setPauseReason('');
+      loadHealth();
+    } catch (e) {
+      console.error('[PauseToggle] Error:', e.message);
+      alert('Error al cambiar estado del monitor: ' + e.message);
+    } finally { setPauseBusy(false); }
+  }
+
+  async function confirmPause() {
+    setPauseBusy(true);
+    try {
+      const d = await apiJson('/monitor/worker-pause', {
+        method: 'POST', auth: true,
+        body: { paused: true, reason: pauseReason },
+      });
+      setMonPaused(d.paused);
+      setPauseForm(false);
+      setPauseReason('');
+      loadHealth();
+    } catch (e) {
+      alert('Error al pausar: ' + e.message);
+    } finally { setPauseBusy(false); }
+  }
 
   const loadSources  = useCallback(async () => {
     try { const d = await apiJson('/monitor/sources', { auth: true }); setSources(d.items || []); } catch {}
@@ -247,8 +321,10 @@ export default function MediaMonitor() {
 
   useEffect(() => {
     loadStats(); loadSources(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
+    loadHealth(); loadWorkerRuns(); loadSystemEvents();
     refreshRef.current = setInterval(() => {
       loadStats(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
+      loadHealth(); loadWorkerRuns();
     }, 30_000);
     return () => clearInterval(refreshRef.current);
   }, []);
@@ -384,12 +460,14 @@ export default function MediaMonitor() {
     approved: sources.filter(s => s.verification_status === 'approved').length,
   };
 
+  const alertCount = healthData?.alerts?.length || 0;
   const TABS = [
     { id: 'events',  label: '🎯 Eventos',       count: events.length },
     { id: 'feed',    label: '📰 Feed',          count: articles.length },
     { id: 'trending',label: '📖 Historias',     count: stories.length },
     { id: 'opps',    label: '⚡ Oportunidades', count: stats?.opportunities ?? editOpps.filter(o => o.status === 'pending').length, alert: (stats?.opportunities ?? editOpps.filter(o => o.status === 'pending').length) > 0 },
     { id: 'sources', label: '📡 Fuentes',       count: sources.length },
+    { id: 'health',  label: '🔧 Sistema',       count: alertCount, alert: alertCount > 0 },
   ];
 
   const defaultTab = 'events';
@@ -419,7 +497,50 @@ export default function MediaMonitor() {
                   <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2 }}>{s.label}</div>
                 </div>
               ))}
-              <WorkerStatus idle={stats.worker_idle_seconds} lastRun={stats.last_worker_run} />
+              <WorkerStatusV2 health={healthData} idleSecs={stats.worker_idle_seconds} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+                {monPaused ? (
+                  <button
+                    onClick={handlePauseToggle}
+                    disabled={pauseBusy}
+                    style={{ padding: '8px 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: '#dcfce7', color: '#166534', opacity: pauseBusy ? 0.6 : 1 }}
+                  >
+                    ▶ Reanudar
+                  </button>
+                ) : pauseForm ? (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <input
+                      type="text"
+                      placeholder="Motivo (ej: Ahorro IA)"
+                      value={pauseReason}
+                      onChange={e => setPauseReason(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && confirmPause()}
+                      autoFocus
+                      style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #fca5a5', fontSize: 13, width: 200 }}
+                    />
+                    <button onClick={confirmPause} disabled={pauseBusy} style={{ padding: '7px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: '#fee2e2', color: '#dc2626' }}>
+                      Confirmar
+                    </button>
+                    <button onClick={() => { setPauseForm(false); setPauseReason(''); }} style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #e5e7eb', cursor: 'pointer', fontSize: 13, background: '#fff', color: '#6b7280' }}>
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={handlePauseToggle}
+                    disabled={pauseBusy}
+                    style={{ padding: '8px 16px', borderRadius: 10, border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 13, background: '#fee2e2', color: '#dc2626', opacity: pauseBusy ? 0.6 : 1 }}
+                  >
+                    ⏸ Pausar
+                  </button>
+                )}
+                {monPaused && healthData?.news_monitor?.paused_since && (
+                  <div style={{ fontSize: 11, color: '#9ca3af', textAlign: 'right' }}>
+                    {healthData.news_monitor.pause_reason && <span style={{ color: '#6b7280' }}>{healthData.news_monitor.pause_reason} · </span>}
+                    {timeAgo(healthData.news_monitor.paused_since)}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -696,35 +817,277 @@ export default function MediaMonitor() {
             </div>
           </div>
         )}
+
+        {/* ── SISTEMA ───────────────────────────────────────────────────── */}
+        {tab === 'health' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+
+            {/* Alerts */}
+            {healthData?.alerts?.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: '#374151' }}>Alertas ({healthData.alerts.length})</h3>
+                {healthData.alerts.map((a, i) => (
+                  <div key={i} style={{ padding: '10px 14px', borderRadius: 8, border: `1px solid ${a.severity === 'critical' ? '#fca5a5' : '#fde68a'}`, background: a.severity === 'critical' ? '#fff1f2' : '#fffbeb', display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ fontSize: 16 }}>{a.severity === 'critical' ? '🔴' : '⚠️'}</span>
+                    <span style={{ fontSize: 13, color: '#374151' }}>{a.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Worker status grid */}
+            <div>
+              <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700, color: '#374151' }}>Estado Operativo</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 12 }}>
+                {/* Worker process */}
+                <MonitorCard
+                  title="Worker"
+                  status={healthData?.worker?.status || 'unknown'}
+                  lines={[
+                    healthData?.worker?.last_seen_at ? `Visto ${timeAgo(healthData.worker.last_seen_at)}` : 'Nunca visto',
+                  ]}
+                />
+                {/* News monitor */}
+                <MonitorCard
+                  title="News Monitor"
+                  status={healthData?.news_monitor?.status || 'unknown'}
+                  lines={[
+                    healthData?.news_monitor?.paused_since
+                      ? `Pausado ${timeAgo(healthData.news_monitor.paused_since)}`
+                      : healthData?.news_monitor?.last_run_at
+                        ? `Último ciclo ${timeAgo(healthData.news_monitor.last_run_at)}`
+                        : 'Sin datos',
+                    healthData?.news_monitor?.paused_by && `Por: ${healthData.news_monitor.paused_by}`,
+                    healthData?.news_monitor?.pause_reason && `Motivo: ${healthData.news_monitor.pause_reason}`,
+                    healthData?.news_monitor?.cycles_24h != null && `${healthData.news_monitor.cycles_24h} ciclos · ${healthData.news_monitor.success_rate_pct ?? '—'}% éxito`,
+                    healthData?.news_monitor?.avg_duration_ms && `Prom: ${(healthData.news_monitor.avg_duration_ms / 1000).toFixed(1)}s`,
+                  ].filter(Boolean)}
+                />
+                {/* Social monitor */}
+                <MonitorCard
+                  title="Social Monitor"
+                  status={healthData?.social_monitor?.status || 'unknown'}
+                  lines={[
+                    healthData?.social_monitor?.last_run_at
+                      ? `Último ciclo ${timeAgo(healthData.social_monitor.last_run_at)}`
+                      : 'Sin datos',
+                    healthData?.social_monitor?.last_sources_processed != null && `${healthData.social_monitor.last_sources_processed} fuentes · ${healthData.social_monitor.last_items_saved} nuevos posts`,
+                    healthData?.social_monitor?.cycles_24h != null && `${healthData.social_monitor.cycles_24h} ciclos (24h)`,
+                    healthData?.social_monitor?.avg_duration_ms && `Prom: ${(healthData.social_monitor.avg_duration_ms / 1000).toFixed(0)}s`,
+                  ].filter(Boolean)}
+                />
+                {/* Transcripts */}
+                <MonitorCard
+                  title="Transcript Engine"
+                  status={healthData?.transcripts?.total_eligible > 0
+                    ? (healthData.transcripts.coverage_pct >= 30 ? 'active' : 'warning')
+                    : 'unknown'}
+                  lines={[
+                    `${healthData?.transcripts?.coverage_pct ?? 0}% cobertura`,
+                    `Con: ${healthData?.transcripts?.total_with_transcript ?? 0} · Sin: ${healthData?.transcripts?.total_without ?? 0} · Pendientes: ${healthData?.transcripts?.total_pending ?? 0}`,
+                    healthData?.transcripts?.avg_length && `Prom: ${healthData.transcripts.avg_length.toLocaleString()} chars`,
+                  ].filter(Boolean)}
+                />
+              </div>
+            </div>
+
+            {/* Backlog */}
+            {healthData?.news_monitor?.paused && healthData?.backlog?.estimated_pending > 0 && (
+              <div style={{ padding: '14px 18px', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, color: '#92400e', marginBottom: 6 }}>
+                  📦 Backlog estimado durante pausa
+                </div>
+                <div style={{ fontSize: 13, color: '#78350f' }}>
+                  ~<strong>{healthData.backlog.estimated_pending.toLocaleString()}</strong> artículos sin procesar
+                  · {healthData.backlog.hours_since_last_article}h de inactividad
+                  · {healthData.backlog.avg_articles_per_hour} arts/h promedio
+                </div>
+                <div style={{ marginTop: 8, fontSize: 12, color: '#92400e' }}>
+                  Al reanudar, el monitor procesará el backlog automáticamente en ciclos de 60s.
+                </div>
+              </div>
+            )}
+
+            {/* Transcript coverage by source */}
+            {healthData?.transcripts?.by_source?.length > 0 && (
+              <div>
+                <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700, color: '#374151' }}>Cobertura de Transcripts por Fuente</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {healthData.transcripts.by_source.map((s, i) => {
+                    const pct = s.coverage_pct ?? 0;
+                    const barColor = pct >= 70 ? '#10b981' : pct >= 30 ? '#f59e0b' : '#ef4444';
+                    return (
+                      <div key={i} style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 8, padding: '10px 14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+                          <span style={{ fontWeight: 600, fontSize: 13, flex: 1 }}>{s.name}</span>
+                          <span style={{ fontSize: 11, color: '#6b7280' }}>{s.content_type}</span>
+                          <span style={{ fontWeight: 700, fontSize: 13, color: barColor }}>{pct.toFixed(0)}%</span>
+                          <span style={{ fontSize: 12, color: '#9ca3af' }}>{s.with_transcript}/{s.total}</span>
+                          {s.pending > 0 && <span style={{ fontSize: 11, color: '#f59e0b' }}>+{s.pending} pend.</span>}
+                        </div>
+                        <div style={{ height: 4, background: '#f3f4f6', borderRadius: 4, overflow: 'hidden' }}>
+                          <div style={{ height: '100%', width: pct + '%', background: barColor, borderRadius: 4, transition: 'width .3s' }} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* RSS sources summary */}
+            {healthData?.rss_sources && (
+              <div style={{ padding: '12px 16px', background: '#f9fafb', border: '1px solid #e5e7eb', borderRadius: 10 }}>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>Fuentes RSS</div>
+                <div style={{ display: 'flex', gap: 20, fontSize: 13, color: '#374151', flexWrap: 'wrap' }}>
+                  <span>Total: <strong>{healthData.rss_sources.total}</strong></span>
+                  <span style={{ color: '#10b981' }}>Activas: <strong>{healthData.rss_sources.active}</strong></span>
+                  {healthData.rss_sources.inactive > 0 && <span style={{ color: '#ef4444' }}>Inactivas: <strong>{healthData.rss_sources.inactive}</strong></span>}
+                  <span style={{ color: '#6b7280' }}>Revisadas último hora: <strong>{healthData.rss_sources.checked_last_hour}</strong></span>
+                </div>
+              </div>
+            )}
+
+            {/* Recent worker runs */}
+            {workerRuns.length > 0 && (
+              <div>
+                <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700, color: '#374151' }}>Últimas Ejecuciones</h3>
+                <div style={{ background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, overflow: 'hidden' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                    <thead>
+                      <tr style={{ background: '#f9fafb', borderBottom: '1px solid #e5e7eb' }}>
+                        {['Hora', 'Worker', 'Estado', 'Fuentes', 'Encontrados', 'Guardados', 'Duración'].map(h => (
+                          <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontWeight: 600, color: '#6b7280', whiteSpace: 'nowrap' }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {workerRuns.map((r, i) => {
+                        const statusIcon = r.status === 'success' ? '✅' : r.status === 'error' ? '❌' : r.status === 'skipped' ? '⏭' : '⏳';
+                        const dur = r.duration_ms != null ? (r.duration_ms >= 60000 ? `${(r.duration_ms/60000).toFixed(1)}min` : `${(r.duration_ms/1000).toFixed(1)}s`) : '—';
+                        return (
+                          <tr key={r.id} style={{ borderBottom: i < workerRuns.length - 1 ? '1px solid #f3f4f6' : 'none', background: r.status === 'error' ? '#fff1f2' : 'inherit' }}>
+                            <td style={{ padding: '7px 12px', color: '#6b7280', whiteSpace: 'nowrap' }}>{new Date(r.started_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</td>
+                            <td style={{ padding: '7px 12px', fontWeight: 600 }}>{r.worker_name.replace('_', ' ')}</td>
+                            <td style={{ padding: '7px 12px', whiteSpace: 'nowrap' }}>{statusIcon} {r.status}</td>
+                            <td style={{ padding: '7px 12px', textAlign: 'center', color: '#374151' }}>{r.sources_processed || '—'}</td>
+                            <td style={{ padding: '7px 12px', textAlign: 'center', color: '#374151' }}>{r.items_found || '—'}</td>
+                            <td style={{ padding: '7px 12px', textAlign: 'center', color: '#374151' }}>{r.items_saved || '—'}</td>
+                            <td style={{ padding: '7px 12px', color: '#6b7280', whiteSpace: 'nowrap' }}>{dur}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* System events */}
+            {systemEvents.length > 0 && (
+              <div>
+                <h3 style={{ margin: '0 0 12px', fontSize: 14, fontWeight: 700, color: '#374151' }}>Eventos del Sistema</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {systemEvents.map((e, i) => (
+                    <div key={e.id || i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', background: '#f9fafb', borderRadius: 8, fontSize: 12 }}>
+                      <span style={{ color: '#9ca3af', whiteSpace: 'nowrap' }}>{new Date(e.created_at).toLocaleString('es-AR', { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                      <span style={{ fontWeight: 600, color: '#374151' }}>{e.event_type}</span>
+                      {e.actor && e.actor !== 'system' && <span style={{ color: '#6b7280' }}>por {e.actor}</span>}
+                      {e.metadata?.reason && <span style={{ color: '#9ca3af' }}>— {e.metadata.reason}</span>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {!healthData && (
+              <div style={{ textAlign: 'center', color: '#9ca3af', padding: 40 }}>Cargando datos de sistema...</div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// ── WorkerStatus ──────────────────────────────────────────────────────────────
-function WorkerStatus({ idle, lastRun }) {
-  if (idle == null) {
-    return (
+// ── WorkerStatusV2 — uses health data for accurate status ─────────────────────
+function WorkerStatusV2({ health, idleSecs }) {
+  // Fallback to legacy idle-seconds logic if health not loaded yet
+  if (!health) {
+    if (idleSecs == null) return (
       <div style={{ padding: '8px 14px', background: '#fef9c3', border: '1px solid #fde047', borderRadius: 10, textAlign: 'center' }}>
         <div style={{ fontSize: 13, fontWeight: 800, color: '#854d0e' }}>⚠️ Sin datos</div>
         <div style={{ fontSize: 10, color: '#854d0e', marginTop: 2 }}>Worker nunca corrió</div>
       </div>
     );
+    const alive = idleSecs < 180;
+    const mins  = Math.floor(idleSecs / 60);
+    return (
+      <div style={{ padding: '8px 14px', background: alive ? '#f0fdf4' : '#fff1f2', border: `1px solid ${alive ? '#86efac' : '#fecaca'}`, borderRadius: 10, textAlign: 'center', minWidth: 120 }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: alive ? '#166534' : '#dc2626', lineHeight: 1 }}>
+          {alive ? '🟢 Worker activo' : '🔴 Worker detenido'}
+        </div>
+        <div style={{ fontSize: 10, color: alive ? '#166534' : '#dc2626', marginTop: 3 }}>
+          {alive ? `último ciclo hace ${idleSecs < 60 ? idleSecs + 's' : mins + 'min'}` : `sin actividad · npm run worker`}
+        </div>
+      </div>
+    );
   }
-  const mins = Math.floor(idle / 60);
-  const alive = idle < 180; // less than 3 minutes = worker is running
+
+  const workerAlive = health.worker?.status === 'active';
+  const newsStatus  = health.news_monitor?.status; // active | paused | stopped
+  const socialAlive = health.social_monitor?.status === 'active';
+
+  const workerBg    = workerAlive ? '#f0fdf4' : '#fff1f2';
+  const workerBdr   = workerAlive ? '#86efac' : '#fecaca';
+  const workerColor = workerAlive ? '#166534' : '#dc2626';
+
   return (
-    <div style={{ padding: '8px 14px', background: alive ? '#f0fdf4' : '#fff1f2',
-      border: `1px solid ${alive ? '#86efac' : '#fecaca'}`, borderRadius: 10, textAlign: 'center', minWidth: 120 }}>
-      <div style={{ fontSize: 13, fontWeight: 800, color: alive ? '#166534' : '#dc2626', lineHeight: 1 }}>
-        {alive ? '🟢 Worker activo' : '🔴 Worker detenido'}
+    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ padding: '8px 12px', background: workerBg, border: `1px solid ${workerBdr}`, borderRadius: 10, textAlign: 'center', minWidth: 100 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: workerColor, lineHeight: 1 }}>
+          {workerAlive ? '🟢' : '🔴'} Worker
+        </div>
+        <div style={{ fontSize: 10, color: workerColor, marginTop: 2 }}>
+          {workerAlive ? timeAgo(health.worker?.last_seen_at) : 'detenido'}
+        </div>
       </div>
-      <div style={{ fontSize: 10, color: alive ? '#166534' : '#dc2626', marginTop: 3 }}>
-        {alive
-          ? `último ciclo hace ${idle < 60 ? idle + 's' : mins + 'min'}`
-          : `sin actividad hace ${mins >= 60 ? Math.floor(mins/60) + 'h ' + (mins%60) + 'min' : mins + ' min'} · correr npm run worker`
-        }
+      <div style={{ padding: '8px 12px', background: newsStatus === 'paused' ? '#fffbeb' : newsStatus === 'active' ? '#f0fdf4' : '#fff1f2', border: `1px solid ${newsStatus === 'paused' ? '#fde68a' : newsStatus === 'active' ? '#86efac' : '#fecaca'}`, borderRadius: 10, textAlign: 'center', minWidth: 110 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: newsStatus === 'paused' ? '#92400e' : newsStatus === 'active' ? '#166534' : '#dc2626', lineHeight: 1 }}>
+          {newsStatus === 'paused' ? '🟡' : newsStatus === 'active' ? '🟢' : '🔴'} News
+        </div>
+        <div style={{ fontSize: 10, color: newsStatus === 'paused' ? '#92400e' : newsStatus === 'active' ? '#166534' : '#dc2626', marginTop: 2 }}>
+          {newsStatus === 'paused' ? `pausado ${timeAgo(health.news_monitor?.paused_since)}` : newsStatus === 'active' ? timeAgo(health.news_monitor?.last_run_at) : 'detenido'}
+        </div>
       </div>
+      <div style={{ padding: '8px 12px', background: socialAlive ? '#f0fdf4' : '#fff1f2', border: `1px solid ${socialAlive ? '#86efac' : '#fecaca'}`, borderRadius: 10, textAlign: 'center', minWidth: 100 }}>
+        <div style={{ fontSize: 12, fontWeight: 800, color: socialAlive ? '#166534' : '#dc2626', lineHeight: 1 }}>
+          {socialAlive ? '🟢' : '🔴'} Social
+        </div>
+        <div style={{ fontSize: 10, color: socialAlive ? '#166534' : '#dc2626', marginTop: 2 }}>
+          {socialAlive ? timeAgo(health.social_monitor?.last_run_at) : 'detenido'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── MonitorCard — operational status card for health tab ──────────────────────
+function MonitorCard({ title, status, lines }) {
+  const cfg = {
+    active:   { dot: '🟢', bg: '#f0fdf4', bdr: '#86efac', hdr: '#166534' },
+    paused:   { dot: '🟡', bg: '#fffbeb', bdr: '#fde68a', hdr: '#92400e' },
+    warning:  { dot: '🟡', bg: '#fffbeb', bdr: '#fde68a', hdr: '#92400e' },
+    stopped:  { dot: '🔴', bg: '#fff1f2', bdr: '#fecaca', hdr: '#dc2626' },
+    unknown:  { dot: '⚪', bg: '#f9fafb', bdr: '#e5e7eb', hdr: '#6b7280' },
+  }[status] || { dot: '⚪', bg: '#f9fafb', bdr: '#e5e7eb', hdr: '#6b7280' };
+
+  return (
+    <div style={{ background: cfg.bg, border: `1px solid ${cfg.bdr}`, borderRadius: 10, padding: '12px 16px' }}>
+      <div style={{ fontWeight: 800, fontSize: 13, color: cfg.hdr, marginBottom: 6 }}>{cfg.dot} {title}</div>
+      {lines.map((line, i) => (
+        <div key={i} style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.6 }}>{line}</div>
+      ))}
     </div>
   );
 }

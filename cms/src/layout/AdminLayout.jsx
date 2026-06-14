@@ -139,6 +139,26 @@ export default function AdminLayout() {
           })}>
             <span>📱 Social Intelligence</span>
           </NavLink>
+          <NavLink to="/editorial-intelligence" style={(props) => ({
+            ...linkStyle(props),
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingLeft: 24,
+            fontSize: 13,
+          })}>
+            <span>📋 Inteligencia Editorial</span>
+          </NavLink>
+          <NavLink to="/knowledge-graph" style={(props) => ({
+            ...linkStyle(props),
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            paddingLeft: 24,
+            fontSize: 13,
+          })}>
+            <span>📌 Knowledge Graph</span>
+          </NavLink>
           <NavLink to="/reels" style={linkStyle}>Reels</NavLink>
           <NavLink to="/media" style={linkStyle}>Medios</NavLink>
           <NavLink to="/categories" style={linkStyle}>Categorías</NavLink>

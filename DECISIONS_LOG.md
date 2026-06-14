@@ -1,6 +1,27 @@
-# DECISIONS_LOG.md — Architecture Decision Record
+# DECISIONS_LOG.md — INSPYRA NEWS AUTONOMOUS EDITORIAL PLATFORM
 
 Decisions that are non-obvious from the code. Ordered newest-first.
+
+---
+
+## 2026-06-12 — Sprint 7.1: Playwright + YouTube Quota Hardening
+
+**Context:** The architecture for Social Intelligence required optimization due to unreliable public instances (Nitter, RSSHub) and quota limits in YouTube (search.list).
+
+**Decision:** 
+1. **Drop APIs for Meta, TikTok, and X:** Moving natively to Playwright headless extraction (`SocialFetcherPlaywrightX`, `SocialFetcherPlaywrightInstagram`, etc.) to completely bypass API tokens, shadow-bans, and flaky public bridges.
+2. **YouTube 100x Quota Reduction:** Dropped `search.list` forever. Use exclusively `playlistItems` via the hidden "uploads" playlist of channels. Polling decreased to 60-90mins to secure <10k quota usage limit.
+3. **Observability:** Added `social_fetch_logs` table to trace performance, HTTP 403s, and execution intervals per individual social source.
+
+---
+
+## 2026-06-12 — Pivot to INSPYRA NEWS AUTONOMOUS EDITORIAL PLATFORM
+
+**Context:** The platform has evolved past basic media monitoring and entered the phase of autonomous journalism. We need a north star framework for the next phase.
+
+**Decision:** Adopted the "ROADMAP MAESTRO". The platform is officially renamed from "Panorama News Platform" to "INSPYRA NEWS AUTONOMOUS EDITORIAL PLATFORM". A strict 15-phase pipeline is established, beginning with Social Intelligence. 
+
+**Implication:** All new features must strictly adhere to the AI decoupling rule (Phase 6), the non-generative truth rule (Phase 1/2), and every phase completion requires executable evidence (migrations, audits, documentation updates).
 
 ---
 

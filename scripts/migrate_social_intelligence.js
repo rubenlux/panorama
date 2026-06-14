@@ -19,7 +19,7 @@ async function run() {
     CREATE TABLE IF NOT EXISTS social_sources (
       id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
       name         VARCHAR(100) NOT NULL,
-      platform     VARCHAR(20)  NOT NULL CHECK (platform IN ('youtube','instagram','facebook','x','tiktok')),
+      platform     VARCHAR(20)  NOT NULL CHECK (platform IN ('youtube','instagram','facebook','x','tiktok','whatsapp')),
       profile_url  TEXT         NOT NULL,
       handle       VARCHAR(100),
       platform_id  VARCHAR(200),      -- cached platform-specific ID (e.g. YouTube channelId)
