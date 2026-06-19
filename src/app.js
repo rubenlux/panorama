@@ -35,6 +35,7 @@ import storiesRoutes from "./routes/stories.js";
 import eventsRoutes from "./routes/events.js";
 import opportunitiesRoutes from "./routes/opportunities.js";
 import socialRoutes from "./routes/social.js";
+import marketsRoutes from "./routes/markets.js";
 import editorialDossiersRoutes from "./routes/editorial-dossiers.js";
 import editorialGraphRoutes    from "./routes/editorial-graph.js";
 import { errorHandler, notFound } from "./middleware/error.js";
@@ -87,6 +88,7 @@ export function createApp() {
   app.use("/events", eventsRoutes);
   app.use("/opportunities", opportunitiesRoutes);
   app.use("/social", socialRoutes);
+  app.use("/markets", marketsRoutes);
   app.use("/editorial-dossiers", editorialDossiersRoutes);
   app.use("/editorial",         editorialGraphRoutes);
 

@@ -3,6 +3,7 @@ import { query, pool } from './db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { AiService } from '../services/AiService.js';
 import { runDossierGeneration } from '../services/DossierService.js';
+import { logAiCall } from '../services/aiUsageLogger.js';
 
 const ai = new AiService();
 
@@ -12,10 +13,15 @@ const router = Router();
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const minStories = parseInt(req.query.min_stories) || 1;
-    const limit      = Math.min(parseInt(req.query.limit) || 25, 200);
+    const limit      = Math.min(parseInt(req.query.limit) || 25, 1000);
+    const offset     = parseInt(req.query.offset) || 0;
+    const ALLOWED_HOURS = [1, 2, 6, 12, 24];
+    const hours = ALLOWED_HOURS.includes(parseInt(req.query.hours)) ? parseInt(req.query.hours) : 24;
+    const sort  = req.query.sort === 'score' ? 'score' : 'recent';
 
     const { rows } = await query(`
       SELECT
+        COUNT(*) OVER() AS total_count,
         ec.id,
         ec.headline,
         ec.summary,
@@ -52,16 +58,17 @@ router.get('/', requireAuth, async (req, res, next) => {
       FROM event_clusters ec
       WHERE ec.status IN ('active', 'followed')
         AND ec.story_count >= $1
-        AND ec.last_updated_at > now() - interval '48 hours'
+        AND ec.last_updated_at > now() - interval '${hours} hours'
       ORDER BY
-        ec.editorial_score DESC,
-        ec.importance_score DESC,
-        ec.source_count DESC,
-        ec.last_updated_at DESC
-      LIMIT $2
-    `, [minStories, limit]);
+        ${sort === 'score'
+          ? 'ec.editorial_score DESC, ec.importance_score DESC, ec.last_updated_at DESC'
+          : 'ec.last_updated_at DESC, ec.editorial_score DESC, ec.importance_score DESC'
+        }
+      LIMIT $2 OFFSET $3
+    `, [minStories, limit, offset]);
 
-    res.json({ items: rows });
+    const total = parseInt(rows[0]?.total_count || '0');
+    res.json({ items: rows.map(({ total_count, ...r }) => r), total, offset, limit });
   } catch (e) { next(e); }
 });
 
@@ -340,7 +347,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
 
       const { rows: [d] } = await client.query(`
         INSERT INTO editorial_dossiers (topic_id, status, created_by)
-        VALUES ($1, 'generating', $2)
+        VALUES ($1, 'draft', $2)
         RETURNING *
       `, [topic.id, userId]);
       dossier = d;
@@ -353,21 +360,137 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       client.release();
     }
 
-    const topicForGen = {
-      ...topic,
-      executive_summary:    event.summary || dossierTitle,
-      key_facts:            finalKeyFacts,
-      controversies:        [],
-      timeline,
-      opportunities:        oppsSummary,
-      risks:                `Cobertura: ${event.coverage_status}. Importancia: ${event.importance_score}/10.`,
-      source_opportunities: sourceOpps,
-      source_articles:      articles,
-    };
-
-    setImmediate(() => runDossierGeneration(dossier.id, topicForGen));
-
+    // [Cost Killer 2] Auto-generation disabled — use POST /editorial-workflow/dossiers/:id/enrich
     res.json({ ok: true, dossier });
+  } catch (e) { next(e); }
+});
+
+// ── FASE 3: POST /events/:id/generate-summary — on-demand event summary ─────────
+const RELEVANCE_THRESHOLD_EV = 0.30;
+
+function calcEditorialScoreLocal(importanceScore, sourceCount, articleCount, coverageStatus) {
+  const impPart  = (importanceScore / 10) * 40;
+  const srcPart  = Math.min(sourceCount / 5, 1) * 25;
+  const livePart = coverageStatus === 'breaking' ? 20 : coverageStatus === 'growing' ? 15 : 10;
+  const artPart  = Math.min(articleCount / 20, 1) * 15;
+  return Math.round(impPart + srcPart + livePart + artPart);
+}
+
+router.post('/:id/generate-summary', requireAuth, async (req, res, next) => {
+  const { id } = req.params;
+  const force   = req.query.force === 'true';
+  const userId  = req.user?.sub || 'unknown';
+
+  try {
+    const { rows: [event] } = await query(`SELECT * FROM event_clusters WHERE id = $1`, [id]);
+    if (!event) return res.status(404).json({ error: 'Event not found' });
+
+    // Cache: return existing if summarised < 2h ago and not forced
+    if (!force && event.summary && event.last_summarized_at &&
+        (Date.now() - new Date(event.last_summarized_at)) < 2 * 3600 * 1000) {
+      await logAiCall({ feature: 'event_summary', trigger: 'on_demand', triggeredBy: userId, eventId: id, cached: true });
+      return res.json({ cached: true, event });
+    }
+
+    const [storiesRes, articlesRes, entitiesRes] = await Promise.all([
+      query(`
+        SELECT sc.id, sc.title, sc.article_count, sc.source_count, sc.importance_score, sc.coverage_status
+        FROM event_cluster_stories ecs
+        JOIN story_clusters sc ON sc.id = ecs.story_id
+        WHERE ecs.event_id = $1
+      `, [id]),
+      query(`
+        SELECT DISTINCT ON (ma.id)
+               ma.title, ma.url, ma.summary, ma.detected_at,
+               ma.content_text, ma.extraction_method, ma.content_words, ts.name AS source_name
+        FROM event_cluster_stories ecs
+        JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
+        JOIN monitored_articles ma ON ma.id = sca.article_id
+        JOIN tracked_sources ts ON ts.id = ma.source_id
+        WHERE ecs.event_id = $1 AND sca.relevance_score >= $2
+        ORDER BY ma.id, ma.detected_at DESC
+        LIMIT 25
+      `, [id, RELEVANCE_THRESHOLD_EV]),
+      query(`
+        SELECT DISTINCT ke.name, ke.entity_type
+        FROM event_cluster_stories ecs
+        JOIN story_entities se ON se.story_id = ecs.story_id
+        JOIN knowledge_entities ke ON ke.id = se.entity_id
+        WHERE ecs.event_id = $1 LIMIT 15
+      `, [id]),
+    ]);
+
+    if (storiesRes.rows.length === 0) {
+      return res.status(422).json({ error: 'No stories associated with this event' });
+    }
+
+    const inputWords = articlesRes.rows.reduce((s, a) => s + (a.content_words || 0), 0);
+    const t0 = Date.now();
+    let result;
+    try {
+      result = await ai.generateEventSummary(storiesRes.rows, articlesRes.rows, entitiesRes.rows);
+    } catch (aiErr) {
+      await logAiCall({ feature: 'event_summary', trigger: 'on_demand', triggeredBy: userId, eventId: id,
+        inputWords, durationMs: Date.now() - t0, success: false, errorMessage: aiErr.message });
+      return next(aiErr);
+    }
+
+    const editScore = calcEditorialScoreLocal(
+      result.importance_score ?? event.importance_score ?? 5,
+      event.source_count, event.article_count,
+      result.coverage_status || event.coverage_status
+    );
+
+    const { rows: [updated] } = await query(`
+      UPDATE event_clusters SET
+        headline           = $1,
+        summary            = $2,
+        event_type         = $3,
+        importance_score   = $4,
+        editorial_score    = $5,
+        coverage_status    = $6,
+        main_entities      = $7,
+        timeline           = $8,
+        last_summarized_at = now(),
+        updated_at         = now()
+      WHERE id = $9
+      RETURNING *
+    `, [
+      result.headline      || result.event_name || event.headline,
+      result.summary       || null,
+      result.event_type    || 'general',
+      result.importance_score ?? 5,
+      editScore,
+      result.coverage_status || 'monitoring',
+      JSON.stringify(result.main_entities || []),
+      JSON.stringify(result.timeline      || []),
+      id,
+    ]);
+
+    // Persist editorial opportunities from event summary
+    if (Array.isArray(result.editorial_opportunities) && result.editorial_opportunities.length > 0) {
+      await query(`DELETE FROM editorial_opportunities WHERE event_id = $1 AND status = 'pending'`, [id]);
+      for (const opp of result.editorial_opportunities) {
+        await query(`
+          INSERT INTO editorial_opportunities
+            (event_id, type, title, reason, seo_value, traffic_potential, difficulty)
+          VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `, [
+          id,
+          opp.type              || 'noticia',
+          opp.title             || '',
+          opp.reason            || null,
+          opp.seo_value         || null,
+          opp.traffic_potential || null,
+          opp.difficulty        || null,
+        ]).catch(() => {});
+      }
+    }
+
+    await logAiCall({ feature: 'event_summary', trigger: 'on_demand', triggeredBy: userId, eventId: id,
+      inputWords, durationMs: Date.now() - t0, success: true });
+
+    res.json({ cached: false, event: updated });
   } catch (e) { next(e); }
 });
 

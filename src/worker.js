@@ -1,7 +1,7 @@
 import "dotenv/config";
 import cron from "node-cron";
 import { calculateAdRevenue } from "./jobs/calculateAdRevenue.js";
-import { runNewsMonitor }     from "./jobs/newsMonitor.js";
+import { runNewsMonitor, recalcFreshness } from "./jobs/newsMonitor.js";
 import { runSocialMonitor }   from "./jobs/socialMonitor.js";
 import { pool } from "./routes/db.js";
 import { ensureObservabilitySchema, logEvent } from "./jobs/workerUtils.js";
@@ -23,12 +23,19 @@ pool.query("SELECT NOW()").then(async () => {
     });
     console.log("📡 News Intelligence Monitor: running every 60s");
 
-    // Run social monitor immediately on start, then every 30 minutes
+    // Run social monitor immediately on start, then every minute
     runSocialMonitor().catch(e => console.error("❌ Social Monitor initial run failed:", e.message));
-    cron.schedule("*/30 * * * *", () => {
+    cron.schedule("* * * * *", () => {
       runSocialMonitor().catch(e => console.error("❌ Social Monitor error:", e.message));
     });
-    console.log("📱 Social Intelligence Monitor: running every 30min");
+    console.log("📱 Social Intelligence Monitor: running every 60s");
+
+    // Recalculate freshness scores every 30 minutes (independent of ingestion cycle)
+    recalcFreshness().catch(e => console.error("❌ Freshness initial recalc failed:", e.message));
+    cron.schedule("*/30 * * * *", () => {
+      recalcFreshness().catch(e => console.error("❌ Freshness recalc error:", e.message));
+    });
+    console.log("🔄 Freshness Recalc: running every 30min");
 
 }).catch(err => {
     console.error("❌ Worker DB Connection Failed:", err);

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getTrend, getTrendArticles, followTrend, createDossierFromTrend } from '../api.js';
+import { apiJson } from '../api.js';
 
 function timeAgo(iso) {
   if (!iso) return '';
@@ -75,6 +76,16 @@ export default function TrendDetail() {
     }
   }
 
+  async function handleGenerateSummary(force = false) {
+    setBusy('summary');
+    try {
+      const url = `/trends/${id}/generate-summary${force ? '?force=true' : ''}`;
+      const d   = await apiJson(url, { method: 'POST', auth: true });
+      if (d.cluster) setCluster(prev => ({ ...prev, ...d.cluster }));
+    } catch (e) { alert('Error al generar resumen: ' + e.message); }
+    finally { setBusy(null); }
+  }
+
   if (loading) return (
     <div style={{ padding: 40, textAlign: 'center', color: '#9ca3af' }}>Cargando cluster…</div>
   );
@@ -146,9 +157,24 @@ export default function TrendDetail() {
         {cluster.status === 'summarizing' && (
           <div style={{ fontSize: 13, color: '#f59e0b', fontStyle: 'italic', marginTop: 8 }}>⏳ Generando resumen con IA…</div>
         )}
-        {cluster.status === 'active' && (
-          <div style={{ fontSize: 12, color: '#9ca3af', marginTop: 8 }}>
-            El resumen IA se genera automáticamente cuando el cluster alcanza 3 artículos o 2 fuentes.
+        {(cluster.status === 'active' || cluster.status === 'ready') && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+            {!cluster.headline && (
+              <button onClick={() => handleGenerateSummary(false)} disabled={!!busy}
+                style={{ padding: '7px 14px', borderRadius: 8, border: '1px solid #c7d2fe',
+                  background: '#eef2ff', color: '#4338ca', fontSize: 12, fontWeight: 700,
+                  cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+                {busy === 'summary' ? '⏳ Analizando tendencia…' : '✨ Analizar tendencia'}
+              </button>
+            )}
+            {cluster.headline && (
+              <button onClick={() => handleGenerateSummary(true)} disabled={!!busy}
+                style={{ padding: '5px 10px', borderRadius: 7, border: '1px solid #e5e7eb',
+                  background: 'white', color: '#6b7280', fontSize: 11, fontWeight: 600,
+                  cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+                {busy === 'summary' ? '⏳' : '🔄 Regenerar análisis'}
+              </button>
+            )}
           </div>
         )}
       </div>

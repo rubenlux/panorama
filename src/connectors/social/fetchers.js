@@ -18,6 +18,7 @@ export class SocialFetcherBase {
   }
 
   async _launchBrowser() {
+    console.log('[BROWSER_LAUNCHED] SocialFetcherBase');
     return await chromium.launch({
       headless: true,
       args: ['--disable-blink-features=AutomationControlled', '--no-sandbox']
@@ -34,7 +35,9 @@ export class SocialFetcherPlaywrightX extends SocialFetcherBase {
       viewport: { width: 1280, height: 720 },
       userAgent: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
     });
+    console.log('[CONTEXT_CREATED] X/Twitter');
     const page = await context.newPage();
+    console.log('[PAGE_CREATED] X/Twitter');
     const posts = [];
 
     try {
@@ -76,7 +79,11 @@ export class SocialFetcherPlaywrightX extends SocialFetcherBase {
         }
       }
     } finally {
-      await browser.close();
+      console.log('[PAGE_CLOSED] Isolated');
+      console.log('[CONTEXT_CLOSED] Isolated');
+      await context.close().catch(() => { });
+      console.log('[BROWSER_CLOSED] Isolated');
+      await browser.close().catch(() => { });
     }
 
     return posts;
@@ -100,41 +107,46 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
 
     const profileDir  = process.env.FB_PROFILE_DIR  || join(process.cwd(), 'facebook-profile');
     const cookiesFile = process.env.FB_COOKIES_FILE || join(process.cwd(), 'facebook_cookies.json');
-    const initMarker  = join(profileDir, '.initialized');
+    const stateFile   = join(profileDir, 'state.json');
 
-    // Persistent context: preserves cookies, localStorage, IndexedDB across runs.
-    // Facebook recognises the same browser instance and serves the full authenticated feed.
+    // First-run bootstrap: inject cookies once so they persist to disk via storageState.
+    if (!existsSync(stateFile)) {
+      console.log('[BROWSER_CREATED] Facebook Bootstrap');
+      const browser = await chromium.launch({ headless: true });
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      try {
+        if (existsSync(cookiesFile)) {
+          const raw = JSON.parse(readFileSync(cookiesFile, 'utf-8'));
+          const normSS = v => ({ no_restriction: 'None', lax: 'Lax', strict: 'Strict' })[v?.toLowerCase()] || 'None';
+          await context.addCookies(raw.map(c => ({ ...c, sameSite: normSS(c.sameSite) })));
+          await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => { });
+          await new Promise(r => setTimeout(r, 3000));
+          await context.storageState({ path: stateFile });
+          console.log('[Facebook] Perfil persistente (state.json) inicializado');
+        }
+      } finally {
+        await browser.close();
+        console.log('[BROWSER_CLOSED] Facebook Bootstrap');
+      }
+    }
+
     const context = await chromium.launchPersistentContext(profileDir, {
       headless: true,
       viewport: { width: 1280, height: 900 },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       locale: 'es-419',
       args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox'],
+      storageState: existsSync(stateFile) ? stateFile : undefined,
     });
+    console.log('[CONTEXT_CREATED] Facebook Persistent');
 
     await context.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
 
-    // First-run bootstrap: inject cookies once so they persist to disk.
-    if (!existsSync(initMarker)) {
-      if (existsSync(cookiesFile)) {
-        const raw = JSON.parse(readFileSync(cookiesFile, 'utf-8'));
-        const normSS = v => ({ no_restriction: 'None', lax: 'Lax', strict: 'Strict' })[v?.toLowerCase()] || 'None';
-        await context.addCookies(raw.map(c => ({ ...c, sameSite: normSS(c.sameSite) })));
-        const warmPage = await context.newPage();
-        await warmPage.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 })
-          .catch(() => {});
-        await new Promise(r => setTimeout(r, 3000));
-        await warmPage.close();
-        writeFileSync(initMarker, new Date().toISOString());
-        console.log('[Facebook] Perfil persistente inicializado');
-      } else {
-        console.warn('[Facebook] Sin facebook_cookies.json — sesión anónima');
-      }
-    }
-
     const page = await context.newPage();
+    console.log('[PAGE_CREATED] Facebook');
     const posts = [];
 
     try {

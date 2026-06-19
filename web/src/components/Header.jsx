@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import './Header.css';
 
-export default function Header({ onSearchOpen }) {
+export default function Header({ onSearchOpen, onSubscribeOpen }) {
   const today = new Date();
   const dias = ['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
   const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
@@ -22,11 +22,11 @@ export default function Header({ onSearchOpen }) {
                   <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>
                 </g>
               </svg>
-              Buenos Aires 14°
+              Formosa 14°
             </span>
           </div>
           <div className="pn-utility__right">
-            <a href="#">Newsletters</a>
+            <a href="#" onClick={(e) => { e.preventDefault(); onSubscribeOpen(); }}>Newsletters</a>
             <a href="#">Iniciar sesión</a>
           </div>
         </div>
@@ -41,11 +41,14 @@ export default function Header({ onSearchOpen }) {
               </svg>
             </button>
           </div>
-          <Link to="/" className="pn-logo">
-            Panorama<span className="pn-logo__dot">●</span>
+          <Link to="/" className="pn-logo-group">
+            <div className="pn-logo">
+              Panorama<span className="pn-logo__dot">●</span>
+            </div>
+            <div className="pn-logo-sub">Informativo</div>
           </Link>
           <div className="pn-masthead__right">
-            <a href="#" className="pn-btn pn-btn--red">Suscríbete</a>
+            <a href="#" className="pn-btn pn-btn--red" onClick={(e) => { e.preventDefault(); onSubscribeOpen(); }}>Suscríbete</a>
           </div>
         </div>
       </header>

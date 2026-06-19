@@ -99,7 +99,11 @@ router.get('/sources', async (req, res, next) => {
 router.post('/sources', async (req, res, next) => {
   try {
     let { name, platform, profile_url, handle, region, category, priority, content_type } = req.body;
-    
+
+    // Self-heal: ensure 'tweets' is a valid content_type (added when X support was implemented)
+    await query(`ALTER TABLE social_sources DROP CONSTRAINT IF EXISTS social_sources_content_type_check`).catch(() => {});
+    await query(`ALTER TABLE social_sources ADD CONSTRAINT social_sources_content_type_check CHECK (content_type IN ('videos', 'shorts', 'posts', 'tweets'))`).catch(() => {});
+
     // Insertar con soporte completo y capturar conflictos
     const result = await query(
       `INSERT INTO social_sources (name, platform, profile_url, handle, region, category, priority, content_type) 
@@ -107,7 +111,7 @@ router.post('/sources', async (req, res, next) => {
        ON CONFLICT (platform, profile_url) DO UPDATE 
        SET name = EXCLUDED.name, region = EXCLUDED.region, category = EXCLUDED.category, priority = EXCLUDED.priority, handle = EXCLUDED.handle, content_type = EXCLUDED.content_type
        RETURNING *`,
-      [name, platform, profile_url, handle, region || 'nacional', category || 'medio', priority || 5, content_type || (platform === 'facebook' ? 'posts' : 'videos')]
+      [name, platform, profile_url, handle, region || 'nacional', category || 'medio', priority || 5, content_type || (platform === 'facebook' ? 'posts' : platform === 'x' ? 'tweets' : 'videos')]
     );
     res.json(result.rows[0]);
   } catch(e) { 
@@ -133,7 +137,7 @@ router.put('/sources/:id', async (req, res, next) => {
       `UPDATE social_sources 
        SET name=$1, platform=$2, profile_url=$3, handle=$4, region=$5, category=$6, priority=$7, content_type=$8, updated_at=now()
        WHERE id=$9 RETURNING *`,
-      [name, platform, profile_url, handle, region || 'nacional', category || 'medio', priority || 5, content_type || (platform === 'facebook' ? 'posts' : 'videos'), req.params.id]
+      [name, platform, profile_url, handle, region || 'nacional', category || 'medio', priority || 5, content_type || (platform === 'facebook' ? 'posts' : platform === 'x' ? 'tweets' : 'videos'), req.params.id]
     );
     if (result.rowCount === 0) return res.status(404).json({ error: 'Fuente no encontrada' });
     res.json(result.rows[0]);
@@ -147,14 +151,16 @@ router.post('/sources/:id/check', async (req, res, next) => {
 
     const source = sourceRes.rows[0];
 
-    const { SocialFetcherPlaywrightYouTube, SocialFetcherGraphApiFacebook } =
+    const { SocialFetcherPlaywrightYouTube, SocialFetcherGraphApiFacebook, SocialFetcherPlaywrightInstagram, SocialFetcherX } =
       await import('../connectors/social/fetchers.js');
     const { clusterNewPosts, recalcClusterMetrics, recalcGapScores } =
       await import('../jobs/socialMonitor.js');
 
     let fetcher;
-    if (source.platform === 'youtube')       fetcher = new SocialFetcherPlaywrightYouTube(source);
-    else if (source.platform === 'facebook') fetcher = new SocialFetcherGraphApiFacebook(source);
+    if (source.platform === 'youtube')        fetcher = new SocialFetcherPlaywrightYouTube(source);
+    else if (source.platform === 'facebook')  fetcher = new SocialFetcherGraphApiFacebook(source);
+    else if (source.platform === 'instagram') fetcher = new SocialFetcherPlaywrightInstagram(source);
+    else if (source.platform === 'x')         fetcher = new SocialFetcherX(source);
     else return res.status(400).json({ error: `Plataforma '${source.platform}' no soportada aún.` });
 
     const posts = await fetcher.fetchLatest();
@@ -219,25 +225,46 @@ router.post('/sources/:id/check', async (req, res, next) => {
       ORDER BY captured_at DESC
     `, [source.id]);
 
-    res.json({
+    const response = {
       fetched: posts.length,
       new_posts: newPostIds.length,
       clusters_created: clusters.created,
       clusters_joined: clusters.joined,
       posts_24h: recientes.rows.length,
       posts: recientes.rows,
-    });
+    };
+
+    // Diagnostic hints when X returns 0 posts
+    if (source.platform === 'x' && posts.length === 0) {
+      const username = source.handle?.replace(/^@/, '').trim()
+        || source.profile_url?.match(/(?:twitter\.com|x\.com)\/@?([^/?#\s]+)/i)?.[1]
+        || '(desconocido)';
+      const hasCreds = !!(process.env.X_AUTH_TOKEN && process.env.X_CT0);
+      response._debug = {
+        username_tried: username,
+        handle_in_db: source.handle || null,
+        profile_url: source.profile_url,
+        auth_configured: hasCreds,
+        hint: hasCreds
+          ? 'Credenciales configuradas pero 0 tweets obtenidos. Las cookies X_AUTH_TOKEN/X_CT0 pueden haber expirado — renovarlas desde una sesión activa de x.com.'
+          : 'Sin credenciales. Añadir X_AUTH_TOKEN y X_CT0 al .env (cookies de una sesión activa de x.com) para scraping confiable.',
+      };
+    }
+
+    res.json(response);
   } catch(e) { next(e); }
 });
 
 // Estadísticas generales
 router.get('/stats', async (req, res, next) => {
   try {
-    const [p, s, yt, fb, st, cls, today, gaps, gaps2] = await Promise.all([
+    const [p, s, yt, fb, xq, ig, st, cls, today, gaps, gaps2] = await Promise.all([
       query(`SELECT count(*) as total, COALESCE(sum(views), 0) as engagement FROM social_posts WHERE captured_at >= now() - interval '48 hours'`),
       query(`SELECT count(*) as total FROM social_sources WHERE enabled = true`),
-      query(`SELECT count(*) as total FROM social_sources WHERE platform = 'youtube'  AND enabled = true`),
-      query(`SELECT count(*) as total FROM social_sources WHERE platform = 'facebook' AND enabled = true`),
+      query(`SELECT count(*) as total FROM social_sources WHERE platform = 'youtube'   AND enabled = true`),
+      query(`SELECT count(*) as total FROM social_sources WHERE platform = 'facebook'  AND enabled = true`),
+      query(`SELECT count(*) as total FROM social_sources WHERE platform = 'x'         AND enabled = true`),
+      query(`SELECT count(*) as total FROM social_sources WHERE platform = 'instagram' AND enabled = true`),
       query(`SELECT count(*) as total FROM social_sources`),
       query(`SELECT count(*) as total FROM social_clusters WHERE status = 'active'`),
       query(`SELECT count(*) as total FROM social_posts WHERE captured_at >= now() - interval '24 hours'`),
@@ -262,6 +289,8 @@ router.get('/stats', async (req, res, next) => {
       opportunities_baja:       parseInt(opp.baja || 0),
       youtube_sources:          parseInt(yt.rows[0].total),
       facebook_sources:         parseInt(fb.rows[0].total),
+      x_sources:                parseInt(xq.rows[0].total),
+      instagram_sources:        parseInt(ig.rows[0].total),
       sources_total:            parseInt(st.rows[0].total),
       sources_active:           parseInt(s.rows[0].total),
       totalPosts:               parseInt(p.rows[0].total),
@@ -278,6 +307,23 @@ router.get('/youtube-quota', async (req, res, next) => {
 // Clusters virales
 router.get('/clusters', async (req, res, next) => {
   try {
+    const limit    = Math.min(parseInt(req.query.limit)  || 100, 300);
+    const hours    = parseInt(req.query.hours) || 0;
+    const platform = req.query.platform || '';
+
+    const params = [];
+    let timeCondition     = '';
+    let platformCondition = '';
+
+    if (hours > 0) {
+      params.push(hours);
+      timeCondition = `AND sc.last_seen >= now() - make_interval(hours => $${params.length})`;
+    }
+    if (platform) {
+      params.push(platform);
+      platformCondition = `AND $${params.length} = ANY(COALESCE(agg.platforms, '{}'))`;
+    }
+
     const data = await query(`
       SELECT sc.*,
         COALESCE(sc.opportunity_score, 0) AS opportunity_score,
@@ -299,9 +345,11 @@ router.get('/clusters', async (req, res, next) => {
         GROUP BY scp.cluster_id
       ) agg ON agg.cluster_id = sc.id
       WHERE sc.status = 'active'
+        ${timeCondition}
+        ${platformCondition}
       ORDER BY sc.viral_score DESC, sc.total_engagement DESC
-      LIMIT 30
-    `);
+      LIMIT ${limit}
+    `, params);
     res.json({ items: data.rows });
   } catch(e) { next(e); }
 });
@@ -309,6 +357,7 @@ router.get('/clusters', async (req, res, next) => {
 // Top fuentes
 router.get('/top-sources', async (req, res, next) => {
   try {
+    const hours = parseInt(req.query.hours) || 48;
     const data = await query(`
       SELECT
         s.id, s.name, s.platform, s.profile_url, s.region, s.category,
@@ -316,12 +365,12 @@ router.get('/top-sources', async (req, res, next) => {
         COALESCE(SUM(p.views), 0) as total_engagement,
         MAX(p.captured_at) as last_post_at
       FROM social_sources s
-      LEFT JOIN social_posts p ON p.source_id = s.id
+      LEFT JOIN social_posts p ON p.source_id = s.id AND p.captured_at >= now() - make_interval(hours => $1)
       WHERE s.enabled = true
       GROUP BY s.id
       ORDER BY total_engagement DESC, recent_posts DESC
       LIMIT 15
-    `);
+    `, [hours]);
     res.json({ items: data.rows });
   } catch(e) { next(e); }
 });
@@ -409,14 +458,22 @@ router.get('/opportunities', async (req, res, next) => {
 // Brechas Editoriales — usa gap_score Jaccard calculado por el worker
 router.get('/content-gap', async (req, res, next) => {
   try {
-    const data = await query(`
+    const hours = parseInt(req.query.hours) || 48;
+    const limit = parseInt(req.query.limit) || 60;
+
+    const queryStr = `
       SELECT id, title, viral_score, gap_score,
              COALESCE(opportunity_score, 0) as opportunity_score,
              total_engagement, source_count, post_count, last_seen
       FROM social_clusters
-      WHERE status = 'active' AND viral_score > 10
+      WHERE status = 'active'
+        AND viral_score > 10
+        AND last_seen >= now() - make_interval(hours => $1)
       ORDER BY opportunity_score DESC, viral_score DESC
-    `);
+      LIMIT $2
+    `;
+
+    const data = await query(queryStr, [hours, limit]);
 
     const opportunities = data.rows.map(row => {
       const g = parseFloat(row.gap_score) || 0;
@@ -836,7 +893,7 @@ router.get('/transcripts/audit', async (req, res, next) => {
         AND ss.content_type IN ('videos', 'shorts')
         AND ss.enabled = true
       GROUP BY ss.id, ss.name
-      ORDER BY con_transcript::int DESC NULLS LAST, total DESC
+      ORDER BY con_transcript DESC NULLS LAST, total DESC
     `);
 
     const { rows: langs } = await query(`
@@ -942,7 +999,13 @@ router.post('/posts/:id/transcript', async (req, res, next) => {
   try {
     const { rows: [post] } = await query(`
       SELECT sp.id, sp.url, sp.title, sp.platform, sp.transcript_available,
-             ss.content_type, ss.name AS source_name
+             ss.name AS source_name,
+             CASE
+               WHEN sp.platform = 'youtube' AND sp.url LIKE '%/shorts/%'                                THEN 'shorts'
+               WHEN sp.platform = 'youtube' AND (sp.url LIKE '%watch?v=%' OR sp.url LIKE '%youtu.be/%') THEN 'videos'
+               WHEN sp.platform = 'youtube' AND (sp.url LIKE '%/post/%' OR sp.url LIKE '%/community%')  THEN 'posts'
+               ELSE ss.content_type
+             END AS content_type
       FROM social_posts sp
       JOIN social_sources ss ON ss.id = sp.source_id
       WHERE sp.id = $1

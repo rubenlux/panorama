@@ -681,6 +681,8 @@ function TimelineModal({ cluster, platform = '', onClose, onUsageChange, isAdmin
   // Per-post transcript fetch state: null | 'loading' | 'error' | 'no_captions' | 'limit'
   const [txState,   setTxState]   = useState({});
   const [txMessage, setTxMessage] = useState({});
+  // Per-post inline analysis state: null | 'loading' | 'done' | 'error'
+  const [analyzeState, setAnalyzeState] = useState({});
 
   useEffect(() => {
     setLoading(true);
@@ -711,6 +713,18 @@ function TimelineModal({ cluster, platform = '', onClose, onUsageChange, isAdmin
       const state = (!isAdmin && msg.includes('Límite')) ? 'limit' : msg.includes('captions') ? 'no_captions' : 'error';
       setTxState(prev   => ({ ...prev, [post.id]: state }));
       setTxMessage(prev => ({ ...prev, [post.id]: msg }));
+    }
+  }
+
+  async function handleAnalyzeInline(post) {
+    setAnalyzeState(prev => ({ ...prev, [post.id]: 'loading' }));
+    try {
+      await apiJson(`/social/posts/${post.id}/analyze`, { method: 'POST', auth: true });
+      setPosts(prev => prev.map(p => p.id === post.id ? { ...p, has_analysis: true } : p));
+      setAnalyzeState(prev => ({ ...prev, [post.id]: 'done' }));
+      onUsageChange?.();
+    } catch (e) {
+      setAnalyzeState(prev => ({ ...prev, [post.id]: 'error' }));
     }
   }
 
@@ -934,17 +948,35 @@ function TimelineModal({ cluster, platform = '', onClose, onUsageChange, isAdmin
                           </span>
                         )}
 
-                        {/* Analyze button — only when TRANSCRIPTS_ENABLED and transcript available */}
+                        {/* Analyze / view analysis — only when transcript available */}
                         {hasTranscript && TRANSCRIPTS_ENABLED && (
-                          <button
-                            onClick={e => { e.stopPropagation(); setAnalysisPost(p); }}
-                            style={{
+                          p.has_analysis || analyzeState[p.id] === 'done' ? (
+                            <button
+                              onClick={e => { e.stopPropagation(); setAnalysisPost(p); }}
+                              style={{
+                                alignSelf: 'flex-start', padding: '6px 14px', borderRadius: 8,
+                                border: '1px solid #a7f3d0', background: '#ecfdf5',
+                                color: '#065f46', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+                              }}>
+                              🟢 Ver análisis / Dossier
+                            </button>
+                          ) : analyzeState[p.id] === 'loading' ? (
+                            <button disabled style={{
                               alignSelf: 'flex-start', padding: '6px 14px', borderRadius: 8,
-                              border: '1px solid #c4b5fd', background: '#faf5ff',
-                              color: '#7c3aed', fontWeight: 700, fontSize: 12, cursor: 'pointer',
-                            }}>
-                            🧠 {p.has_analysis ? 'Ver análisis / Dossier' : 'Analizar contenido'}
-                          </button>
+                              border: '1px solid #d1d5db', background: '#f9fafb',
+                              color: '#9ca3af', fontWeight: 700, fontSize: 12, cursor: 'not-allowed',
+                            }}>⏳ Analizando…</button>
+                          ) : (
+                            <button
+                              onClick={e => { e.stopPropagation(); handleAnalyzeInline(p); }}
+                              style={{
+                                alignSelf: 'flex-start', padding: '6px 14px', borderRadius: 8,
+                                border: '1px solid #c4b5fd', background: '#faf5ff',
+                                color: '#7c3aed', fontWeight: 700, fontSize: 12, cursor: 'pointer',
+                              }}>
+                              ✨ Analizar transcript{analyzeState[p.id] === 'error' ? ' (reintentar)' : ''}
+                            </button>
+                          )
                         )}
                       </div>
                     </div>
@@ -1102,10 +1134,11 @@ export default function SocialOpportunities() {
           </select>
           <select value={hours} onChange={e => setHours(Number(e.target.value))}
             style={{ padding: '7px 10px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13, background: '#fff' }}>
-            <option value={0}>Todo el tiempo</option>
+            <option value={1}>Última hora</option>
             <option value={24}>Últimas 24h</option>
             <option value={48}>Últimas 48h</option>
             <option value={168}>Última semana</option>
+            <option value={0}>Todo el tiempo</option>
           </select>
         </div>
       </div>

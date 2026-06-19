@@ -11,18 +11,36 @@ const router = Router();
 // GET /opportunities — story-derived editorial opportunities, sorted by composite score
 router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const limit  = Math.min(parseInt(req.query.limit) || 30, 300);
+    const limit  = Math.min(parseInt(req.query.limit) || 50, 1000);
+    const offset = Math.max(parseInt(req.query.offset) || 0, 0);
     const status = req.query.status || 'pending';
     const type   = req.query.type || null;
+    const age    = req.query.age || 'ACTIVE'; // ACTIVE (0-24h) | WARM (24-72h) | ARCHIVED (72h+) | ALL
+    const ALLOWED_HOURS = [1, 2, 6, 12, 24];
+    const hours = ALLOWED_HOURS.includes(parseInt(req.query.hours)) ? parseInt(req.query.hours) : null;
+    const sort  = req.query.sort === 'score' ? 'score' : 'recent';
 
-    const conditions = [`so.status = $1`, `sc.is_recurring = false`, `sc.last_seen > now() - interval '24 hours'`];
+    // Expand story window for ARCHIVED to avoid losing older-but-still-valid stories
+    const storyWindow = (age === 'ARCHIVED' || age === 'ALL') ? '14 days' : '7 days';
+    const conditions = [`so.status = $1`, `sc.is_recurring = false`, `sc.last_seen > now() - interval '${storyWindow}'`];
     const params = [status];
     let pi = 2;
     if (type) { conditions.push(`so.opportunity_type = $${pi++}`); params.push(type); }
+    // hours filter overrides age bucket time window (more specific)
+    if (hours) {
+      conditions.push(`so.created_at > now() - interval '${hours} hours'`);
+    } else {
+      if (age === 'ACTIVE')        conditions.push(`so.created_at > now() - interval '24 hours'`);
+      else if (age === 'WARM')     conditions.push(`so.created_at BETWEEN now() - interval '72 hours' AND now() - interval '24 hours'`);
+      else if (age === 'ARCHIVED') conditions.push(`so.created_at < now() - interval '72 hours'`);
+    }
+    // age === 'ALL' with no hours → no additional time filter
     params.push(limit);
+    params.push(offset);
 
     const { rows } = await query(`
       SELECT
+        COUNT(*) OVER() AS total_count,
         so.id,
         so.title,
         so.description,
@@ -33,7 +51,13 @@ router.get('/', requireAuth, async (req, res, next) => {
         so.editorial_score,
         so.composite_score,
         so.status,
+        so.trigger,
         so.created_at,
+        CASE
+          WHEN so.created_at > now() - interval '24 hours' THEN 'ACTIVE'
+          WHEN so.created_at > now() - interval '72 hours' THEN 'WARM'
+          ELSE 'ARCHIVED'
+        END AS age_bucket,
         sc.id          AS story_cluster_id,
         sc.title       AS story_title,
         sc.story_type  AS story_type,
@@ -51,11 +75,16 @@ router.get('/', requireAuth, async (req, res, next) => {
       FROM story_opportunities so
       JOIN story_clusters sc ON sc.id = so.story_cluster_id
       WHERE ${conditions.join(' AND ')}
-      ORDER BY so.composite_score DESC, so.created_at DESC
-      LIMIT $${pi}
+      ORDER BY
+        ${sort === 'score'
+          ? 'so.composite_score DESC, so.created_at DESC'
+          : 'so.created_at DESC, so.composite_score DESC'
+        }
+      LIMIT $${pi} OFFSET $${pi + 1}
     `, params);
 
-    res.json({ items: rows, total: rows.length });
+    const total = parseInt(rows[0]?.total_count || '0');
+    res.json({ items: rows.map(({ total_count, ...r }) => r), total, offset, limit, age });
   } catch (e) { next(e); }
 });
 
@@ -71,7 +100,7 @@ router.get('/summary', requireAuth, async (req, res, next) => {
       JOIN story_clusters sc ON sc.id = so.story_cluster_id
       WHERE so.status = 'pending'
         AND sc.is_recurring = false
-        AND sc.last_seen > now() - interval '24 hours'
+        AND sc.last_seen > now() - interval '7 days'
       GROUP BY so.opportunity_type
       ORDER BY avg_score DESC
     `);
@@ -255,7 +284,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
 
       const { rows: [d] } = await client.query(`
         INSERT INTO editorial_dossiers (topic_id, status, created_by)
-        VALUES ($1, 'generating', $2)
+        VALUES ($1, 'draft', $2)
         RETURNING *
       `, [topic.id, userId]);
       dossier = d;
@@ -272,20 +301,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       client.release();
     }
 
-    const topicForGen = {
-      ...topic,
-      executive_summary:    opp.story_summary || opp.description || dossierTitle,
-      key_facts:            finalKeyFacts,
-      controversies:        [],
-      timeline,
-      opportunities:        oppsSummary,
-      risks:                `Cobertura: ${opp.coverage_status}. Importancia: ${opp.importance_score}/10.`,
-      source_opportunities: storyOpps,
-      source_articles:      articles,
-    };
-
-    setImmediate(() => runDossierGeneration(dossier.id, topicForGen));
-
+    // [Cost Killer 2] Auto-generation disabled — use POST /editorial-workflow/dossiers/:id/enrich
     res.json({ ok: true, dossier });
   } catch (e) { next(e); }
 });

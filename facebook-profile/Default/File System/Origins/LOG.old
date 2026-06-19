@@ -1,3 +1,4 @@
-2026/06/14-00:42:54.155 5cc0 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/MANIFEST-000001
-2026/06/14-00:42:54.155 5cc0 Recovering log #3
-2026/06/14-00:42:54.156 5cc0 Reusing old log C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/000003.log 
+2026/06/19-16:02:28.471 52cc Log #22: 3 ops saved to Table #23 OK
+2026/06/19-16:02:29.487 52cc Archiving C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/000022.log: IO error: C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/000022.log: Could not rename file: File currently in use. (ChromeMethodBFE: 14::RenameFile::2)
+2026/06/19-16:02:29.487 52cc Table #23: 3 entries OK
+2026/06/19-16:02:30.492 52cc Archiving C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/MANIFEST-000001: IO error: C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/MANIFEST-000001: Could not rename file: File currently in use. (ChromeMethodBFE: 14::RenameFile::2)

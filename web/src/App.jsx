@@ -5,6 +5,7 @@ import { SettingsProvider } from './context/SettingsContext';
 import Header from './components/Header';
 import NavBar from './components/NavBar';
 import Ticker from './components/Ticker';
+import Newsletter from './components/Newsletter';
 import Footer from './components/Footer';
 import Home from './pages/Home';
 import Article from './pages/Article';
@@ -44,20 +45,43 @@ function SearchOverlay({ open, onClose }) {
   );
 }
 
+function SubscribeModal({ open, onClose }) {
+  if (!open) return null;
+  return (
+    <div className="pn-search-overlay" onClick={onClose} style={{ background: 'rgba(11,27,48,0.96)' }}>
+      <button className="pn-search-overlay__close" onClick={onClose} aria-label="Cerrar">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M6 6l12 12M18 6L6 18"/>
+        </svg>
+      </button>
+      <div className="pn-search-overlay__bar" style={{ maxWidth: 500, background: 'transparent' }} onClick={e => e.stopPropagation()}>
+        <Newsletter />
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const location = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
+  const [subscribeOpen, setSubscribeOpen] = useState(false);
 
   useEffect(() => {
     Pixel.init();
     Pixel.track('page_view');
   }, [location]);
 
-  useEffect(() => { setSearchOpen(false); }, [location]);
+  useEffect(() => { 
+    setSearchOpen(false); 
+    setSubscribeOpen(false);
+  }, [location]);
 
   return (
     <SettingsProvider>
-      <Header onSearchOpen={() => setSearchOpen(true)} />
+      <Header 
+        onSearchOpen={() => setSearchOpen(true)} 
+        onSubscribeOpen={() => setSubscribeOpen(true)} 
+      />
       <NavBar />
       <Ticker />
       <Routes>
@@ -74,6 +98,7 @@ function App() {
       </Routes>
       <Footer />
       <SearchOverlay open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <SubscribeModal open={subscribeOpen} onClose={() => setSubscribeOpen(false)} />
     </SettingsProvider>
   );
 }

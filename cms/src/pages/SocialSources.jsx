@@ -5,8 +5,8 @@ import { apiJson } from '../api.js';
 const PLATFORM_META = {
   youtube:   { label: 'YouTube',   color: '#dc2626', bg: '#fee2e2', active: true,  placeholder: 'https://www.youtube.com/@CanalNoticias/videos' },
   facebook:  { label: 'Facebook',  color: '#1d4ed8', bg: '#dbeafe', active: true,  placeholder: 'https://www.facebook.com/medionoticia' },
-  instagram: { label: 'Instagram', color: '#7c3aed', bg: '#ede9fe', active: false, placeholder: 'https://www.instagram.com/medionoticia' },
-  x:         { label: 'X',         color: '#111827', bg: '#f3f4f6', active: false, placeholder: 'https://x.com/medionoticia' },
+  instagram: { label: 'Instagram', color: '#7c3aed', bg: '#ede9fe', active: true,  placeholder: 'https://www.instagram.com/medionoticia' },
+  x:         { label: 'X',         color: '#111827', bg: '#f3f4f6', active: true,  placeholder: 'https://x.com/medionoticia' },
   tiktok:    { label: 'TikTok',    color: '#be123c', bg: '#ffe4e6', active: false, placeholder: 'https://www.tiktok.com/@medionoticia' },
 };
 
@@ -113,9 +113,16 @@ function SourceModal({ source, onSave, onClose }) {
           )}
 
           <label style={{ display: 'grid', gap: 5 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>Handle (opcional)</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: '#374151' }}>
+              Handle{form.platform === 'x' ? ' (obligatorio para X)' : ' (opcional)'}
+            </span>
             <input value={form.handle} onChange={e => set('handle', e.target.value)}
-              placeholder="@NombreDelCanal" style={inputStyle} />
+              placeholder={form.platform === 'x' ? '@medionoticia' : '@NombreDelCanal'} style={inputStyle} />
+            {form.platform === 'x' && (
+              <span style={{ fontSize: 11, color: '#6b7280' }}>
+                Requerido para obtener tweets vía RSS. Ej: @infobae, @laNacion
+              </span>
+            )}
           </label>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>

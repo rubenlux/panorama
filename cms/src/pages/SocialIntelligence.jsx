@@ -13,8 +13,10 @@ const PLATFORM_META = {
 };
 
 const ACTIVE_PLATFORMS = [
-  { value: 'youtube',  label: 'YouTube' },
-  { value: 'facebook', label: 'Facebook' },
+  { value: 'youtube',   label: 'YouTube' },
+  { value: 'facebook',  label: 'Facebook' },
+  { value: 'x',        label: 'X (Twitter)' },
+  { value: 'instagram', label: 'Instagram' },
 ];
 
 const REGION_LABELS = {
@@ -405,7 +407,7 @@ function DrillDownModal({ type, item, platform = '', onClose }) {
                           {Number(p.views) > 0 && <span style={{ color: '#1d4ed8', fontWeight: 700 }}>👀 {formatEngagement(p.views)}</span>}
                           {Number(p.likes) > 0 && <span>❤️ {formatEngagement(p.likes)}</span>}
                           <span style={{ marginLeft: 'auto', color: '#9ca3af' }}>
-                            ↗ Ver en {p.platform === 'facebook' ? 'Facebook' : 'YouTube'}
+                            ↗ Ver en {{ youtube: 'YouTube', facebook: 'Facebook', x: 'X', instagram: 'Instagram' }[p.platform] || p.platform}
                           </span>
                           {p.transcript_available && p.has_analysis && (
                             <button
@@ -497,7 +499,7 @@ export default function SocialIntelligence() {
   useEffect(() => {
     if (tab === 0) {
       setLoadingClusters(true);
-      apiJson(`/social/clusters?hours=${hours}&limit=80`, { auth: true })
+      apiJson(`/social/clusters?hours=${hours}&limit=300`, { auth: true })
         .then(d => setClusters(d.items || []))
         .catch(() => {})
         .finally(() => setLoadingClusters(false));
@@ -544,6 +546,7 @@ export default function SocialIntelligence() {
         <div style={{ display: 'flex', gap: 8 }}>
           <select value={hours} onChange={e => setHours(Number(e.target.value))}
             style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #d1d5db', fontSize: 13 }}>
+            <option value={1}>Última hora</option>
             <option value={24}>Últimas 24h</option>
             <option value={48}>Últimas 48h</option>
             <option value={72}>Últimas 72h</option>
@@ -567,7 +570,7 @@ export default function SocialIntelligence() {
             accent={(stats.opportunities_muy_alta || 0) > 0 ? '#b91c1c' : '#6b7280'}
             onClick={() => navigate('/social/opportunities')} />
           <StatCard value={stats.sources_active || 0} label="Fuentes activas"
-            sub={`YT: ${stats.youtube_sources || 0} · FB: ${stats.facebook_sources || 0} · de ${stats.sources_total || 0}`} />
+            sub={`YT: ${stats.youtube_sources || 0} · FB: ${stats.facebook_sources || 0} · X: ${stats.x_sources || 0} · de ${stats.sources_total || 0}`} />
           {transcriptAudit && (
             <StatCard
               value={`${transcriptAudit.cobertura_pct ?? 0}%`}

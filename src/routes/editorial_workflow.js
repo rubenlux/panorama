@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { query } from './db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { AiService } from '../services/AiService.js';
+import { SocialDistributionService } from '../services/SocialDistributionService.js';
 import { runDossierGeneration } from '../services/DossierService.js';
 
 const router = Router();
 const ai = new AiService();
+const socialService = new SocialDistributionService();
 
 // ── POST /editorial-workflow/dossiers ──────────────────────────────────────
 router.post('/dossiers', requireAuth, async (req, res, next) => {
@@ -90,6 +92,58 @@ router.get('/dossiers/:id', requireAuth, async (req, res, next) => {
 });
 
 // ── GET /editorial-workflow/dossiers/:id/angles ───────────────────────────
+// ── POST /editorial-workflow/dossiers/:id/enrich — [Cost Killer 2] on-demand enrichment ──
+router.post('/dossiers/:id/enrich', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const force = req.query.force === 'true';
+
+    const { rows: [dossier] } = await query(`
+      SELECT ed.*, rt.title AS topic_title,
+             rb.executive_summary, rb.key_facts, rb.controversies, rb.timeline,
+             rb.opportunities, rb.risks, rb.source_opportunities
+      FROM editorial_dossiers ed
+      LEFT JOIN research_topics rt ON rt.id = ed.topic_id
+      LEFT JOIN LATERAL (
+        SELECT executive_summary, key_facts, controversies, timeline,
+               opportunities, risks, source_opportunities
+        FROM research_briefs WHERE topic_id = ed.topic_id
+        ORDER BY generated_at DESC LIMIT 1
+      ) rb ON true
+      WHERE ed.id = $1
+    `, [id]);
+
+    if (!dossier) return res.status(404).json({ error: 'Dossier not found' });
+    if (dossier.status === 'generating') return res.status(409).json({ error: 'Already generating' });
+    if (dossier.status === 'ready' && !force) return res.json({ ok: true, cached: true, dossier });
+
+    await query(`UPDATE editorial_dossiers SET status = 'generating', updated_at = now() WHERE id = $1`, [id]);
+
+    const { rows: sourceArticles } = await query(`
+      SELECT title, source_name, url, published_at,
+             content AS content_text, word_count AS content_words, relevance_score
+      FROM research_sources WHERE topic_id = $1
+      ORDER BY relevance_score DESC NULLS LAST LIMIT 12
+    `, [dossier.topic_id]);
+
+    const topicForGen = {
+      id:                   dossier.topic_id,
+      title:                dossier.topic_title,
+      executive_summary:    dossier.executive_summary,
+      key_facts:            dossier.key_facts,
+      controversies:        dossier.controversies,
+      timeline:             dossier.timeline,
+      opportunities:        dossier.opportunities,
+      risks:                dossier.risks,
+      source_opportunities: dossier.source_opportunities,
+      source_articles:      sourceArticles,
+    };
+
+    res.json({ ok: true, cached: false, dossier: { ...dossier, status: 'generating' } });
+    setImmediate(() => runDossierGeneration(id, topicForGen));
+  } catch (e) { next(e); }
+});
+
 router.get('/dossiers/:id/angles', requireAuth, async (req, res, next) => {
   try {
     const { rows } = await query(
@@ -256,6 +310,25 @@ router.get('/metrics', requireAuth, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM research_topics WHERE status = 'completed')      AS topics_completed
     `);
     res.json(m);
+  } catch (e) { next(e); }
+});
+
+// ── GET /editorial-workflow/dossiers/:id/distribution ─────────────────────
+router.get('/dossiers/:id/distribution', requireAuth, async (req, res, next) => {
+  try {
+    const { rows: [pkg] } = await query(
+      `SELECT * FROM social_content_packages WHERE dossier_id = $1`,
+      [req.params.id]
+    );
+    res.json(pkg || null);
+  } catch (e) { next(e); }
+});
+
+// ── POST /editorial-workflow/dossiers/:id/generate-distribution ─────────────
+router.post('/dossiers/:id/generate-distribution', requireAuth, async (req, res, next) => {
+  try {
+    const pkg = await socialService.generateDistribution(req.params.id);
+    res.json(pkg);
   } catch (e) { next(e); }
 });
 

@@ -102,6 +102,7 @@ export async function runDossierGeneration(dossierId, topic) {
          suggested_headlines  = $8,
          suggested_angles     = $9,
          hero_image_prompt    = $10,
+         information_gaps     = $12,
          updated_at           = now()
        WHERE id = $11`,
       [
@@ -116,6 +117,7 @@ export async function runDossierGeneration(dossierId, topic) {
         JSON.stringify(data.suggested_angles  || []),
         data.hero_image_prompt    || null,
         dossierId,
+        JSON.stringify(data.information_gaps  || [])
       ]
     );
 

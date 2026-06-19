@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 import { createHash } from 'crypto';
 import { query } from '../routes/db.js';
 import { AiService } from '../services/AiService.js';
-import { fetchArticleContentForMonitor } from '../services/ArticleFetcher.js';
+import { fetchArticleContentForMonitor, playwrightMetrics } from '../services/ArticleFetcher.js';
 import { startRun, finishRun } from './workerUtils.js';
 
 const ai = new AiService();
@@ -35,9 +35,9 @@ function decodeHtmlEntities(str) {
 // ── RSS Parser ────────────────────────────────────────────────────────────────
 
 function extractTag(xml, tag) {
-  const re = new RegExp(`<${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/${tag}>`, 'i');
+  const re = new RegExp(`<([\\w-]+\\:)?${tag}[^>]*>(?:<!\\[CDATA\\[)?([\\s\\S]*?)(?:\\]\\]>)?<\\/([\\w-]+\\:)?${tag}>`, 'i');
   const m = xml.match(re);
-  return m ? decodeHtmlEntities(m[1].trim()) : '';
+  return m ? decodeHtmlEntities(m[2].trim()) : '';
 }
 
 function parseRssItems(xml) {
@@ -67,8 +67,9 @@ function parseNewsSitemapItems(xml) {
     const block   = m[1];
     const loc     = extractTag(block, 'loc');
     if (!loc || !loc.startsWith('http')) continue;
-    const title   = extractTag(block, 'news:title') || extractTag(block, 'title');
-    const pubDate = extractTag(block, 'news:publication_date') || extractTag(block, 'lastmod');
+    // extractTag now handles any prefix (news:, n:, etc.) automatically
+    const title   = extractTag(block, 'title');
+    const pubDate = extractTag(block, 'publication_date') || extractTag(block, 'lastmod');
     if (!title) continue;
     items.push({ title, link: loc, description: '', pubDate, guid: loc });
   }
@@ -86,6 +87,19 @@ function parseSitemapIndexUrls(xml) {
   return urls;
 }
 
+function logQueryDebug(label, sql, params) {
+  if (process.env.MONITOR_SQL_DEBUG !== '1') return;
+  console.error(`[Monitor][SQL DEBUG] ${label}`);
+  console.error('[Monitor][SQL DEBUG] SQL:', sql.trim());
+  console.error('[Monitor][SQL DEBUG] params:', params);
+  console.error('[Monitor][SQL DEBUG] param types:', params.map((value, index) => ({
+    index: index + 1,
+    jsType: typeof value,
+    isArray: Array.isArray(value),
+    value,
+  })));
+}
+
 function detectFeedFormat(xml) {
   const t = xml.trimStart().slice(0, 2000);
   if (t.includes('<sitemapindex'))  return 'sitemap-index';
@@ -99,8 +113,8 @@ function detectFeedFormat(xml) {
 
 async function fetchFeedXml(url) {
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Panorama-Monitor/2.0)' },
-    signal: AbortSignal.timeout(10_000),
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36' },
+    signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) return null;
   return res.text();
@@ -576,6 +590,22 @@ function generateStorySlug(title) {
   return `${base}-${ts}`;
 }
 
+// ── Story Clustering 2.0 ─────────────────────────────────────────────────────
+// Three-layer gate: Category → Entity → Keyword (in that order).
+// Signatures are FROZEN from the cluster title only — no cascade contamination.
+//
+// Gate 1 (hard): article category must equal story category. "estados unidos"
+//   in a sports headline cannot merge with an international-politics story.
+// Gate 2 (hard): if the story has ≥3 named entities AND the article has ≥1
+//   named entity AND their intersection is empty → reject.
+// Gate 3 (threshold): Jaccard on title-only keywords ≥ STORY_MATCH_THRESHOLD.
+//
+// Scores stored per article link for full auditability:
+//   category_score, entity_score, keyword_score → relevance_score (composite)
+
+const STORY_ENTITY_GATE_MIN_STORY   = 3; // min story entities to activate gate
+const STORY_ENTITY_GATE_MIN_ARTICLE = 1; // min article entities to activate gate
+
 async function detectStories(newArticleIds) {
   if (newArticleIds.length === 0) return;
 
@@ -585,10 +615,9 @@ async function detectStories(newArticleIds) {
   );
 
   // Separate recurring content — flag them but don't cluster into editorial stories
-  const storyArticles   = articles.filter(a => !isRecurringContent(a.title));
-  const recurringOnes   = articles.filter(a =>  isRecurringContent(a.title));
+  const storyArticles = articles.filter(a => !isRecurringContent(a.title));
+  const recurringOnes = articles.filter(a =>  isRecurringContent(a.title));
 
-  // Mark recurring articles as non-story (create stub cluster with is_recurring=true)
   for (const a of recurringOnes) {
     const slug = generateStorySlug(a.title);
     const { rows } = await query(`
@@ -607,76 +636,166 @@ async function detectStories(newArticleIds) {
 
   if (storyArticles.length === 0) return;
 
-  // Load active non-recurring stories + their article titles for keyword matching
+  // ── Load active stories with FROZEN title keywords + entity names ──────────
+  // Signature is built from the cluster TITLE only — never from accumulated
+  // article titles. This prevents cascade contamination where one wrong match
+  // inflates the keyword pool and attracts more wrong articles.
   const { rows: activeStories } = await query(`
     SELECT
       sc.id,
       sc.title,
+      sc.story_type,
+      COALESCE(sc.detected_category, '') AS detected_category,
       COALESCE(
-        (SELECT array_agg(ma.title)
-         FROM story_cluster_articles sca
-         JOIN monitored_articles ma ON ma.id = sca.article_id
-         WHERE sca.story_id = sc.id),
+        array_agg(DISTINCT lower(ke.name)) FILTER (WHERE ke.name IS NOT NULL),
         ARRAY[]::text[]
-      ) AS article_titles
+      ) AS entity_names
     FROM story_clusters sc
+    LEFT JOIN story_entities se ON se.story_id = sc.id
+    LEFT JOIN knowledge_entities ke ON ke.id = se.entity_id AND ke.entity_origin = 'MONITOR'
     WHERE sc.status IN ('active','summarizing','ready')
       AND sc.is_recurring = false
       AND sc.last_seen > now() - interval '${STORY_WINDOW_HOURS} hours'
+    GROUP BY sc.id, sc.title, sc.story_type, sc.detected_category
   `);
 
-  // Build in-memory keyword signatures for O(N×M) matching
-  const signatures = activeStories.map(s => ({
-    id:       s.id,
-    keywords: extractStoryKeywords(
-      (s.article_titles || []).concat([s.title || '']).join(' ')
-    ),
-  }));
+  // Pre-compute category for each active story (use stored value when available)
+  const signatures = activeStories.map(s => {
+    const category = s.detected_category || detectStoryCategory(s.title, s.story_type);
+    return {
+      id:       s.id,
+      category,
+      // FROZEN: title keywords only — never grows during this cycle
+      keywords: extractStoryKeywords(s.title),
+      entities: s.entity_names || [],
+    };
+  });
+
+  // ── Load MONITOR entity names for the new articles (one batch query) ───────
+  const { rows: artEntityRows } = await query(`
+    SELECT aem.article_id::text AS article_id, lower(ke.name) AS entity_name
+    FROM article_entity_matches aem
+    JOIN knowledge_entities ke ON ke.id = aem.entity_id
+    WHERE aem.article_id = ANY($1::uuid[])
+      AND ke.entity_origin = 'MONITOR'
+  `, [newArticleIds]);
+
+  const artEntityMap = new Map(); // article_id → Set<entity_name>
+  for (const row of artEntityRows) {
+    if (!artEntityMap.has(row.article_id)) artEntityMap.set(row.article_id, new Set());
+    artEntityMap.get(row.article_id).add(row.entity_name);
+  }
 
   const affectedIds = new Set();
 
   for (const article of storyArticles) {
-    const artKw = extractStoryKeywords(article.title);
+    const artKw       = extractStoryKeywords(article.title);
     if (artKw.length < 2) continue;
 
-    let bestId    = null;
-    let bestScore = 0;
+    const artCategory = detectStoryCategory(article.title, null);
+    const artEntities = artEntityMap.get(article.id) || new Set();
+
+    let bestId     = null;
+    let bestComposite = 0;
+    let bestScores    = null;
 
     for (const sig of signatures) {
-      const score = jaccardSim(artKw, sig.keywords);
-      if (score > bestScore) { bestScore = score; bestId = sig.id; }
+      // ── Gate 1: category must match ──────────────────────────────────────
+      if (sig.category !== artCategory) continue;
+
+      // ── Gate 2: entity intersection (only when both sides have enough data)
+      const sharedEntities = sig.entities.filter(e => artEntities.has(e));
+      if (
+        sig.entities.length >= STORY_ENTITY_GATE_MIN_STORY &&
+        artEntities.size    >= STORY_ENTITY_GATE_MIN_ARTICLE &&
+        sharedEntities.length === 0
+      ) continue;
+
+      // ── Gate 3: keyword Jaccard on frozen title signature ─────────────────
+      const kwScore = jaccardSim(artKw, sig.keywords);
+      if (kwScore < STORY_MATCH_THRESHOLD) continue;
+
+      // Composite score: keyword 60%, entity 40% (entity defaults to 0.5 when no data)
+      const entityScore = sig.entities.length > 0
+        ? sharedEntities.length / sig.entities.length
+        : 0.5;
+      const composite = parseFloat((kwScore * 0.6 + entityScore * 0.4).toFixed(3));
+
+      if (composite > bestComposite) {
+        bestComposite = composite;
+        bestId        = sig.id;
+        bestScores    = { kwScore, entityScore, sharedEntities, sharedKw: jaccardShared(artKw, sig.keywords) };
+      }
     }
 
     let assignedId;
 
-    if (bestScore >= STORY_MATCH_THRESHOLD && bestId) {
-      const sharedKw = jaccardShared(artKw, signatures.find(s => s.id === bestId)?.keywords || []);
-      await query(
-        `INSERT INTO story_cluster_articles
-           (story_id, article_id, relevance_score, matching_reason, shared_keywords, keyword_similarity, title_similarity)
-         VALUES ($1, $2, $3, 'keyword_jaccard', $4, $5, $5) ON CONFLICT DO NOTHING`,
-        [bestId, article.id, parseFloat(bestScore.toFixed(3)), JSON.stringify(sharedKw), parseFloat(bestScore.toFixed(3))]
-      );
+    if (bestId) {
+      // ── Assign to existing story ──────────────────────────────────────────
+      const { kwScore, entityScore, sharedEntities, sharedKw } = bestScores;
+      const storyClusterArticleSql = `
+        INSERT INTO story_cluster_articles
+          (story_id, article_id, relevance_score, matching_reason,
+           shared_keywords, shared_entities, keyword_similarity, title_similarity, entity_similarity,
+           category_match, category_score, entity_score, keyword_score)
+        VALUES (
+          $1::uuid,
+          $2::uuid,
+          $3::numeric,
+          'keyword_jaccard',
+          $4::jsonb,
+          $5::jsonb,
+          $6::numeric,
+          $7::numeric,
+          $8::numeric,
+          true,
+          1.0,
+          $9::float8,
+          $10::float8
+        )
+        ON CONFLICT DO NOTHING
+      `;
+      const storyClusterArticleParams = [
+        bestId, 
+        article.id, 
+        Number(bestComposite.toFixed(3)),
+        JSON.stringify(sharedKw),
+        JSON.stringify(sharedEntities),
+        Number(kwScore.toFixed(3)),
+        Number(kwScore.toFixed(3)),
+        Number(entityScore.toFixed(3)),
+        Number(entityScore.toFixed(3)),
+        Number(kwScore.toFixed(3))
+      ];
+      logQueryDebug('assign article to existing story_cluster_articles', storyClusterArticleSql, storyClusterArticleParams);
+      await query(storyClusterArticleSql, storyClusterArticleParams);
       assignedId = bestId;
-      // Extend in-memory signature so later articles in same batch can match
-      const sig = signatures.find(s => s.id === bestId);
-      if (sig) sig.keywords.push(...artKw);
+      // ── NO sig.keywords.push here — signatures are frozen this cycle ──────
     } else {
-      // Create new story candidate
+      // ── Create new story cluster ──────────────────────────────────────────
       const slug = generateStorySlug(article.title);
-      const { rows } = await query(
-        `INSERT INTO story_clusters (title, slug, keywords, is_recurring)
-         VALUES ($1, $2, $3, false) RETURNING id`,
-        [article.title, slug, JSON.stringify(artKw)]
-      );
+      const { rows } = await query(`
+        INSERT INTO story_clusters (title, slug, keywords, is_recurring, detected_category)
+        VALUES ($1, $2, $3, false, $4) RETURNING id
+      `, [article.title, slug, JSON.stringify(artKw), artCategory]);
       assignedId = rows[0].id;
-      await query(
-        `INSERT INTO story_cluster_articles
-           (story_id, article_id, relevance_score, matching_reason, shared_keywords, keyword_similarity, title_similarity)
-         VALUES ($1, $2, 1.0, 'story_seed', $3, 1.0, 1.0) ON CONFLICT DO NOTHING`,
-        [assignedId, article.id, JSON.stringify(artKw)]
-      );
-      signatures.push({ id: assignedId, keywords: artKw });
+
+      await query(`
+        INSERT INTO story_cluster_articles
+          (story_id, article_id, relevance_score, matching_reason,
+           shared_keywords, keyword_similarity, title_similarity, entity_similarity,
+           category_match, category_score, entity_score, keyword_score)
+        VALUES ($1,$2,1.0,'story_seed',$3,1.0,1.0,1.0,true,1.0,1.0,1.0)
+        ON CONFLICT DO NOTHING
+      `, [assignedId, article.id, JSON.stringify(artKw)]);
+
+      // Add this new story to the in-memory signatures for later articles in the batch
+      signatures.push({
+        id:       assignedId,
+        category: artCategory,
+        keywords: artKw,       // title keywords of the founding article
+        entities: [...artEntities],
+      });
     }
 
     affectedIds.add(assignedId);
@@ -691,6 +810,18 @@ async function detectStories(newArticleIds) {
         AND ke.entity_origin = 'MONITOR'
       ON CONFLICT DO NOTHING
     `, [assignedId, article.id]);
+  }
+
+  // ── Backfill detected_category for existing stories that lack it ───────────
+  await query(`
+    UPDATE story_clusters
+    SET detected_category = 'unknown'
+    WHERE detected_category IS NULL AND is_recurring = false
+  `).catch(() => {});
+
+  // Run contamination detector on affected stories
+  if (affectedIds.size > 0) {
+    await detectContaminatedStories([...affectedIds]);
   }
 
   // Recalculate all quality metrics for affected stories using a single CTE query.
@@ -708,6 +839,7 @@ async function detectStories(newArticleIds) {
           base.cov_score,
           base.cnt_articles,
           base.cnt_sources,
+          base.articles_last_1h,
           LEAST(100, base.rel_score + base.depth_score + base.div_score + base.cov_score) AS total_score
         FROM (
           SELECT
@@ -719,7 +851,8 @@ async function detectStories(newArticleIds) {
               / NULLIF(COUNT(ma.id), 0), 0
             ) * 25)::integer                                                                   AS cov_score,
             COUNT(sca.article_id)::integer                                                     AS cnt_articles,
-            COUNT(DISTINCT ma.source_id)::integer                                               AS cnt_sources
+            COUNT(DISTINCT ma.source_id)::integer                                               AS cnt_sources,
+            COUNT(sca.article_id) FILTER (WHERE ma.detected_at > now() - interval '1 hour')::integer AS articles_last_1h
           FROM story_cluster_articles sca
           LEFT JOIN monitored_articles ma ON ma.id = sca.article_id
           WHERE sca.story_id = $1
@@ -747,11 +880,548 @@ async function detectStories(newArticleIds) {
           WHEN m.cnt_sources >= 2 THEN 'medium'
           ELSE 'low'
         END,
+        -- [Cost Killer 2] Algorithmic coverage_status — no IA needed
+        coverage_status         = CASE
+          WHEN m.articles_last_1h >= 3 AND m.cnt_sources >= 2 THEN 'breaking'
+          WHEN m.articles_last_1h >= 2                         THEN 'growing'
+          WHEN m.cnt_articles > 5 AND m.cnt_sources <= 1       THEN 'cooling'
+          ELSE 'monitoring'
+        END,
+        -- [Cost Killer 2] Algorithmic importance_score — no IA needed
+        importance_score        = LEAST(10, GREATEST(1, (
+          LEAST(m.cnt_sources * 2.5, 5.0)
+          + LEAST(m.cnt_articles * 0.5, 3.0)
+          + CASE
+              WHEN m.articles_last_1h >= 3 AND m.cnt_sources >= 2 THEN 2
+              WHEN m.articles_last_1h >= 2                         THEN 1
+              ELSE 0
+            END
+        )::integer)),
         last_seen  = now(),
         updated_at = now()
       FROM m
       WHERE sc.id = $1
     `, [storyId]);
+  }
+}
+
+// ── Contamination detector (Story Clustering 2.0) ────────────────────────────
+// Marks stories where the majority of articles belong to a category different
+// from the story's own category. These are likely contamination victims.
+// Sets contamination_flag = true; does NOT delete associations (human review first).
+async function detectContaminatedStories(storyIds) {
+  if (!storyIds.length) return;
+  for (const storyId of storyIds) {
+    const { rows } = await query(`
+      SELECT
+        sc.detected_category,
+        sc.article_count,
+        COUNT(sca.article_id) FILTER (WHERE sca.category_match = false) AS mismatched
+      FROM story_clusters sc
+      LEFT JOIN story_cluster_articles sca ON sca.story_id = sc.id
+      WHERE sc.id = $1
+      GROUP BY sc.id, sc.detected_category, sc.article_count
+    `, [storyId]);
+
+    if (!rows[0] || !rows[0].article_count) continue;
+    const total     = Number(rows[0].article_count);
+    const mismatched = Number(rows[0].mismatched || 0);
+    // Flag when ≥25% of articles are from a different category
+    const contaminated = total >= 4 && mismatched / total >= 0.25;
+    await query(
+      `UPDATE story_clusters SET contamination_flag = $1, updated_at = now() WHERE id = $2`,
+      [contaminated, storyId]
+    );
+    if (contaminated) {
+      console.log(`[Monitor] Contaminación detectada en story ${storyId}: ${mismatched}/${total} artículos con categoría incorrecta`);
+    }
+  }
+}
+
+// [Cost Killer 2+3] Algorithmic Engine — no IA required
+
+async function ensureOpportunityTriggerColumn() {
+  await query(`ALTER TABLE story_opportunities ADD COLUMN IF NOT EXISTS trigger VARCHAR(20) DEFAULT 'ai'`).catch(() => {});
+}
+
+async function ensureAlgorithmicSummaryColumn() {
+  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS algorithmic_summary TEXT`).catch(() => {});
+}
+
+async function ensureClusteringSchema2() {
+  // Story Clustering 2.0 — category gate + explainable scores
+  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS detected_category VARCHAR(20)`).catch(() => {});
+  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS contamination_flag BOOLEAN DEFAULT FALSE`).catch(() => {});
+  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS category_match BOOLEAN DEFAULT TRUE`).catch(() => {});
+  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS category_score FLOAT DEFAULT 0`).catch(() => {});
+  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS entity_score FLOAT DEFAULT 0`).catch(() => {});
+  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS keyword_score FLOAT DEFAULT 0`).catch(() => {});
+}
+
+async function ensureFreshnessSchema() {
+  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS freshness_score FLOAT DEFAULT 1.0`).catch(() => {});
+  await query(`ALTER TABLE event_clusters ADD COLUMN IF NOT EXISTS freshness_score FLOAT DEFAULT 1.0`).catch(() => {});
+}
+
+// Freshness Sprint — recalculates time-decay multipliers for stories and events.
+// Decay curve: 0-2h=100%, 2-6h=90%, 6-12h=75%, 12-24h=50%, 24-48h=25%, 48h+=10%
+// Exported so worker.js can run it on a 30-min cron independent of article ingestion.
+export async function recalcFreshness() {
+  await ensureFreshnessSchema();
+
+  await query(`
+    UPDATE story_clusters SET
+      freshness_score = CASE
+        WHEN last_seen > now() - interval '2 hours'  THEN 1.00
+        WHEN last_seen > now() - interval '6 hours'  THEN 0.90
+        WHEN last_seen > now() - interval '12 hours' THEN 0.75
+        WHEN last_seen > now() - interval '24 hours' THEN 0.50
+        WHEN last_seen > now() - interval '48 hours' THEN 0.25
+        ELSE 0.10
+      END,
+      updated_at = now()
+    WHERE status IN ('active', 'ready', 'followed', 'stale')
+  `);
+
+  await query(`
+    UPDATE event_clusters SET
+      freshness_score = CASE
+        WHEN last_updated_at > now() - interval '2 hours'  THEN 1.00
+        WHEN last_updated_at > now() - interval '6 hours'  THEN 0.90
+        WHEN last_updated_at > now() - interval '12 hours' THEN 0.75
+        WHEN last_updated_at > now() - interval '24 hours' THEN 0.50
+        WHEN last_updated_at > now() - interval '48 hours' THEN 0.25
+        ELSE 0.10
+      END,
+      updated_at = now()
+    WHERE status IN ('active', 'followed', 'stale')
+  `);
+
+  console.log('[Freshness] Scores recalculated for stories + events');
+}
+
+// Pure: detect editorial category from title and story_type (no AI)
+// Scores each category by matching keyword patterns; precedence breaks ties.
+// Categories (CK4): judicial > security > international > politics > economy >
+//                   health > technology > sports > entertainment > society
+function detectStoryCategory(title, storyType) {
+  if (storyType === 'sports')   return 'sports';
+  if (storyType === 'politics') return 'politics';
+
+  const t = (title || '').toLowerCase();
+
+  const PATTERNS = {
+    judicial:      [
+      /\bjuicio\b/, /\bsentenci[ao]\b/, /\bcondena\b/, /\bfall[oó]\b/,
+      /\bveredicto\b/, /\btribunal\b/, /\bjuzgad[ao]\b/, /\bprocesad[ao]\b/,
+      /\bimputad[ao]\b/, /\bacusad[ao]\b/, /\bfiscal\b/, /\bextradici[oó]n\b/,
+      /\bjuez[ao]?\b/, /\bquerella\b/, /\bamparo\b/, /\bperitaje\b/,
+      /\bindagatori/, /\bc[aá]mara.*penal/, /\bdelitos.*econ/,
+    ],
+    security:      [
+      /\bcrimen\b/, /\brobo\b/, /\basalto\b/, /\basesinato\b/, /\bhomicidio\b/,
+      /\bmatan\b/, /\bmat[oó] a\b/, /\bsecuestro\b/, /\bbalacera\b/, /\btiroteo\b/,
+      /\bnarco[^s]/, /\baccidente\b/, /\bincendio\b/, /\bexplosi[oó]n\b/,
+      /\bv[ií]ctima/, /\bcolisi[oó]n\b/, /\bderrumb/, /\bmuertos\b/,
+      /\bheridos\b/, /\bfalleci/, /\batropell/, /\boperativo.*polici/,
+    ],
+    international: [
+      /\binternacional\b/, /\bmundial\b/, /\bglobal\b/, /\bonu\b/,
+      /\beeuu\b/, /\bestados unidos\b/, /\beuropa\b/, /\bchina\b/,
+      /\brusia\b/, /\bbrasil\b/, /\bguerra\b/, /\bdiplom[aá]tic/,
+      /\bcanciller[ií]a\b/, /\bembajad/, /\bcumbre.*internaci/, /\bmigrante\b/,
+      /\brefugiado\b/, /\bucrania\b/, /\bisrael\b/, /\bgaza\b/,
+      /\botan\b/, /\bg7\b/, /\bg20\b/,
+    ],
+    politics:      [
+      /\belecci[oó]n\b/, /\bpresidente\b/, /\bcongreso\b/, /\bgobierno\b/,
+      /\bministr[ao]\b/, /\bsenad[ao]\b/, /\bdiputad[ao]\b/, /\bpol[ií]tic[ao]\b/,
+      /\belectoral\b/, /\bvotaci[oó]n\b/, /\bcandidato\b/, /\blegisla/,
+      /\bgobernador\b/, /\bintendente\b/, /\bdecreto\b/, /\bveto\b/,
+      /\bsesi[oó]n\b/, /\boficialismo\b/, /\boposici[oó]n\b/,
+    ],
+    economy:       [
+      /\beconom[ií]a\b/, /\becon[oó]mic[ao]\b/, /\bd[oó]lar\b/, /\binflaci[oó]n\b/,
+      /\bprecios\b/, /\bbanco\b/, /\bmercado\b/, /\binversi[oó]n\b/,
+      /\bdeuda\b/, /\bmoneda\b/, /\bpbi\b/, /\bpib\b/, /\bbolsa\b/,
+      /\bexportaci[oó]n\b/, /\bimportaci[oó]n\b/, /\bimpuesto\b/,
+      /\barancel\b/, /\bpresupuesto\b/, /\breservas\b/, /\bfinanci[ae]r/,
+      /\bd[eé]ficit\b/, /\bsuperh[aá]vit\b/,
+    ],
+    health:        [
+      /\bsalud\b/, /\benfermedad\b/, /\bpandemia\b/, /\bepidemia\b/,
+      /\bvacun[ao]\b/, /\bhospital\b/, /\bm[eé]dic[ao]\b/, /\bcl[ií]nica\b/,
+      /\bvirus\b/, /\bbacteria\b/, /\bbrote\b/, /\bcontagio\b/,
+      /\bc[aá]ncer\b/, /\bdiabetes\b/, /\bcard[ií]ac/, /\bcirug[ií]a\b/,
+      /\bf[aá]rmaco\b/, /\bmedicamento\b/, /\boms\b/, /\bterapia\b/,
+      /\bpaciente\b/, /\bsanitari[ao]\b/,
+    ],
+    technology:    [
+      /\btecnolog[ií]a\b/, /\bdigital\b/, /\binteligencia artificial\b/,
+      /\bsoftware\b/, /\binternet\b/, /\bstartup\b/, /\binnovaci[oó]n\b/,
+      /\bciberseguridad\b/, /\bhackeo\b/, /\bhacker\b/, /\bredes sociales\b/,
+      /\bcriptomoneda\b/, /\bbitcoin\b/, /\bopenai\b/, /\bchatgpt\b/,
+      /\b5g\b/, /\bdrone\b/, /\bblockchain\b/, /\bapp\b/,
+    ],
+    sports:        [
+      /\bgol\b/, /\bpartido\b/, /\bliga\b/, /\bcopa\b/, /\bequipo\b/,
+      /\bselecci[oó]n\b/, /\bf[uú]tbol\b/, /\brugby\b/, /\btenis\b/,
+      /\bbasket\b/, /\bdeport/, /\bcancha\b/, /\btorneo\b/,
+      /\bcampe[oó]n\b/, /\bfixture\b/, /\bcl[aá]sico\b/, /\bsuperliga\b/,
+      /\bpremier\b/, /\bchampions\b/, /\briver\b/, /\bboca\b/,
+    ],
+    entertainment: [
+      /\bespect[aá]culo\b/, /\bcine\b/, /\bm[uú]sica\b/, /\bartista\b/,
+      /\bactor\b/, /\bactriz\b/, /\bcantante\b/, /\bshow\b/, /\bconcierto\b/,
+      /\bfestival\b/, /\bserie\b/, /\bpel[ií]cula\b/, /\bstreaming\b/,
+      /\bnetflix\b/, /\btelevisi[oó]n\b/, /\bfamoso\b/, /\bcelebridad\b/,
+      /\breality\b/, /\bteatro\b/, /\bgrammy\b/, /\bemmy\b/, /\boscar\b/,
+    ],
+    society:       [
+      /\beducaci[oó]n\b/, /\bescuela\b/, /\buniversidad\b/, /\bdocente\b/,
+      /\bcultura\b/, /\bderechos\b/, /\bg[eé]nero\b/, /\bpobreza\b/,
+      /\bvivienda\b/, /\bfamilia\b/, /\binfancia\b/, /\bdiscapacidad\b/,
+      /\breligi[oó]n\b/, /\becolog[ií]a\b/, /\binundaci[oó]n\b/,
+      /\bhuelga\b/, /\bprotesta\b/, /\bmarcha\b/, /\bbarrio\b/,
+      /\bcomunidad\b/, /\bambiente\b/, /\bclim[aá]tic/,
+    ],
+  };
+
+  const scores = {};
+  for (const [cat, patterns] of Object.entries(PATTERNS)) {
+    scores[cat] = patterns.filter(p => p.test(t)).length;
+  }
+
+  const maxScore = Math.max(...Object.values(scores));
+  if (maxScore === 0) return 'society';
+
+  const PRECEDENCE = ['judicial', 'security', 'international', 'politics', 'economy', 'health', 'technology', 'sports', 'entertainment', 'society'];
+  return PRECEDENCE.find(cat => scores[cat] === maxScore) || 'society';
+}
+
+// Pure: build algorithmic summary sentence (no AI)
+function buildAlgorithmicSummary(story, entities = []) {
+  const arts = story.article_count;
+  const srcs = story.source_count;
+  const artW = arts === 1 ? 'artículo' : 'artículos';
+  const srcW = srcs === 1 ? 'fuente' : 'fuentes';
+  const verb = story.coverage_status === 'breaking' ? 'reportan en tiempo real'
+              : story.coverage_status === 'growing'  ? 'siguen de cerca'
+              : 'informan sobre';
+  let s = `${arts} ${artW} de ${srcs} ${srcW} ${verb} "${story.title}".`;
+  if (entities.length > 0) s += ` Involucra a: ${entities.slice(0, 3).join(', ')}.`;
+  return s;
+}
+
+// Pure: category-specific editorial templates (10 categories — CK4)
+function getCategoryOpportunityTemplates(story, category, sourceList) {
+  const title    = story.title || 'Esta historia';
+  const arts     = story.article_count;
+  const srcs     = story.source_count;
+  const firstSrc = sourceList[0] || 'una fuente';
+  const srcW     = srcs === 1 ? 'fuente' : 'fuentes';
+  const templates = [];
+
+  if (category === 'judicial') {
+    if (story.coverage_status === 'breaking') {
+      templates.push({ type: 'LIVE_COVERAGE',
+        title: `En vivo: audiencia del caso "${title}"`,
+        desc: `${arts} artículos de ${srcs} ${srcW}. Cobertura de la audiencia en curso.`,
+        urgency: 92, editorial: 90, traffic: 82, seo: 68 });
+    }
+    templates.push({ type: 'ANALYSIS',
+      title: `Qué se decidió y por qué importa: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Análisis del fallo o resolución judicial.`,
+      urgency: 78, editorial: 92, traffic: 72, seo: 78 });
+    templates.push({ type: 'EXPLAINER',
+      title: `Cronología del caso: de la denuncia a hoy — "${title}"`,
+      desc: `Contexto completo para lectores que llegaron tarde al caso. Base: ${arts} artículos.`,
+      urgency: 55, editorial: 85, traffic: 75, seo: 82 });
+    templates.push({ type: 'NEWS',
+      title: `Cuáles son los próximos pasos judiciales: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Pieza de seguimiento de la causa.`,
+      urgency: 65, editorial: 80, traffic: 68, seo: 70 });
+  }
+
+  if (category === 'security') {
+    if (story.coverage_status === 'breaking') {
+      templates.push({ type: 'LIVE_COVERAGE',
+        title: `Última hora: "${title}" — lo que se sabe`,
+        desc: `Alta actividad: ${arts} artículos de ${srcs} ${srcW} en la última hora.`,
+        urgency: 95, editorial: 85, traffic: 88, seo: 62 });
+    }
+    templates.push({ type: 'NEWS',
+      title: `Qué pasó: cronología de "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Reconstrucción del hecho para lectores.`,
+      urgency: 80, editorial: 82, traffic: 78, seo: 68 });
+    if (srcs >= 2) {
+      templates.push({ type: 'ANALYSIS',
+        title: `Contexto y antecedentes: "${title}"`,
+        desc: `${srcs} fuentes informan. Pieza de profundidad sobre el hecho y su entorno.`,
+        urgency: 65, editorial: 78, traffic: 70, seo: 72 });
+    }
+  }
+
+  if (category === 'international') {
+    templates.push({ type: 'ANALYSIS',
+      title: `Qué significa para Argentina: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Análisis del impacto local de un hecho global.`,
+      urgency: 60, editorial: 88, traffic: 72, seo: 80 });
+    templates.push({ type: 'EXPLAINER',
+      title: `Explicado: quiénes son los actores y qué disputan en "${title}"`,
+      desc: `Pieza de contexto para lectores no especializados. ${arts} artículos disponibles.`,
+      urgency: 55, editorial: 85, traffic: 75, seo: 82 });
+    if (srcs >= 3) {
+      templates.push({ type: 'NEWS',
+        title: `Estado de situación: "${title}"`,
+        desc: `${arts} artículos de ${srcs} ${srcW}. Resumen del estado actual del conflicto o evento.`,
+        urgency: 70, editorial: 78, traffic: 70, seo: 72 });
+    }
+    templates.push({ type: 'SEO',
+      title: `Preguntas clave sobre "${title}": guía de contexto`,
+      desc: `Alta búsqueda en eventos internacionales. ${arts} artículos como fuente.`,
+      urgency: 45, editorial: 65, traffic: 78, seo: 88 });
+  }
+
+  if (category === 'politics') {
+    templates.push({ type: 'ANALYSIS',
+      title: `Qué cambia para los ciudadanos: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Análisis de impacto concreto en la población.`,
+      urgency: 65, editorial: 88, traffic: 72, seo: 78 });
+    if (srcs >= 3) {
+      templates.push({ type: 'ANALYSIS',
+        title: `Quiénes apoyan y quiénes rechazan: "${title}"`,
+        desc: `${srcs} fuentes con distintos ángulos. Mapa de posiciones políticas.`,
+        urgency: 60, editorial: 82, traffic: 68, seo: 74 });
+    }
+    templates.push({ type: 'EXPLAINER',
+      title: `Explicado en simple: "${title}"`,
+      desc: `Pieza de contexto para lectores no especializados. Base: ${arts} artículos.`,
+      urgency: 55, editorial: 80, traffic: 70, seo: 82 });
+    templates.push({ type: 'SEO',
+      title: `Claves y posiciones: "${title}"`,
+      desc: `Alta búsqueda en hitos políticos. ${arts} artículos como fuente.`,
+      urgency: 45, editorial: 65, traffic: 75, seo: 85 });
+  }
+
+  if (category === 'economy') {
+    templates.push({ type: 'EXPLAINER',
+      title: `Qué significa para el bolsillo: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Explicación accesible del hecho económico.`,
+      urgency: 62, editorial: 85, traffic: 72, seo: 80 });
+    templates.push({ type: 'ANALYSIS',
+      title: `Impacto económico: "${title}"`,
+      desc: `Análisis de consecuencias a corto y mediano plazo. Base: ${arts} artículos.`,
+      urgency: 58, editorial: 88, traffic: 68, seo: 76 });
+    if (srcs >= 3) {
+      templates.push({ type: 'ANALYSIS',
+        title: `Qué dicen los economistas sobre "${title}"`,
+        desc: `${srcs} fuentes con distintas visiones. Síntesis de opiniones expertas.`,
+        urgency: 52, editorial: 82, traffic: 65, seo: 75 });
+    }
+    templates.push({ type: 'SEO',
+      title: `Precio, datos y proyecciones: "${title}"`,
+      desc: `Alta intención de búsqueda en temas económicos. Base: ${arts} artículos.`,
+      urgency: 48, editorial: 62, traffic: 80, seo: 88 });
+  }
+
+  if (category === 'health') {
+    templates.push({ type: 'EXPLAINER',
+      title: `Qué hay que saber: síntomas, riesgos y prevención — "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Pieza informativa de salud pública.`,
+      urgency: 68, editorial: 86, traffic: 78, seo: 88 });
+    templates.push({ type: 'NEWS',
+      title: `Estado de situación: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Actualización del cuadro sanitario.`,
+      urgency: 72, editorial: 80, traffic: 72, seo: 70 });
+    templates.push({ type: 'ANALYSIS',
+      title: `Qué dice la ciencia sobre "${title}"`,
+      desc: `Pieza de contexto científico. Base: ${arts} artículos de ${srcs} ${srcW}.`,
+      urgency: 50, editorial: 88, traffic: 68, seo: 82 });
+    templates.push({ type: 'SEO',
+      title: `Preguntas frecuentes sobre "${title}"`,
+      desc: `Altísima intención de búsqueda en salud. ${arts} artículos disponibles.`,
+      urgency: 45, editorial: 65, traffic: 82, seo: 92 });
+  }
+
+  if (category === 'technology') {
+    templates.push({ type: 'NEWS',
+      title: `Qué anunció y qué cambia: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Resumen del anuncio y sus implicaciones.`,
+      urgency: 70, editorial: 78, traffic: 80, seo: 72 });
+    templates.push({ type: 'ANALYSIS',
+      title: `Qué significa para los usuarios: "${title}"`,
+      desc: `Pieza de impacto para audiencia general. Base: ${arts} artículos.`,
+      urgency: 58, editorial: 82, traffic: 75, seo: 78 });
+    templates.push({ type: 'SEO',
+      title: `Cómo funciona y para qué sirve: "${title}"`,
+      desc: `Alta intención de búsqueda en tecnología e innovación. ${arts} artículos como fuente.`,
+      urgency: 42, editorial: 65, traffic: 85, seo: 90 });
+    if (srcs >= 2) {
+      templates.push({ type: 'EXPLAINER',
+        title: `Guía para no especializados: "${title}"`,
+        desc: `${srcs} fuentes cubren el tema. Pieza accesible para audiencia masiva.`,
+        urgency: 48, editorial: 78, traffic: 78, seo: 82 });
+    }
+  }
+
+  if (category === 'sports') {
+    if (story.coverage_status === 'breaking') {
+      templates.push({ type: 'LIVE_COVERAGE',
+        title: `En vivo: "${title}"`,
+        desc: `Alta actividad: ${arts} artículos de ${srcs} ${srcW}.`,
+        urgency: 92, editorial: 75, traffic: 90, seo: 65 });
+    }
+    templates.push({ type: 'NEWS',
+      title: `Cobertura completa: "${title}"`,
+      desc: `${arts} artículos en ${srcs} medios deportivos. Resumen del hecho para fans.`,
+      urgency: 75, editorial: 72, traffic: 88, seo: 68 });
+    if (srcs >= 3) {
+      templates.push({ type: 'ANALYSIS',
+        title: `Impacto en la tabla y el torneo: "${title}"`,
+        desc: `${srcs} fuentes cubren las consecuencias para la competencia.`,
+        urgency: 55, editorial: 68, traffic: 82, seo: 72 });
+    }
+    templates.push({ type: 'SEO',
+      title: `Estadísticas, figuras y datos del encuentro: "${title}"`,
+      desc: `Datos concretos con alto potencial de búsqueda. Base: ${arts} artículos.`,
+      urgency: 48, editorial: 60, traffic: 85, seo: 88 });
+  }
+
+  if (category === 'entertainment') {
+    templates.push({ type: 'NEWS',
+      title: `Todo sobre "${title}": lo que hay que saber`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Cobertura completa del hecho de espectáculos.`,
+      urgency: 68, editorial: 68, traffic: 85, seo: 72 });
+    templates.push({ type: 'SEO',
+      title: `Quién es, qué dijo y por qué es tendencia: "${title}"`,
+      desc: `Alta intención de búsqueda en espectáculos. Base: ${arts} artículos.`,
+      urgency: 45, editorial: 58, traffic: 88, seo: 90 });
+    if (srcs >= 2) {
+      templates.push({ type: 'ANALYSIS',
+        title: `Por qué "${title}" genera tanta repercusión`,
+        desc: `${srcs} fuentes cubren el fenómeno. Pieza de análisis cultural.`,
+        urgency: 50, editorial: 72, traffic: 80, seo: 75 });
+    }
+  }
+
+  if (category === 'society' || templates.length === 0) {
+    templates.push({ type: 'ANALYSIS',
+      title: `Por qué importa: "${title}" en contexto`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Pieza de profundidad sobre el impacto social.`,
+      urgency: 55, editorial: 80, traffic: 68, seo: 72 });
+    templates.push({ type: 'NEWS',
+      title: `Qué pasó y quiénes se ven afectados: "${title}"`,
+      desc: `${arts} artículos de ${srcs} ${srcW}. Resumen del hecho y sus protagonistas.`,
+      urgency: 65, editorial: 75, traffic: 72, seo: 68 });
+    templates.push({ type: 'EXPLAINER',
+      title: `Explicado: "${title}" y su impacto en la comunidad`,
+      desc: `Pieza accesible para audiencia general. Base: ${arts} artículos.`,
+      urgency: 50, editorial: 78, traffic: 65, seo: 75 });
+    if (story.coverage_status === 'breaking') {
+      templates.push({ type: 'LIVE_COVERAGE',
+        title: `Cobertura en vivo: "${title}"`,
+        desc: `Alta actividad: ${arts} artículos de ${srcs} ${srcW}.`,
+        urgency: 95, editorial: 82, traffic: 88, seo: 68 });
+    }
+    if (story.coverage_status === 'growing' && srcs >= 2) {
+      templates.push({ type: 'NEWS',
+        title: `Historia en crecimiento: "${title}"`,
+        desc: `${arts} artículos de ${srcs} ${srcW}. La cobertura está aumentando.`,
+        urgency: 70, editorial: 70, traffic: 75, seo: 62 });
+    }
+  }
+
+  // Cross-category structural rules (always apply)
+  if (story.source_count === 1 && (story.importance_score || 0) >= 5) {
+    templates.push({ type: 'NEWS',
+      title: `Ventana de exclusiva: solo "${firstSrc}" cubre este tema`,
+      desc: `Historia con ${arts} artículos cubierta por una sola fuente. Oportunidad de ser el segundo medio.`,
+      urgency: 85, editorial: 80, traffic: 62, seo: 52 });
+  }
+  if (arts >= 6 && srcs <= 2) {
+    templates.push({ type: 'NEWS',
+      title: `Cobertura concentrada: "${title}"`,
+      desc: `${arts} artículos pero solo ${srcs} ${srcW}. Oportunidad para diversificar el ángulo.`,
+      urgency: 60, editorial: 66, traffic: 58, seo: 52 });
+  }
+
+  return templates;
+}
+
+async function generateAlgorithmicOpportunities(storyIds) {
+  if (!storyIds || storyIds.length === 0) return;
+  await ensureOpportunityTriggerColumn();
+  await ensureAlgorithmicSummaryColumn();
+  await ensureClusteringSchema2();
+  await ensureFreshnessSchema();
+
+  const { rows: stories } = await query(`
+    SELECT
+      sc.id,
+      sc.title,
+      sc.story_type,
+      sc.article_count,
+      sc.source_count,
+      sc.coverage_status,
+      sc.importance_score,
+      (
+        SELECT json_agg(DISTINCT ts.name)
+        FROM story_cluster_articles sca2
+        JOIN monitored_articles ma2 ON ma2.id = sca2.article_id
+        JOIN tracked_sources ts ON ts.id = ma2.source_id
+        WHERE sca2.story_id = sc.id
+      ) AS sources,
+      (
+        SELECT json_agg(ke.name ORDER BY ke.name)
+        FROM story_entities se
+        JOIN knowledge_entities ke ON ke.id = se.entity_id
+        WHERE se.story_id = sc.id
+        LIMIT 5
+      ) AS entities,
+      (
+        SELECT COUNT(*)::int FROM story_opportunities
+        WHERE story_cluster_id = sc.id
+          AND status = 'pending'
+          AND created_at > now() - interval '4 hours'
+          AND "trigger" = 'algorithmic'
+      ) AS existing_algo_opps
+    FROM story_clusters sc
+    WHERE sc.id = ANY($1::uuid[])
+      AND sc.is_recurring = false
+      AND sc.status IN ('active', 'ready')
+  `, [storyIds]);
+
+  for (const story of stories) {
+    const sourceList = Array.isArray(story.sources) ? story.sources : [];
+    const entityList = Array.isArray(story.entities) ? story.entities.filter(Boolean) : [];
+
+    // Generate and persist algorithmic summary
+    const algoSummary = buildAlgorithmicSummary(story, entityList);
+    await query(
+      `UPDATE story_clusters SET algorithmic_summary = $1 WHERE id = $2 AND (algorithmic_summary IS NULL OR summary IS NULL)`,
+      [algoSummary, story.id]
+    ).catch(() => {});
+
+    if ((story.existing_algo_opps || 0) > 0) continue;
+
+    const category    = detectStoryCategory(story.title, story.story_type);
+    const oppsToInsert = getCategoryOpportunityTemplates(story, category, sourceList);
+
+    for (const opp of oppsToInsert) {
+      const composite = parseFloat(
+        (opp.editorial * 0.4 + opp.traffic * 0.3 + opp.seo * 0.2 + opp.urgency * 0.1).toFixed(2)
+      );
+      await query(`
+        INSERT INTO story_opportunities
+          (story_cluster_id, title, description, opportunity_type,
+           traffic_score, seo_score, urgency_score, editorial_score, composite_score, "trigger")
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'algorithmic')
+      `, [
+        story.id, opp.title, opp.desc, opp.type,
+        opp.traffic, opp.seo, opp.urgency, opp.editorial, composite,
+      ]).catch(() => {});
+    }
   }
 }
 
@@ -1350,14 +2020,26 @@ export async function runNewsMonitor() {
     return;
   }
 
-  // Self-healing: add last_summarized_at if missing (replaces broken 'summarizing' status)
+  // Self-healing: ensure all columns exist before any processing runs
   await query(`ALTER TABLE event_clusters ADD COLUMN IF NOT EXISTS last_summarized_at TIMESTAMP`).catch(() => {});
+  await ensureOpportunityTriggerColumn();
+  await ensureAlgorithmicSummaryColumn();
+  await ensureClusteringSchema2();
+  await ensureFreshnessSchema();
 
   const runId = await startRun('news_monitor');
   let sourcesProcessed = 0;
   let itemsFound = 0;
 
+  // Reset metrics
+  playwrightMetrics.pagesOpened = 0;
+  playwrightMetrics.browsersLaunched = 0;
+
+  console.log('\n=== Perf Profile: News Monitor Cycle Start ===');
+  console.time('Full Cycle');
+
   try {
+    console.time('1. Feed (Sources + Fetching)');
     const { rows: sources } = await query(`
       SELECT * FROM tracked_sources
       WHERE enabled = true
@@ -1366,6 +2048,8 @@ export async function runNewsMonitor() {
     `);
 
     if (sources.length === 0) {
+      console.timeEnd('1. Feed (Sources + Fetching)');
+      console.timeEnd('Full Cycle');
       await finishRun(runId, { status: 'success' });
       return;
     }
@@ -1378,8 +2062,22 @@ export async function runNewsMonitor() {
     }
 
     itemsFound = allNewIds.length;
+    console.timeEnd('1. Feed (Sources + Fetching)');
 
     if (allNewIds.length === 0) {
+      console.log('[Monitor] No new articles. Skipping intelligence blocks.');
+      // Display empty timers for profiling consistency
+      const skipped = ['2. Content Extraction', '3. Entities & Trends', '4. Story Intelligence (Stories)', '5. Opportunities (Algo)', '6. Event Intelligence (Events)'];
+      for (const s of skipped) { console.time(s); console.timeEnd(s); }
+      console.timeEnd('Full Cycle');
+
+      // Resource metrics
+      console.log('\n--- Resource Metrics ---');
+      console.log(`Artículos nuevos en este ciclo: ${itemsFound}`);
+      console.log(`Páginas Playwright abiertas:    ${playwrightMetrics.pagesOpened}`);
+      console.log(`Instancias Chromium abiertas:  ${playwrightMetrics.browsersLaunched}`);
+      console.log('=== Perf Profile: Cycle End ===\n');
+
       await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed });
       return;
     }
@@ -1387,29 +2085,50 @@ export async function runNewsMonitor() {
     console.log(`[Monitor] ${allNewIds.length} new articles from ${sources.length} sources`);
 
     // Sprint 5.8 — fetch full article content in background (does not block intelligence pipeline)
-    fetchPendingArticleContent().catch(e => console.error('[Monitor] Content fetch error:', e.message));
+    console.time('2. Content Extraction');
+    await fetchPendingArticleContent().catch(e => console.error('[Monitor] Content fetch error:', e.message));
+    console.timeEnd('2. Content Extraction');
 
     // Research entity matching (knowledge base context)
+    console.time('3. Entities & Trends');
     await matchResearchEntities(allNewIds);
     // Monitor NER → MONITOR entities → clusters
     await discoverMonitorEntities(allNewIds);
 
     await refreshTrendingTopics();
     await checkAutoResearchTriggers();
+    console.timeEnd('3. Entities & Trends');
 
     // Sprint 5.3 — trend clusters
     await markStaleClusters();
-    summarizePendingClusters().catch(e => console.error('[Monitor] Cluster summarization error:', e.message));
+    // [Cost Killer 1] Auto-generation disabled — use POST /trends/:id/generate-summary
+    // summarizePendingClusters().catch(e => console.error('[Monitor] Cluster summarization error:', e.message));
 
     // Sprint 5.5 — story intelligence
+    console.time('4. Story Intelligence (Stories)');
     await detectStories(allNewIds);
     await markStaleStories();
-    summarizePendingStories().catch(e => console.error('[Monitor] Story summarization error:', e.message));
+    console.timeEnd('4. Story Intelligence (Stories)');
+    
+    // [Cost Killer 2] Algorithmic opportunities — no IA, runs every cycle
+    console.time('5. Opportunities (Algo)');
+    const { rows: recentForOpps } = await query(`
+      SELECT id FROM story_clusters
+      WHERE status IN ('active','ready') AND is_recurring = false
+        AND last_seen > now() - interval '2 hours'
+    `);
+    if (recentForOpps.length > 0) {
+      await generateAlgorithmicOpportunities(recentForOpps.map(r => r.id))
+        .catch(e => console.error('[Monitor] Algo opportunities error:', e.message));
+    }
+    console.timeEnd('5. Opportunities (Algo)');
 
     // Sprint 5.6.1 — editorial opportunity engine
-    generateOpportunitiesForStories().catch(e => console.error('[Monitor] Opportunity generation error:', e.message));
+    // [Cost Killer 1] Auto-generation disabled — use POST /stories/:id/generate-opportunities
+    // generateOpportunitiesForStories().catch(e => console.error('[Monitor] Opportunity generation error:', e.message));
 
     // Sprint 5.6 — event intelligence
+    console.time('6. Event Intelligence (Events)');
     const { rows: recentStories } = await query(`
       SELECT id FROM story_clusters
       WHERE status IN ('active','ready','followed')
@@ -1419,7 +2138,16 @@ export async function runNewsMonitor() {
     const recentStoryIds = recentStories.map(r => r.id);
     await detectEvents(recentStoryIds);
     await markStaleEvents();
-    summarizePendingEvents().catch(e => console.error('[Monitor] Event summarization error:', e.message));
+    console.timeEnd('6. Event Intelligence (Events)');
+
+    console.timeEnd('Full Cycle');
+
+    // Ranking summary
+    console.log('\n--- Resource Metrics ---');
+    console.log(`Artículos nuevos en este ciclo: ${itemsFound}`);
+    console.log(`Páginas Playwright abiertas:    ${playwrightMetrics.pagesOpened}`);
+    console.log(`Instancias Chromium abiertas:  ${playwrightMetrics.browsersLaunched}`);
+    console.log('=== Perf Profile: Cycle End ===\n');
 
     await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed, items_found: itemsFound });
 

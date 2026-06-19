@@ -179,6 +179,130 @@ function PreviewModal({ draft, angle, onClose, onEdit }) {
   );
 }
 
+// ── SocialCard ────────────────────────────────────────────────────────────────
+function SocialCard({ title, content, score, type, onEdit, onCopy }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    let textToCopy = "";
+    if (typeof content === 'string') {
+      textToCopy = content;
+    } else if (type === 'carousel') {
+      const slides = Array.isArray(content) ? content : (content?.slides || []);
+      textToCopy = slides.map(s => `Slide ${s.slide || ''}: ${s.title || ''}\n${s.body || s.content || ''}`).join('\n\n');
+    } else {
+      textToCopy = JSON.stringify(content, null, 2);
+    }
+    
+    navigator.clipboard.writeText(textToCopy);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const renderContent = () => {
+    if (!content) return <span style={{ color: "#9ca3af" }}>Sin contenido</span>;
+
+    // Normalización para Carrusel
+    if (type === 'carousel') {
+      const slides = Array.isArray(content) ? content : (content?.slides || []);
+      if (slides.length === 0) return <span style={{ color: "#9ca3af" }}>Sin slides</span>;
+      return slides.map((s, i) => (
+        <div key={i} style={{ marginBottom: 16, paddingBottom: 12, borderBottom: i < slides.length - 1 ? "1px solid #e5e7eb" : "none" }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "#6366f1", marginBottom: 2 }}>SLIDE {s.slide || i + 1}</div>
+          {s.title && <div style={{ fontWeight: 800, marginBottom: 4, fontSize: 14 }}>{s.title}</div>}
+          <div style={{ color: "#374151" }}>{s.body || s.content}</div>
+        </div>
+      ));
+    }
+
+    // Normalización para Video
+    if (type === 'video') {
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {content.hook && <div><span style={{ fontWeight: 800, color: "#ef4444", fontSize: 10, textTransform: "uppercase" }}>Hook:</span> {content.hook}</div>}
+          {(content.script || content.narration) && (
+            <div><span style={{ fontWeight: 800, color: "#2563eb", fontSize: 10, textTransform: "uppercase" }}>Guion:</span> {content.script || content.narration}</div>
+          )}
+          {content.cta && <div><span style={{ fontWeight: 800, color: "#16a34a", fontSize: 10, textTransform: "uppercase" }}>CTA:</span> {content.cta}</div>}
+          {(content.hashtags || content.tags) && (
+            <div style={{ color: "#6b7280", fontSize: 11 }}>{content.hashtags || content.tags}</div>
+          )}
+        </div>
+      );
+    }
+
+    // Normalización para Texto Plano u Objetos Varios
+    if (typeof content === 'object') {
+      // Si llegamos aquí con un objeto, intentamos mostrar sus campos lógicamente
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {Object.entries(content).map(([k, v]) => (
+            <div key={k}>
+              <span style={{ fontWeight: 700, fontSize: 11, color: "#64748b", textTransform: "uppercase" }}>{k}:</span> {typeof v === 'object' ? JSON.stringify(v) : v}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    return content;
+  };
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, padding: 20, display: "flex", flexDirection: "column", gap: 12, boxShadow: "0 1px 3px 0 rgba(0, 0, 0, 0.1)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h4 style={{ margin: 0, fontSize: 12, fontWeight: 800, color: "#1e293b", display: "flex", alignItems: "center", gap: 8 }}>
+          {title}
+          {score && (
+            <span style={{ 
+              fontSize: 10, 
+              background: score > 80 ? "#dcfce7" : score > 50 ? "#fef3c7" : "#f1f5f9", 
+              color: score > 80 ? "#166534" : score > 50 ? "#92400e" : "#64748b", 
+              padding: "2px 8px", 
+              borderRadius: 6,
+              fontWeight: 800
+            }}>
+              Score: {score}
+            </span>
+          )}
+        </h4>
+        <button onClick={handleCopy} style={{ padding: "6px 12px", fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer", fontWeight: 700, color: "#475569", display: "flex", alignItems: "center", gap: 4 }}>
+          {copied ? "✅ Copiado" : "📋 Copiar"}
+        </button>
+      </div>
+      
+      <div style={{ 
+        flex: 1,
+        fontSize: 13, 
+        color: "#111", 
+        lineHeight: 1.6, 
+        whiteSpace: "pre-wrap", 
+        background: "#f8fafc", 
+        padding: 16, 
+        borderRadius: 12,
+        minHeight: 120,
+        maxHeight: 400,
+        overflowY: "auto",
+        border: "1px solid #f1f5f9"
+      }}>
+        {renderContent()}
+      </div>
+    </div>
+  );
+}
+
+function RecommendationRow({ label, score, color }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ flex: 1, fontSize: 10, fontWeight: 700, color: "#475569", textTransform: "uppercase" }}>{label.replace('_', ' ')}</div>
+      <div style={{ width: 60, height: 4, background: "#f1f5f9", borderRadius: 10, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${score}%`, background: color }} />
+      </div>
+      <div style={{ fontSize: 10, fontWeight: 800, width: 22, color: "#1e293b" }}>{score}</div>
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function DossierDetail() {
   const { id } = useParams();
@@ -192,7 +316,11 @@ export default function DossierDetail() {
   const [generating,   setGenerating]   = useState(null);
   const [regenerating, setRegenerating] = useState(null);
   const [refreshing,   setRefreshing]   = useState(false);
+  const [enriching,    setEnriching]    = useState(false);
+  const [distributing, setDistributing] = useState(false);
   const [preview, setPreview]           = useState(null);
+  const [distribution, setDistribution] = useState(null);
+  const [activeTab, setActiveTab]       = useState("content");
 
   const load = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -204,10 +332,17 @@ export default function DossierDetail() {
     } catch (e) { console.error(e); } finally { setLoading(false); }
   }, [id]);
 
-  useEffect(() => { load(); }, [load]);
+  const loadDistribution = useCallback(async () => {
+    try {
+      const data = await apiJson(`/editorial-workflow/dossiers/${id}/distribution`, { auth: true });
+      setDistribution(data);
+    } catch (e) { console.error(e); }
+  }, [id]);
+
+  useEffect(() => { load(); loadDistribution(); }, [load, loadDistribution]);
 
   useEffect(() => {
-    if (dossier?.status !== "generating") return;
+    if (dossier?.status !== "generating" && dossier?.status !== "draft") return;
     const t = setInterval(() => load(true), 3000);
     return () => clearInterval(t);
   }, [dossier?.status, load]);
@@ -271,11 +406,33 @@ export default function DossierDetail() {
     });
   }
 
+  async function handleEnrich(force = false) {
+    setEnriching(true);
+    try {
+      const url = `/editorial-workflow/dossiers/${id}/enrich${force ? '?force=true' : ''}`;
+      await apiJson(url, { method: 'POST', auth: true });
+      await load(true);
+    } catch (err) {
+      alert(`Error al enriquecer: ${err.message}`);
+    } finally { setEnriching(false); }
+  }
+
+  async function handleGenerateDistribution() {
+    setDistributing(true);
+    try {
+      const data = await apiJson(`/editorial-workflow/dossiers/${id}/generate-distribution`, { method: 'POST', auth: true });
+      setDistribution(data);
+    } catch (err) {
+      alert(`Error al generar distribución: ${err.message}`);
+    } finally { setDistributing(false); }
+  }
+
   if (loading) return <div style={{ padding: 32, color: "#9ca3af" }}>Cargando dossier…</div>;
   if (!dossier) return <div style={{ padding: 32, color: "#ef4444" }}>Dossier no encontrado</div>;
 
-  const isReady     = dossier.status === "ready";
+  const isReady      = dossier.status === "ready";
   const isGenerating = dossier.status === "generating";
+  const isDraft      = dossier.status === "draft";
 
   return (
     <div style={{ padding: 32, maxWidth: 1200, margin: "0 auto" }}>
@@ -286,14 +443,43 @@ export default function DossierDetail() {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
         <h1 style={{ margin: 0, fontSize: 24, fontWeight: 800 }}>{dossier.topic_title || "Dossier"}</h1>
         <span style={{ fontSize: 12, fontWeight: 600, padding: "4px 12px", borderRadius: 20,
-          background: isReady ? "#dcfce7" : isGenerating ? "#fef9c3" : "#fee2e2",
-          color:      isReady ? "#166534" : isGenerating ? "#854d0e" : "#dc2626" }}>
-          {isReady ? "✓ Listo" : isGenerating ? "⏳ Generando…" : "✗ Error"}
+          background: isReady ? "#dcfce7" : isGenerating ? "#fef9c3" : isDraft ? "#e0f2fe" : "#fee2e2",
+          color:      isReady ? "#166534" : isGenerating ? "#854d0e" : isDraft ? "#0369a1" : "#dc2626" }}>
+          {isReady ? "✓ Listo" : isGenerating ? "⏳ Generando…" : isDraft ? "📝 Borrador" : "✗ Error"}
         </span>
       </div>
       <div style={{ fontSize: 13, color: "#9ca3af", marginBottom: 24 }}>
         Dossier editorial · {new Date(dossier.created_at).toLocaleDateString("es-AR", { day: "numeric", month: "long", year: "numeric" })}
       </div>
+
+      <div style={{ display: "flex", gap: 32, borderBottom: "1px solid #e5e7eb", marginBottom: 24 }}>
+        <button onClick={() => setActiveTab("content")} 
+          style={{ padding: "12px 4px", fontSize: 14, fontWeight: 700, border: "none", borderBottom: activeTab === "content" ? "2px solid #6366f1" : "2px solid transparent", background: "none", cursor: "pointer", color: activeTab === "content" ? "#6366f1" : "#6b7280" }}>
+          📄 Contenido
+        </button>
+        <button onClick={() => setActiveTab("distribution")} 
+          style={{ padding: "12px 4px", fontSize: 14, fontWeight: 700, border: "none", borderBottom: activeTab === "distribution" ? "2px solid #6366f1" : "2px solid transparent", background: "none", cursor: "pointer", color: activeTab === "distribution" ? "#6366f1" : "#6b7280" }}>
+          🚀 Distribución
+        </button>
+      </div>
+
+      {isDraft && (
+        <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 12, padding: "20px 24px", marginBottom: 24 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#0c4a6e", marginBottom: 8 }}>
+            📋 Dossier básico creado
+          </div>
+          <p style={{ margin: "0 0 16px", fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
+            El dossier tiene cronología, entidades y fuentes cargadas. Podés enriquecerlo con análisis IA para generar el resumen ejecutivo, ángulos editoriales y borradores.
+          </p>
+          <button onClick={() => handleEnrich(false)} disabled={enriching}
+            style={{ padding: "10px 20px", borderRadius: 8, border: "none",
+              background: enriching ? "#818cf8" : "#6366f1",
+              color: "#fff", fontWeight: 700, fontSize: 14, cursor: enriching ? "not-allowed" : "pointer",
+              opacity: enriching ? 0.8 : 1 }}>
+            {enriching ? "⏳ Enriqueciendo…" : "✨ Enriquecer con IA"}
+          </button>
+        </div>
+      )}
 
       {isGenerating && (
         <div style={{ background: "#fef9c3", border: "1px solid #fde047", borderRadius: 12, padding: "16px 20px", marginBottom: 24, color: "#854d0e", fontSize: 14 }}>
@@ -317,13 +503,18 @@ export default function DossierDetail() {
         </div>
       )}
 
-      {isReady && (
+      {isReady && activeTab === "content" && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 32, alignItems: "start" }}>
           {/* Story Builder */}
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
               <div>
                 <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>🎬 Story Builder</h2>
+                <button onClick={() => { if (confirm('¿Regenerar el dossier con IA? Se perderá el análisis actual.')) handleEnrich(true); }}
+                  disabled={enriching}
+                  style={{ marginTop: 4, background: "none", border: "none", fontSize: 12, color: "#9ca3af", cursor: "pointer", padding: 0 }}>
+                  {enriching ? "⏳ Regenerando…" : "🔄 Regenerar con IA"}
+                </button>
                 <p style={{ margin: "2px 0 0", fontSize: 13, color: "#9ca3af" }}>
                   Elegí un ángulo editorial → Generá el artículo → Revisá → Editá
                 </p>
@@ -366,6 +557,18 @@ export default function DossierDetail() {
                   <h3 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 700 }}>✅ Hechos verificados</h3>
                   <ul style={{ margin: 0, paddingLeft: 18 }}>
                     {facts.map((f, i) => <li key={i} style={{ fontSize: 13, color: "#374151", marginBottom: 5, lineHeight: 1.5 }}>{f}</li>)}
+                  </ul>
+                </div>
+              );
+            })()}
+
+            {(() => {
+              const gaps = Array.isArray(dossier.information_gaps) ? dossier.information_gaps : [];
+              return gaps.length > 0 && (
+                <div style={{ background: "#fffaf0", border: "1px solid #fed7aa", borderRadius: 12, padding: 18 }}>
+                  <h3 style={{ margin: "0 0 10px", fontSize: 14, fontWeight: 700, color: "#9a3412" }}>❓ Vacíos de información detectados</h3>
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {gaps.map((g, i) => <li key={i} style={{ fontSize: 13, color: "#7c2d12", marginBottom: 5, lineHeight: 1.5 }}>{g}</li>)}
                   </ul>
                 </div>
               );
@@ -418,6 +621,125 @@ export default function DossierDetail() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {isReady && activeTab === "distribution" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>🚀 Social Content Engine</h2>
+              <p style={{ margin: "2px 0 0", fontSize: 13, color: "#9ca3af" }}>
+                Transformá este dossier en piezas listas para tus canales sociales.
+              </p>
+            </div>
+            {!distribution && (
+              <button 
+                onClick={handleGenerateDistribution} 
+                disabled={distributing}
+                style={{ padding: "10px 24px", borderRadius: 8, border: "none", background: "#6366f1", color: "#fff", fontWeight: 700, cursor: distributing ? "not-allowed" : "pointer" }}
+              >
+                {distributing ? "⏳ Generando paquete..." : "✨ Generar distribución"}
+              </button>
+            )}
+            {distribution && (
+              <button 
+                onClick={handleGenerateDistribution} 
+                disabled={distributing}
+                style={{ padding: "10px 20px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fff", color: "#374151", fontWeight: 600, cursor: distributing ? "not-allowed" : "pointer", fontSize: 13 }}
+              >
+                {distributing ? "⟳ Regenerando..." : "⟳ Regenerar todo"}
+              </button>
+            )}
+          </div>
+
+          {!distribution && !distributing && (
+            <div style={{ textAlign: "center", padding: "60px 20px", border: "2px dashed #e5e7eb", borderRadius: 16 }}>
+              <div style={{ fontSize: 40, marginBottom: 16 }}>🚀</div>
+              <h3 style={{ margin: "0 0 8px", fontSize: 16, fontWeight: 700 }}>Sin distribución generada</h3>
+              <p style={{ margin: "0 0 24px", fontSize: 14, color: "#6b7280" }}>Click en el botón superior para crear las piezas de redes sociales basadas en los hechos confirmados.</p>
+            </div>
+          )}
+
+          {distribution && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 300px", gap: 24 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <SocialCard title="🎥 TIKTOK" content={distribution.tiktok_script} type="video" score={distribution.recommendations?.scores?.tiktok} />
+                <SocialCard title="🤳 INSTAGRAM REEL" content={distribution.instagram_reel} type="video" score={distribution.recommendations?.scores?.instagram_reel} />
+                <SocialCard title="👥 FACEBOOK REEL" content={distribution.facebook_reel} type="video" score={distribution.recommendations?.scores?.facebook_reel} />
+                <SocialCard title="📺 YT SHORTS" content={distribution.youtube_short} type="video" score={distribution.recommendations?.scores?.youtube_short} />
+                <SocialCard title="🔵 FACEBOOK" content={distribution.facebook_post} score={distribution.recommendations?.scores?.facebook} />
+                <SocialCard title="📸 INSTAGRAM FEED" content={distribution.instagram_feed} score={distribution.recommendations?.scores?.instagram_feed} />
+                <SocialCard title="📱 INSTAGRAM STORY" content={distribution.instagram_story} score={distribution.recommendations?.scores?.instagram_story} />
+                <SocialCard title="🎠 INSTAGRAM CARRUSEL" content={distribution.instagram_carousel} type="carousel" score={distribution.recommendations?.scores?.instagram_carousel} />
+                <SocialCard title="🐦 X (TWITTER)" content={distribution.x_post} score={distribution.recommendations?.scores?.x} />
+                <SocialCard title="💼 LINKEDIN" content={distribution.linkedin_post} score={distribution.recommendations?.scores?.linkedin} />
+                <SocialCard title="📧 NEWSLETTER" content={distribution.newsletter_content} score={distribution.recommendations?.scores?.newsletter} />
+                <SocialCard title="🔔 PUSH" content={distribution.push_notification} score={distribution.recommendations?.scores?.push} />
+              </div>
+
+              <div style={{ position: "sticky", top: 32 }}>
+                <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: 12, padding: 20, boxShadow: "0 4px 6px -1px rgba(0,0,0,0.05)" }}>
+                  <h3 style={{ margin: "0 0 16px", fontSize: 14, fontWeight: 800, color: "#1e293b", textTransform: "uppercase", letterSpacing: 1 }}>📊 Estrategia de Canales</h3>
+                  
+                  <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+                    {/* Recomendados */}
+                    {distribution.recommendations?.categories?.recommended?.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#166534", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                          ⭐ RECOMENDADO
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {distribution.recommendations.categories.recommended.map(key => (
+                            <RecommendationRow key={key} label={key} score={distribution.recommendations.scores[key]} color="#22c55e" />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Opcionales */}
+                    {distribution.recommendations?.categories?.optional?.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#92400e", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                          ⚠️ OPCIONAL
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {distribution.recommendations.categories.optional.map(key => (
+                            <RecommendationRow key={key} label={key} score={distribution.recommendations.scores[key]} color="#eab308" />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Low */}
+                    {distribution.recommendations?.categories?.low?.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 11, fontWeight: 800, color: "#64748b", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                          ❌ POCO RECOMENDADO
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                          {distribution.recommendations.categories.low.map(key => (
+                            <RecommendationRow key={key} label={key} score={distribution.recommendations.scores[key]} color="#94a3b8" />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div style={{ marginTop: 16, background: "#fff7ed", border: "1px solid #fed7aa", borderRadius: 12, padding: 16 }}>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <span style={{ fontSize: 16 }}>💡</span>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#9a3412" }}>Estrategia Editorial</div>
+                  </div>
+                  <p style={{ margin: 0, fontSize: 12, color: "#7c2d12", lineHeight: 1.5 }}>
+                    El contenido generado respeta estrictamente los hechos del dossier. 
+                    Revisá especialmente las etiquetas y CTAs antes de copiar.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

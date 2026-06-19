@@ -1,0 +1,1 @@
+import { query } from './src/routes/db.js'; query('SELECT ed.*, rt.title AS topic_title FROM editorial_dossiers ed JOIN research_topics rt ON ed.topic_id = rt.id WHERE rt.title ILIKE ''%Florencia Peña%'' ORDER BY ed.created_at DESC LIMIT 1').then(r => console.log(JSON.stringify(r.rows[0], null, 2))).catch(e => console.error(e)).finally(() => process.exit(0));

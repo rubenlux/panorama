@@ -202,14 +202,40 @@ export default function MediaMonitor() {
   const [tab, setTab]       = useState('events');
   const [stats, setStats]   = useState(null);
   const [sources, setSources]   = useState([]);
-  const [articles, setArticles] = useState([]);
+  const [articles, setArticles]               = useState([]);
+  const [articlesTotal, setArticlesTotal]     = useState(0);
+  const [articlesHasMore, setArticlesHasMore] = useState(false);
+  const [articlesLoadingMore, setArticlesLoadingMore] = useState(false);
   const [trending, setTrending] = useState([]);
-  const [stories, setStories]     = useState([]);
+  const [stories, setStories]               = useState([]);
+  const [storiesTotal, setStoriesTotal]     = useState(0);
+  const [storiesHasMore, setStoriesHasMore] = useState(false);
+  const [storiesLoadingMore, setStoriesLoadingMore] = useState(false);
+  const [storiesHours, setStoriesHours]     = useState(24);
+  const storiesHoursRef = useRef(24);
+  const [articlesSource, setArticlesSource] = useState(null);
+  const articlesSourceRef = useRef(null);
+  const [storiesSort,  setStoriesSort]      = useState('recent');
+  const storiesSortRef = useRef('recent');
   const [storyBusy, setStoryBusy] = useState({});
-  const [events,  setEvents]      = useState([]);
+  const [events, setEvents]               = useState([]);
+  const [eventsTotal, setEventsTotal]     = useState(0);
+  const [eventsHasMore, setEventsHasMore] = useState(false);
+  const [eventsLoadingMore, setEventsLoadingMore] = useState(false);
+  const [eventsHours, setEventsHours]     = useState(24);
+  const eventsHoursRef = useRef(24);
+  const [eventsSort,  setEventsSort]      = useState('recent');
+  const eventsSortRef = useRef('recent');
   const [eventBusy, setEventBusy] = useState({});
-  const [editOpps,  setEditOpps]  = useState([]);
-  const [oppBusy,   setOppBusy]   = useState({});
+  const [editOpps,     setEditOpps]     = useState([]);
+  const [oppsHasMore,  setOppsHasMore]  = useState(false);
+  const [oppsTotal,    setOppsTotal]    = useState(0);
+  const [oppsLoadingMore, setOppsLoadingMore] = useState(false);
+  const [oppsHours,    setOppsHours]    = useState(null);
+  const oppsHoursRef = useRef(null);
+  const [oppsSort,     setOppsSort]     = useState('recent');
+  const oppsSortRef = useRef('recent');
+  const [oppBusy,      setOppBusy]      = useState({});
   const [addForm, setAddForm]   = useState({ name: '', type: 'news', rss_url: '', homepage: '' });
   const [addOpen, setAddOpen]   = useState(false);
   const [researchingId, setResearchingId] = useState(null);
@@ -299,25 +325,179 @@ export default function MediaMonitor() {
     try { const d = await apiJson('/monitor/sources', { auth: true }); setSources(d.items || []); } catch {}
   }, []);
 
+  const FEED_PER_PAGE    = 50;
+  const STORIES_PER_PAGE = 50;
+  const EVENTS_PER_PAGE  = 50;
+  const TIME_OPTIONS = [
+    { value: 1,  label: 'Última 1h' },
+    { value: 2,  label: 'Últimas 2h' },
+    { value: 6,  label: 'Últimas 6h' },
+    { value: 12, label: 'Últimas 12h' },
+    { value: 24, label: 'Últimas 24h' },
+  ];
+
   const loadArticles = useCallback(async () => {
-    try { const d = await apiJson('/monitor/articles?hours=24&limit=150', { auth: true }); setArticles(d.items || []); } catch {}
+    try {
+      const sId = articlesSourceRef.current;
+      const url = `/monitor/articles?hours=24&limit=${FEED_PER_PAGE}${sId ? `&source_id=${sId}` : ''}`;
+      const d = await apiJson(url, { auth: true });
+      setArticles(d.items || []);
+      setArticlesTotal(d.total || 0);
+      setArticlesHasMore((d.items || []).length === FEED_PER_PAGE);
+    } catch {}
   }, []);
+
+  const loadMoreArticles = useCallback(async () => {
+    setArticlesLoadingMore(true);
+    try {
+      const sId = articlesSourceRef.current;
+      const url = `/monitor/articles?hours=24&limit=${FEED_PER_PAGE}&offset=${articles.length}${sId ? `&source_id=${sId}` : ''}`;
+      const d = await apiJson(url, { auth: true });
+      const newItems = d.items || [];
+      setArticles(prev => [...prev, ...newItems]);
+      setArticlesHasMore(newItems.length === FEED_PER_PAGE);
+    } catch {} finally { setArticlesLoadingMore(false); }
+  }, [articles.length]);
+
+  const handleArticlesSourceChange = useCallback((sId) => {
+    articlesSourceRef.current = sId || null;
+    setArticlesSource(sId || null);
+    setArticles([]);
+    setArticlesTotal(0);
+    setArticlesHasMore(false);
+    loadArticles();
+  }, [loadArticles]);
 
   const loadTrending = useCallback(async () => {
     try { const d = await apiJson('/monitor/trending', { auth: true }); setTrending(d.items || []); } catch {}
   }, []);
 
   const loadStories = useCallback(async () => {
-    try { const d = await getStories({ minArticles: 2, limit: 150 }); setStories(d.items || []); } catch {}
+    try {
+      const d = await getStories({ minArticles: 2, limit: STORIES_PER_PAGE, hours: storiesHoursRef.current, sort: storiesSortRef.current });
+      const items = d.items || [];
+      const total = d.total || 0;
+      setStories(items);
+      setStoriesTotal(total);
+      setStoriesHasMore(items.length < total);
+    } catch {}
   }, []);
+
+  const loadMoreStories = useCallback(async () => {
+    setStoriesLoadingMore(true);
+    try {
+      const currentOffset = stories.length;
+      const d = await getStories({ minArticles: 2, limit: STORIES_PER_PAGE, offset: currentOffset, hours: storiesHoursRef.current, sort: storiesSortRef.current });
+      const newItems = d.items || [];
+      const total = d.total || 0;
+      setStories(prev => [...prev, ...newItems]);
+      setStoriesTotal(total);
+      setStoriesHasMore(currentOffset + newItems.length < total);
+    } catch {} finally { setStoriesLoadingMore(false); }
+  }, [stories.length]);
 
   const loadEvents = useCallback(async () => {
-    try { const d = await getEvents({ limit: 150 }); setEvents(d.items || []); } catch {}
+    try {
+      const d = await getEvents({ limit: EVENTS_PER_PAGE, hours: eventsHoursRef.current, sort: eventsSortRef.current });
+      const items = d.items || [];
+      const total = d.total || 0;
+      setEvents(items);
+      setEventsTotal(total);
+      setEventsHasMore(items.length < total);
+    } catch {}
   }, []);
 
+  const loadMoreEvents = useCallback(async () => {
+    setEventsLoadingMore(true);
+    try {
+      const currentOffset = events.length;
+      const d = await getEvents({ limit: EVENTS_PER_PAGE, offset: currentOffset, hours: eventsHoursRef.current, sort: eventsSortRef.current });
+      const newItems = d.items || [];
+      const total = d.total || 0;
+      setEvents(prev => [...prev, ...newItems]);
+      setEventsTotal(total);
+      setEventsHasMore(currentOffset + newItems.length < total);
+    } catch {} finally { setEventsLoadingMore(false); }
+  }, [events.length]);
+
+  const OPPS_PER_PAGE = 50;
   const loadOpps = useCallback(async () => {
-    try { const d = await getOpportunities({ limit: 300 }); setEditOpps(d.items || []); } catch {}
+    try {
+      const d = await getOpportunities({ limit: OPPS_PER_PAGE, age: 'ALL', hours: oppsHoursRef.current, sort: oppsSortRef.current });
+      const items = d.items || [];
+      const total = d.total || 0;
+      setEditOpps(items);
+      setOppsTotal(total);
+      setOppsHasMore(items.length < total);
+    } catch {}
   }, []);
+
+  const loadMoreOpps = useCallback(async () => {
+    setOppsLoadingMore(true);
+    try {
+      const currentOffset = editOpps.length;
+      const d = await getOpportunities({ limit: OPPS_PER_PAGE, offset: currentOffset, age: 'ALL', hours: oppsHoursRef.current, sort: oppsSortRef.current });
+      const newItems = d.items || [];
+      const total = d.total || 0;
+      setEditOpps(prev => [...prev, ...newItems]);
+      setOppsTotal(total);
+      setOppsHasMore(currentOffset + newItems.length < total);
+    } catch {} finally { setOppsLoadingMore(false); }
+  }, [editOpps.length]);
+
+  const handleStoriesHoursChange = useCallback((h) => {
+    storiesHoursRef.current = h;
+    setStoriesHours(h);
+    setStories([]);
+    setStoriesTotal(0);
+    setStoriesHasMore(false);
+    loadStories();
+  }, [loadStories]);
+
+  const handleStoriesSortChange = useCallback((s) => {
+    storiesSortRef.current = s;
+    setStoriesSort(s);
+    setStories([]);
+    setStoriesTotal(0);
+    setStoriesHasMore(false);
+    loadStories();
+  }, [loadStories]);
+
+  const handleEventsHoursChange = useCallback((h) => {
+    eventsHoursRef.current = h;
+    setEventsHours(h);
+    setEvents([]);
+    setEventsTotal(0);
+    setEventsHasMore(false);
+    loadEvents();
+  }, [loadEvents]);
+
+  const handleEventsSortChange = useCallback((s) => {
+    eventsSortRef.current = s;
+    setEventsSort(s);
+    setEvents([]);
+    setEventsTotal(0);
+    setEventsHasMore(false);
+    loadEvents();
+  }, [loadEvents]);
+
+  const handleOppsHoursChange = useCallback((h) => {
+    oppsHoursRef.current = h;
+    setOppsHours(h);
+    setEditOpps([]);
+    setOppsTotal(0);
+    setOppsHasMore(false);
+    loadOpps();
+  }, [loadOpps]);
+
+  const handleOppsSortChange = useCallback((s) => {
+    oppsSortRef.current = s;
+    setOppsSort(s);
+    setEditOpps([]);
+    setOppsTotal(0);
+    setOppsHasMore(false);
+    loadOpps();
+  }, [loadOpps]);
 
   useEffect(() => {
     loadStats(); loadSources(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
@@ -449,6 +629,15 @@ export default function MediaMonitor() {
     finally { setOppBusy(p => ({ ...p, [id]: null })); }
   }
 
+  async function handleGenerateEventSummary(id) {
+    setEventBusy(p => ({ ...p, [id]: 'summary' }));
+    try {
+      const d = await apiJson(`/events/${id}/generate-summary`, { method: 'POST', auth: true });
+      if (d.event) setEvents(prev => prev.map(ev => ev.id === id ? { ...ev, ...d.event } : ev));
+    } catch (e) { alert('Error al analizar evento: ' + e.message); }
+    finally { setEventBusy(p => ({ ...p, [id]: null })); }
+  }
+
   // Legacy: used only for header stat chip; editorial opps replace the tab
   const opportunities = trending.filter(t => t.source_count >= 3 && t.mention_count >= 5);
 
@@ -462,10 +651,10 @@ export default function MediaMonitor() {
 
   const alertCount = healthData?.alerts?.length || 0;
   const TABS = [
-    { id: 'events',  label: '🎯 Eventos',       count: events.length },
-    { id: 'feed',    label: '📰 Feed',          count: articles.length },
-    { id: 'trending',label: '📖 Historias',     count: stories.length },
-    { id: 'opps',    label: '⚡ Oportunidades', count: stats?.opportunities ?? editOpps.filter(o => o.status === 'pending').length, alert: (stats?.opportunities ?? editOpps.filter(o => o.status === 'pending').length) > 0 },
+    { id: 'events',  label: '🎯 Eventos',       count: eventsTotal || events.length },
+    { id: 'feed',    label: '📰 Feed',          count: articlesTotal || articles.length },
+    { id: 'trending',label: '📖 Historias',     count: storiesTotal || stories.length },
+    { id: 'opps',    label: '⚡ Oportunidades', count: oppsTotal || stats?.opportunities || editOpps.length, alert: (oppsTotal || stats?.opportunities || editOpps.length) > 0 },
     { id: 'sources', label: '📡 Fuentes',       count: sources.length },
     { id: 'health',  label: '🔧 Sistema',       count: alertCount, alert: alertCount > 0 },
   ];
@@ -573,6 +762,25 @@ export default function MediaMonitor() {
         {/* ── EVENTOS ──────────────────────────────────────────────────── */}
         {tab === 'events' && (
           <div>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+              {TIME_OPTIONS.map(({ value, label }) => (
+                <button key={value} onClick={() => handleEventsHoursChange(value)} style={{
+                  padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: eventsHours === value ? '2px solid #6366f1' : '1px solid #e5e7eb',
+                  background: eventsHours === value ? '#eef2ff' : 'white',
+                  color: eventsHours === value ? '#4338ca' : '#6b7280',
+                }}>{label}</button>
+              ))}
+              <div style={{ width: 1, height: 20, background: '#e5e7eb', margin: '0 4px' }} />
+              {[{ value: 'recent', label: '🕐 Recientes' }, { value: 'score', label: '⭐ Score' }].map(({ value, label }) => (
+                <button key={value} onClick={() => handleEventsSortChange(value)} style={{
+                  padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: eventsSort === value ? '2px solid #059669' : '1px solid #e5e7eb',
+                  background: eventsSort === value ? '#d1fae5' : 'white',
+                  color: eventsSort === value ? '#065f46' : '#6b7280',
+                }}>{label}</button>
+              ))}
+            </div>
             {events.length === 0 && (
               <EmptyState
                 icon="🎯"
@@ -583,7 +791,7 @@ export default function MediaMonitor() {
             {events.length > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                  {events.filter(e => e.editorial_score >= 70).length} eventos prioritarios · {events.length} eventos activos
+                  {events.filter(e => e.editorial_score >= 70).length} eventos prioritarios · {eventsTotal || events.length} eventos activos
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
                   {['breaking', 'growing', 'monitoring'].map(cs => {
@@ -612,17 +820,58 @@ export default function MediaMonitor() {
                   onDetail={() => navigate(`/events/${ev.id}`)}
                   onFollow={() => handleFollowEvent(ev.id)}
                   onDossier={() => handleDossierFromEvent(ev.id)}
+                  onGenerateSummary={() => handleGenerateEventSummary(ev.id)}
                 />
               ))}
             </div>
+            {eventsHasMore && (
+              <div style={{ textAlign: 'center', marginTop: 20 }}>
+                <button onClick={loadMoreEvents} disabled={eventsLoadingMore} style={{
+                  padding: '10px 28px', borderRadius: 10, border: '1px solid #e5e7eb',
+                  background: 'white', color: '#374151', fontSize: 13, fontWeight: 600,
+                  cursor: eventsLoadingMore ? 'not-allowed' : 'pointer', opacity: eventsLoadingMore ? .6 : 1,
+                }}>
+                  {eventsLoadingMore ? 'Cargando…' : `Cargar más (${events.length} de ${eventsTotal})`}
+                </button>
+              </div>
+            )}
+            {!eventsHasMore && events.length > 0 && (
+              <div style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: '#9ca3af' }}>
+                Todos los eventos cargados ({events.length})
+              </div>
+            )}
           </div>
         )}
 
         {/* ── FEED ─────────────────────────────────────────────────────── */}
         {tab === 'feed' && (
           <div>
+            <div style={{ marginBottom: 16, display: 'flex', gap: 12, alignItems: 'center', background: '#f9fafb', padding: '10px 16px', borderRadius: 12, border: '1px solid #e5e7eb' }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#374151', display: 'flex', alignItems: 'center', gap: 6 }}>
+                🔍 Filtrar por fuente:
+              </div>
+              <select 
+                value={articlesSource || ''} 
+                onChange={(e) => handleArticlesSourceChange(e.target.value)}
+                style={{ 
+                  padding: '6px 12px', borderRadius: 8, border: '1px solid #d1d5db', 
+                  fontSize: 13, fontWeight: 600, color: '#374151', background: 'white',
+                  cursor: 'pointer', outline: 'none', minWidth: 200
+                }}
+              >
+                <option value="">Todas las fuentes ({sources.length})</option>
+                {[...sources].sort((a,b) => a.name.localeCompare(b.name)).map(s => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              {articlesSource && (
+                <button onClick={() => handleArticlesSourceChange(null)} style={{ background: 'none', border: 'none', color: '#6366f1', fontSize: 12, fontWeight: 700, cursor: 'pointer', padding: 0 }}>
+                  Limpiar filtro
+                </button>
+              )}
+            </div>
             {articles.length === 0 && (
-              <EmptyState icon="📰" title="Sin artículos todavía" body="El worker detecta artículos nuevos cada 60s. Asegúrate de que esté corriendo: npm run worker" />
+              <EmptyState icon="📰" title={articlesSource ? "Sin artículos de esta fuente" : "Sin artículos todavía"} body={articlesSource ? "No se encontraron artículos recientes para la fuente seleccionada." : "El worker detecta artículos nuevos cada 60s. Asegúrate de que esté corriendo: npm run worker"} />
             )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {articles.map(a => {
@@ -661,12 +910,47 @@ export default function MediaMonitor() {
                 );
               })}
             </div>
+            {articlesHasMore && (
+              <div style={{ textAlign: 'center', marginTop: 20 }}>
+                <button onClick={loadMoreArticles} disabled={articlesLoadingMore} style={{
+                  padding: '10px 28px', borderRadius: 10, border: '1px solid #e5e7eb',
+                  background: 'white', color: '#374151', fontSize: 13, fontWeight: 600,
+                  cursor: articlesLoadingMore ? 'not-allowed' : 'pointer', opacity: articlesLoadingMore ? .6 : 1,
+                }}>
+                  {articlesLoadingMore ? 'Cargando…' : `Cargar más (${articles.length} de ${articlesTotal})`}
+                </button>
+              </div>
+            )}
+            {!articlesHasMore && articles.length > 0 && (
+              <div style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: '#9ca3af' }}>
+                Todos los artículos cargados ({articles.length})
+              </div>
+            )}
           </div>
         )}
 
         {/* ── HISTORIAS ACTIVAS ──────────────────────────────────────────── */}
         {tab === 'trending' && (
           <div>
+            <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+              {TIME_OPTIONS.map(({ value, label }) => (
+                <button key={value} onClick={() => handleStoriesHoursChange(value)} style={{
+                  padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: storiesHours === value ? '2px solid #6366f1' : '1px solid #e5e7eb',
+                  background: storiesHours === value ? '#eef2ff' : 'white',
+                  color: storiesHours === value ? '#4338ca' : '#6b7280',
+                }}>{label}</button>
+              ))}
+              <div style={{ width: 1, height: 20, background: '#e5e7eb', margin: '0 4px' }} />
+              {[{ value: 'recent', label: '🕐 Recientes' }, { value: 'score', label: '⭐ Score' }].map(({ value, label }) => (
+                <button key={value} onClick={() => handleStoriesSortChange(value)} style={{
+                  padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: storiesSort === value ? '2px solid #059669' : '1px solid #e5e7eb',
+                  background: storiesSort === value ? '#d1fae5' : 'white',
+                  color: storiesSort === value ? '#065f46' : '#6b7280',
+                }}>{label}</button>
+              ))}
+            </div>
             {stories.length === 0 && (
               <EmptyState
                 icon="📖"
@@ -677,20 +961,16 @@ export default function MediaMonitor() {
             {stories.length > 0 && (
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
                 <div style={{ fontSize: 12, color: '#9ca3af' }}>
-                  {stories.filter(s => s.status === 'ready').length} con resumen IA · {stories.length} historias activas
+                  {stories.filter(s => s.source_count >= 3).length} confirmadas · {storiesTotal || stories.length} historias activas
                 </div>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {['breaking', 'growing', 'monitoring'].map(cs => {
+                  {['breaking', 'growing', 'monitoring', 'cooling'].map(cs => {
                     const n = stories.filter(s => s.coverage_status === cs).length;
                     if (!n) return null;
-                    const style = cs === 'breaking'
-                      ? { background: '#fee2e2', color: '#dc2626' }
-                      : cs === 'growing'
-                      ? { background: '#fef3c7', color: '#d97706' }
-                      : { background: '#f3f4f6', color: '#6b7280' };
+                    const csStyle = COVERAGE_STYLE[cs] || COVERAGE_STYLE.monitoring;
                     return (
-                      <span key={cs} style={{ ...style, fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 20 }}>
-                        {cs === 'breaking' ? '🔴' : cs === 'growing' ? '📈' : '●'} {cs}: {n}
+                      <span key={cs} style={{ background: csStyle.bg, color: csStyle.color, fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 20 }}>
+                        {cs === 'breaking' ? '🔴' : cs === 'growing' ? '📈' : cs === 'cooling' ? '📉' : '●'} {csStyle.label}: {n}
                       </span>
                     );
                   })}
@@ -709,28 +989,82 @@ export default function MediaMonitor() {
                 />
               ))}
             </div>
+            {storiesHasMore && (
+              <div style={{ textAlign: 'center', marginTop: 20 }}>
+                <button onClick={loadMoreStories} disabled={storiesLoadingMore} style={{
+                  padding: '10px 28px', borderRadius: 10, border: '1px solid #e5e7eb',
+                  background: 'white', color: '#374151', fontSize: 13, fontWeight: 600,
+                  cursor: storiesLoadingMore ? 'not-allowed' : 'pointer', opacity: storiesLoadingMore ? .6 : 1,
+                }}>
+                  {storiesLoadingMore ? 'Cargando…' : `Cargar más (${stories.length} de ${storiesTotal})`}
+                </button>
+              </div>
+            )}
+            {!storiesHasMore && stories.length > 0 && (
+              <div style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: '#9ca3af' }}>
+                Todas las historias cargadas ({stories.length})
+              </div>
+            )}
           </div>
         )}
 
         {/* ── OPORTUNIDADES EDITORIALES ─────────────────────────────────── */}
         {tab === 'opps' && (
           <div>
+            {/* Hours + sort filter for opportunities */}
+            <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+              <button onClick={() => handleOppsHoursChange(null)} style={{
+                padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                border: oppsHours === null ? '2px solid #6366f1' : '1px solid #e5e7eb',
+                background: oppsHours === null ? '#eef2ff' : 'white',
+                color: oppsHours === null ? '#4338ca' : '#6b7280',
+              }}>Todas</button>
+              {TIME_OPTIONS.map(({ value, label }) => (
+                <button key={value} onClick={() => handleOppsHoursChange(value)} style={{
+                  padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: oppsHours === value ? '2px solid #6366f1' : '1px solid #e5e7eb',
+                  background: oppsHours === value ? '#eef2ff' : 'white',
+                  color: oppsHours === value ? '#4338ca' : '#6b7280',
+                }}>{label}</button>
+              ))}
+              <div style={{ width: 1, height: 20, background: '#e5e7eb', margin: '0 4px' }} />
+              {[{ value: 'recent', label: '🕐 Recientes' }, { value: 'score', label: '⭐ Score' }].map(({ value, label }) => (
+                <button key={value} onClick={() => handleOppsSortChange(value)} style={{
+                  padding: '5px 14px', borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                  border: oppsSort === value ? '2px solid #059669' : '1px solid #e5e7eb',
+                  background: oppsSort === value ? '#d1fae5' : 'white',
+                  color: oppsSort === value ? '#065f46' : '#6b7280',
+                }}>{label}</button>
+              ))}
+            </div>
             {editOpps.length === 0 && (
               <EmptyState
                 icon="⚡"
                 title="Sin oportunidades editoriales todavía"
-                body="Las oportunidades se generan automáticamente cuando una historia acumula suficiente cobertura y el AI la analiza. El worker debe estar corriendo."
+                body="Las oportunidades algorítmicas se generan con cada ciclo del monitor. Las oportunidades IA requieren que el worker esté corriendo con Claude activo."
               />
             )}
             {editOpps.length > 0 && (() => {
-              const pending = editOpps.filter(o => o.status === 'pending');
-              const types = [...new Set(pending.map(o => o.opportunity_type))];
+              const pending   = editOpps.filter(o => o.status === 'pending');
+              const algoCount = pending.filter(o => o.trigger === 'algorithmic').length;
+              const aiCount   = pending.filter(o => o.trigger !== 'algorithmic').length;
+              const types     = [...new Set(pending.map(o => o.opportunity_type))];
               return (
                 <div style={{ marginBottom: 16 }}>
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                     <div style={{ fontSize: 13, color: '#374151', fontWeight: 700 }}>
                       {pending.length} {pending.length === 1 ? 'oportunidad disponible' : 'oportunidades disponibles'}
                     </div>
+                    {algoCount > 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 700, background: '#d1fae5', color: '#065f46', padding: '2px 9px', borderRadius: 20 }}>
+                        ⚙️ ALGORÍTMICA: {algoCount}
+                      </span>
+                    )}
+                    {aiCount > 0 && (
+                      <span style={{ fontSize: 11, fontWeight: 700, background: '#ede9fe', color: '#5b21b6', padding: '2px 9px', borderRadius: 20 }}>
+                        ✨ IA: {aiCount}
+                      </span>
+                    )}
                     {types.map(t => {
                       const cfg = OPP_TYPE_CONFIG[t] || OPP_TYPE_CONFIG.NEWS;
                       return (
@@ -754,6 +1088,22 @@ export default function MediaMonitor() {
                 />
               ))}
             </div>
+            {oppsHasMore && (
+              <div style={{ textAlign: 'center', marginTop: 20 }}>
+                <button onClick={loadMoreOpps} disabled={oppsLoadingMore} style={{
+                  padding: '10px 28px', borderRadius: 10, border: '1px solid #e5e7eb',
+                  background: 'white', color: '#374151', fontSize: 13, fontWeight: 600,
+                  cursor: oppsLoadingMore ? 'not-allowed' : 'pointer', opacity: oppsLoadingMore ? .6 : 1,
+                }}>
+                  {oppsLoadingMore ? 'Cargando…' : `Cargar más (${editOpps.length} de ${oppsTotal})`}
+                </button>
+              </div>
+            )}
+            {!oppsHasMore && editOpps.length > 0 && (
+              <div style={{ textAlign: 'center', marginTop: 16, fontSize: 12, color: '#9ca3af' }}>
+                Todas las oportunidades cargadas ({editOpps.length})
+              </div>
+            )}
           </div>
         )}
 
@@ -1139,11 +1489,17 @@ function OpportunityCard({ opp, busy, onDossier, onStatus }) {
       display: 'flex', flexDirection: 'column', gap: 10,
     }}>
 
-      {/* Type badge + composite score */}
+      {/* Type badge + trigger badge + composite score */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, background: cfg.bg, color: cfg.color, padding: '3px 10px', borderRadius: 20 }}>
-          {cfg.icon} {cfg.label}
-        </span>
+        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, fontWeight: 700, background: cfg.bg, color: cfg.color, padding: '3px 10px', borderRadius: 20 }}>
+            {cfg.icon} {cfg.label}
+          </span>
+          {opp.trigger === 'algorithmic'
+            ? <span style={{ fontSize: 10, fontWeight: 700, background: '#d1fae5', color: '#065f46', padding: '2px 7px', borderRadius: 20 }}>⚙️ ALGORÍTMICA</span>
+            : <span style={{ fontSize: 10, fontWeight: 700, background: '#ede9fe', color: '#5b21b6', padding: '2px 7px', borderRadius: 20 }}>✨ IA</span>
+          }
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
           <span style={{ fontSize: 10, color: '#9ca3af' }}>Score</span>
           <span style={{ fontSize: 18, fontWeight: 900, color: csColor, lineHeight: 1 }}>{Math.round(cs)}</span>
@@ -1244,7 +1600,7 @@ function EditorialScoreBadge({ score }) {
   );
 }
 
-function EventCard({ event: ev, busy, onDetail, onFollow, onDossier }) {
+function EventCard({ event: ev, busy, onDetail, onFollow, onDossier, onGenerateSummary }) {
   const isFollowed = ev.status === 'followed';
   const covStyle   = COVERAGE_STYLE[ev.coverage_status] || COVERAGE_STYLE.monitoring;
   const typeIcon   = EVENT_TYPE_ICON[ev.event_type] || '📰';
@@ -1277,6 +1633,14 @@ function EventCard({ event: ev, busy, onDetail, onFollow, onDossier }) {
           <div style={{ fontSize: 13, color: '#4b5563', lineHeight: 1.55, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {ev.summary}
           </div>
+        )}
+        {!ev.summary && onGenerateSummary && (
+          <button onClick={onGenerateSummary} disabled={!!busy}
+            style={{ marginTop: 4, padding: '5px 10px', borderRadius: 7, border: '1px solid #c7d2fe',
+              background: '#eef2ff', color: '#4338ca', fontSize: 11, fontWeight: 700,
+              cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+            {busy === 'summary' ? '⏳ Analizando…' : '✨ Analizar evento'}
+          </button>
         )}
       </div>
 
@@ -1384,129 +1748,59 @@ const CONFIDENCE_STYLE = {
   high:   { label: 'Confirmada',     bg: '#dcfce7', color: '#166534' },
 };
 
+// Algorithmic corroboration — derived from source_count + coverage_status, no AI
+function algoCorroboration(sourceCount, coverageStatus) {
+  if (coverageStatus === 'breaking') return { label: 'Cobertura alta',     color: '#dc2626', bg: '#fee2e2' };
+  if (coverageStatus === 'growing')  return { label: 'Cobertura creciendo',color: '#d97706', bg: '#fef3c7' };
+  if (sourceCount >= 4) return { label: 'Confirmada',   color: '#059669', bg: '#d1fae5' };
+  if (sourceCount >= 3) return { label: 'Corroborada',  color: '#1d4ed8', bg: '#dbeafe' };
+  if (sourceCount >= 2) return { label: 'En desarrollo',color: '#d97706', bg: '#fef9c3' };
+  return { label: 'Una fuente', color: '#6b7280', bg: '#f3f4f6' };
+}
+
 function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
-  const isReady       = s.status === 'ready';
-  const isFollowed    = s.status === 'followed';
-  const isSummarizing = s.status === 'summarizing';
-  const covStyle      = COVERAGE_STYLE[s.coverage_status] || COVERAGE_STYLE.monitoring;
-  const typeIcon      = STORY_TYPE_ICON[s.story_type] || '📰';
-  const sourceBadges  = (Array.isArray(s.sources) ? s.sources : []).slice(0, 4);
-  const opportunities = Array.isArray(s.editorial_opportunities) ? s.editorial_opportunities : [];
-  const coverage      = s.enrichment_coverage ?? null;  // 0-100 or null
-  const coverageOk    = coverage === null || coverage >= 70;
-  const quality       = s.story_quality    || null;
-  const confidence    = s.story_confidence || null;
-  const qStyle        = QUALITY_STYLE[quality]    || null;
-  const cStyle        = CONFIDENCE_STYLE[confidence] || null;
-  const contextScore  = s.story_context_score ?? null;
-  const relScore      = s.context_relevance_score ?? null;
-  const depthScore    = s.context_depth_score     ?? null;
-  const divScore      = s.context_diversity_score ?? null;
-  const covScore      = s.context_coverage_score  ?? null;
-  const validCount    = s.valid_article_count ?? s.article_count;
-  const discarded     = s.article_count - validCount;
+  const isFollowed   = s.status === 'followed';
+  const covStyle     = COVERAGE_STYLE[s.coverage_status] || COVERAGE_STYLE.monitoring;
+  const typeIcon     = STORY_TYPE_ICON[s.story_type] || '📰';
+  const sourceBadges = (Array.isArray(s.sources) ? s.sources : []).slice(0, 4);
+  const corroboration = algoCorroboration(s.source_count, s.coverage_status);
+  // Show AI summary if available, otherwise algorithmic summary
+  const displaySummary = s.summary || s.algorithmic_summary || null;
 
   return (
     <div style={{
       background: 'white', borderRadius: 16, padding: '18px 20px',
-      border: `1px solid ${isFollowed ? '#bbf7d0' : s.coverage_status === 'breaking' ? '#fecaca' : isReady ? '#c7d2fe' : '#e5e7eb'}`,
-      boxShadow: s.coverage_status === 'breaking' ? '0 0 0 2px rgba(220,38,38,.1)' : isReady ? '0 0 0 2px rgba(99,102,241,.07)' : 'none',
+      border: `1px solid ${isFollowed ? '#bbf7d0' : s.coverage_status === 'breaking' ? '#fecaca' : '#e5e7eb'}`,
+      boxShadow: s.coverage_status === 'breaking' ? '0 0 0 2px rgba(220,38,38,.1)' : 'none',
       display: 'flex', flexDirection: 'column', gap: 12,
     }}>
 
       {/* Status bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span style={{ fontSize: 11, fontWeight: 700, background: covStyle.bg, color: covStyle.color, padding: '2px 9px', borderRadius: 20 }}>
-          {covStyle.label}
-        </span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {coverage !== null && (
-            <span title={`Enriquecimiento: ${coverage}% de artículos con texto completo`} style={{
-              fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 10,
-              background: coverageOk ? '#d1fae5' : '#fef3c7',
-              color:      coverageOk ? '#065f46' : '#92400e',
-            }}>
-              {coverageOk ? '✓' : '⏳'} {coverage}%
-            </span>
-          )}
-          {qStyle && (
-            <span title={`Calidad: ${qStyle.label} — Score ${contextScore}/100 (R:${relScore}/35 P:${depthScore}/25 D:${divScore}/15 C:${covScore}/25)`} style={{
-              fontSize: 10, fontWeight: 700, padding: '1px 7px', borderRadius: 10,
-              background: qStyle.bg, color: qStyle.color,
-            }}>
-              {qStyle.emoji} {qStyle.label} · {contextScore}
-            </span>
-          )}
-          {cStyle && (
-            <span title={`Corroboración: ${cStyle.label} (${s.source_count} fuente${s.source_count === 1 ? '' : 's'})`} style={{
-              fontSize: 10, fontWeight: 600, padding: '1px 7px', borderRadius: 10,
-              background: cStyle.bg, color: cStyle.color,
-            }}>
-              {cStyle.label}
-            </span>
-          )}
-          <div style={{ fontSize: 11, color: '#9ca3af' }}>
-            {typeIcon} {s.article_count} arts · {s.source_count} {s.source_count === 1 ? 'fuente' : 'fuentes'} · {timeAgo(s.last_seen)}
-          </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, background: covStyle.bg, color: covStyle.color, padding: '2px 9px', borderRadius: 20 }}>
+            {covStyle.label}
+          </span>
+          <span style={{ fontSize: 10, fontWeight: 700, background: corroboration.bg, color: corroboration.color, padding: '1px 7px', borderRadius: 20 }}>
+            {corroboration.label}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, color: '#9ca3af' }}>
+          {typeIcon} {s.article_count} arts · {s.source_count} {s.source_count === 1 ? 'fuente' : 'fuentes'} · {timeAgo(s.last_seen)}
         </div>
       </div>
 
-      {/* Quality diagnostic — shown for poor and fair stories */}
-      {quality === 'poor' && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '6px 10px', borderRadius: 8, background: '#fff1f2', border: '1px solid #fecdd3' }}>
-          <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 700 }}>⚠ Calidad insuficiente</span>
-          {relScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>R:{relScore}/35</span>}
-          {depthScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>P:{depthScore}/25</span>}
-          {divScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>D:{divScore}/15</span>}
-          {covScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>C:{covScore}/25</span>}
-          {discarded > 0 && <span style={{ fontSize: 11, color: '#b91c1c' }}>· {discarded} arts excluidos (&lt;30% rel)</span>}
-        </div>
-      )}
-      {quality === 'fair' && (
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', padding: '4px 8px', borderRadius: 8, background: '#fefce8', border: '1px solid #fef08a' }}>
-          <span style={{ fontSize: 11, color: '#a16207', fontWeight: 600 }}>🟡 En desarrollo</span>
-          {relScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>R:{relScore}/35</span>}
-          {depthScore !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>P:{depthScore}/25</span>}
-          {divScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>D:{divScore}/15</span>}
-          {covScore   !== null && <span style={{ fontSize: 11, color: '#6b7280' }}>C:{covScore}/25</span>}
-          {discarded > 0 && <span style={{ fontSize: 11, color: '#a16207' }}>· {discarded} arts excluidos del contexto IA</span>}
-        </div>
-      )}
-
-      {/* Title / AI headline */}
+      {/* Title + summary */}
       <div>
-        <div style={{ fontWeight: 700, fontSize: 15, color: '#111827', lineHeight: 1.35, marginBottom: isReady ? 8 : 0 }}>
+        <div style={{ fontWeight: 700, fontSize: 15, color: '#111827', lineHeight: 1.35, marginBottom: displaySummary ? 6 : 0 }}>
           {s.title || '(sin título)'}
         </div>
-        {isReady && s.summary && (
-          <div style={{ fontSize: 13, color: '#4b5563', lineHeight: 1.55, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-            {s.summary}
+        {displaySummary && (
+          <div style={{ fontSize: 12, color: '#4b5563', lineHeight: 1.55, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+            {displaySummary}
           </div>
-        )}
-        {isSummarizing && (
-          <div style={{ fontSize: 12, color: '#f59e0b', fontStyle: 'italic', marginTop: 4 }}>⏳ Generando inteligencia editorial…</div>
         )}
       </div>
-
-      {/* Editorial opportunities */}
-      {isReady && opportunities.length > 0 && (
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#374151', marginBottom: 5, textTransform: 'uppercase', letterSpacing: '.04em' }}>
-            Oportunidades editoriales
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            {opportunities.slice(0, 4).map((op, i) => (
-              <div key={i} style={{ fontSize: 12, color: '#374151', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-                <span style={{ color: '#6366f1', fontWeight: 700, flexShrink: 0 }}>✓</span>
-                <span>{op.title}</span>
-              </div>
-            ))}
-            {opportunities.length > 4 && (
-              <div style={{ fontSize: 11, color: '#9ca3af' }}>+{opportunities.length - 4} más</div>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Source badges */}
       {sourceBadges.length > 0 && (
@@ -1534,15 +1828,9 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
         ) : (
           <span style={{ padding: '7px 10px', fontSize: 11, color: '#10b981', fontWeight: 700 }}>✓ Siguiendo</span>
         )}
-        {coverageOk ? (
-          <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
-            {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
-          </button>
-        ) : (
-          <div title={`Solo ${coverage}% enriquecido. Requiere ≥70%.`} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, background: '#fef3c7', border: '1px solid #fde68a', fontSize: 11, color: '#92400e', textAlign: 'center', lineHeight: 1.3 }}>
-            ⏳ Enriqueciendo ({coverage}%)
-          </div>
-        )}
+        <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
+          {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
+        </button>
       </div>
     </div>
   );

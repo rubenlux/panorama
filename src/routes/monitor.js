@@ -13,8 +13,11 @@ router.get('/stats', requireAuth, async (req, res, next) => {
         (SELECT COUNT(*)::int FROM tracked_sources)                                                         AS sources_total,
         (SELECT COUNT(*)::int FROM monitored_articles WHERE detected_at > now() - interval '24 hours')      AS articles_today,
         (SELECT COUNT(*)::int FROM trending_topics    WHERE last_seen_at > now() - interval '30 minutes')   AS trending_now,
-        (SELECT COUNT(*)::int FROM story_opportunities
-         WHERE status = 'pending')                                                                          AS opportunities,
+        (SELECT COUNT(*)::int FROM story_opportunities so
+         JOIN story_clusters sc ON sc.id = so.story_cluster_id
+         WHERE so.status = 'pending'
+           AND sc.last_seen > now() - interval '7 days'
+           AND sc.is_recurring = false)                                                                     AS opportunities,
         (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)                                AS last_worker_run,
         extract(epoch FROM (now() - (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)))::int
                                                                                                             AS worker_idle_seconds
@@ -286,11 +289,12 @@ router.get('/sources/:id/verifications', requireAuth, async (req, res, next) => 
   } catch (e) { next(e); }
 });
 
-// GET /monitor/articles?hours=24&source_id=&entity_id=&limit=60
+// GET /monitor/articles?hours=24&source_id=&entity_id=&limit=60&offset=0
 router.get('/articles', requireAuth, async (req, res, next) => {
   try {
     const hours      = Math.min(parseInt(req.query.hours  || '24'), 168);
-    const limit      = Math.min(parseInt(req.query.limit  || '60'), 200);
+    const limit      = Math.min(parseInt(req.query.limit  || '60'), 1000);
+    const offset     = parseInt(req.query.offset || '0');
     const source_id  = req.query.source_id  || null;
     const entity_id  = req.query.entity_id  || null;
 
@@ -311,9 +315,11 @@ router.get('/articles', requireAuth, async (req, res, next) => {
 
     const where = conditions.join(' AND ');
     params.push(limit);
+    params.push(offset);
 
     const { rows } = await query(`
       SELECT
+        COUNT(*) OVER() AS total_count,
         ma.id, ma.title, ma.url, ma.summary, ma.published_at, ma.detected_at,
         ts.name  AS source_name,
         ts.type  AS source_type,
@@ -329,10 +335,11 @@ router.get('/articles', requireAuth, async (req, res, next) => {
       WHERE ${where}
       GROUP BY ma.id, ts.name, ts.type
       ORDER BY ma.detected_at DESC
-      LIMIT $${params.length}
+      LIMIT $${params.length - 1} OFFSET $${params.length}
     `, params);
 
-    res.json({ items: rows });
+    const total = parseInt(rows[0]?.total_count || '0');
+    res.json({ items: rows.map(({ total_count, ...r }) => r), total, offset, limit });
   } catch (e) { next(e); }
 });
 

@@ -1,6 +1,10 @@
 import { Router } from 'express';
 import { query } from './db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { AiService } from '../services/AiService.js';
+import { logAiCall } from '../services/aiUsageLogger.js';
+
+const ai = new AiService();
 
 const router = Router();
 
@@ -171,6 +175,72 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
     }
 
     res.json({ ok: true, topic });
+  } catch (e) { next(e); }
+});
+
+// ── FASE 5: POST /trends/:id/generate-summary — on-demand trend summary ─────────
+router.post('/:id/generate-summary', requireAuth, async (req, res, next) => {
+  const { id } = req.params;
+  const force   = req.query.force === 'true';
+  const userId  = req.user?.sub || 'unknown';
+
+  try {
+    const { rows: [cluster] } = await query(`
+      SELECT tc.*, ke.name AS entity_name
+      FROM trend_clusters tc
+      JOIN knowledge_entities ke ON ke.id = tc.entity_id
+      WHERE tc.id = $1
+    `, [id]);
+    if (!cluster) return res.status(404).json({ error: 'Trend cluster not found' });
+
+    // Cache: if summary already exists and not forced, return it
+    if (!force && cluster.headline && cluster.summary) {
+      await logAiCall({ feature: 'trend_summary', trigger: 'on_demand', triggeredBy: userId, trendId: id, cached: true });
+      return res.json({ cached: true, cluster });
+    }
+
+    const { rows: articles } = await query(`
+      SELECT ma.title, ma.url, ma.published_at, ma.detected_at, ts.name AS source_name
+      FROM trend_cluster_articles tca
+      JOIN monitored_articles ma ON ma.id = tca.article_id
+      JOIN tracked_sources    ts ON ts.id = ma.source_id
+      WHERE tca.trend_id = $1
+      ORDER BY ma.detected_at DESC
+    `, [id]);
+
+    if (articles.length === 0) {
+      return res.status(422).json({ error: 'No articles found for this trend cluster' });
+    }
+
+    const inputWords = articles.length * 20; // prompt is titles only — ~20 words/title est.
+    await query(`UPDATE trend_clusters SET status = 'summarizing', updated_at = now() WHERE id = $1`, [id]);
+
+    const t0 = Date.now();
+    let result;
+    try {
+      result = await ai.generateTrendSummary(cluster.entity_name, articles);
+    } catch (aiErr) {
+      await query(`UPDATE trend_clusters SET status = 'active', updated_at = now() WHERE id = $1`, [id]);
+      await logAiCall({ feature: 'trend_summary', trigger: 'on_demand', triggeredBy: userId, trendId: id,
+        inputWords, durationMs: Date.now() - t0, success: false, errorMessage: aiErr.message });
+      return next(aiErr);
+    }
+
+    const { rows: [updated] } = await query(`
+      UPDATE trend_clusters SET
+        headline         = $1,
+        summary          = $2,
+        editorial_angles = $3,
+        status           = 'ready',
+        updated_at       = now()
+      WHERE id = $4
+      RETURNING *
+    `, [result.headline, result.summary, JSON.stringify(result.editorial_angles || []), id]);
+
+    await logAiCall({ feature: 'trend_summary', trigger: 'on_demand', triggeredBy: userId, trendId: id,
+      inputWords, durationMs: Date.now() - t0, success: true });
+
+    res.json({ cached: false, cluster: updated });
   } catch (e) { next(e); }
 });
 

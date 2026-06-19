@@ -82,72 +82,13 @@ export default function SmartAdBanner({ position }) {
         window.open(ad.target_url, '_blank');
     };
 
-    if (loading) {
-        const isHorizontal = ['header_top', 'home_top', 'article_top_banner', 'article_bottom', 'home_sponsors', 'footer_top_horizontal'].includes(position);
-        const isFooterWide = position === 'footer_top_horizontal';
-        const isSticky = position === 'article_sticky';
+    // Sin publicidad disponible: no renderiza nada (sin placeholder)
+    if (loading) return null;
 
-        return (
-            <div style={{
-                height: isSticky ? 601 : (isFooterWide ? 249 : (isHorizontal ? 87 : 250)),
-                width: '100%',
-                maxWidth: isFooterWide ? '972px' : (isHorizontal ? '910px' : '300px'),
-                background: '#e2e8f0',
-                borderRadius: 8,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                border: 'none',
-                margin: '20px auto'
-            }}>
-                <div className="animate-pulse" style={{ color: '#94a3b8', fontSize: 12 }}>Cargando publicidad...</div>
-            </div>
-        );
-    }
 
-    // Placeholder if no ad is found
-    if (!ad) {
-        const isHorizontal = ['header_top', 'home_top', 'article_top_banner', 'article_bottom', 'home_sponsors', 'footer_top_horizontal'].includes(position);
-        const isFooterWide = position === 'footer_top_horizontal';
-        const isSticky = position === 'article_sticky';
+    // Sin publicidad disponible: no renderiza nada (sin placeholder)
+    if (!ad) return null;
 
-        return (
-            <div style={{
-                background: "#e2e8f0",
-                border: "none",
-                borderRadius: 8,
-                padding: isHorizontal ? '0 10px' : 20,
-                textAlign: "center",
-                height: isSticky ? 601 : (isFooterWide ? 249 : (isHorizontal ? 87 : 250)),
-                width: '100%',
-                maxWidth: isFooterWide ? '972px' : (isHorizontal ? '910px' : '300px'),
-                display: 'flex',
-                flexDirection: isHorizontal ? 'row' : 'column',
-                justifyContent: 'center',
-                alignItems: 'center',
-                gap: isHorizontal ? 30 : 15,
-                margin: '20px auto'
-            }}>
-                <div style={{
-                    fontSize: 12,
-                    color: "#999",
-                    textTransform: "uppercase",
-                    letterSpacing: 2
-                }}>
-                    Publicidad
-                </div>
-                <div style={{
-                    fontSize: isSticky ? 14 : (isHorizontal ? 18 : 16),
-                    fontWeight: "bold",
-                    color: "#666",
-                    writingMode: isSticky ? "vertical-rl" : "horizontal-tb",
-                    textOrientation: "mixed"
-                }}>
-                    {isSticky ? 'PEGAJOSO' : 'PUBLICIDAD'}
-                </div>
-            </div>
-        );
-    }
 
     return (
         <div className="smart-ad-container" style={{ textAlign: 'center' }}>

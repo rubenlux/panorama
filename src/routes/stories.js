@@ -3,6 +3,7 @@ import { query, pool } from './db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { AiService } from '../services/AiService.js';
 import { runDossierGeneration } from '../services/DossierService.js';
+import { logAiCall } from '../services/aiUsageLogger.js';
 
 const ai = new AiService();
 
@@ -13,11 +14,16 @@ const router = Router();
 router.get('/', requireAuth, async (req, res, next) => {
   try {
     const minArticles = parseInt(req.query.min_articles) || 2;
-    const limit       = Math.min(parseInt(req.query.limit) || 25, 200);
-    const includeAll  = req.query.include_all === 'true'; // include single-article candidates
+    const limit       = Math.min(parseInt(req.query.limit) || 50, 1000);
+    const offset      = parseInt(req.query.offset) || 0;
+    const includeAll  = req.query.include_all === 'true';
+    const ALLOWED_HOURS = [1, 2, 6, 12, 24];
+    const hours = ALLOWED_HOURS.includes(parseInt(req.query.hours)) ? parseInt(req.query.hours) : 24;
+    const sort  = req.query.sort === 'score' ? 'score' : 'recent';
 
     const { rows } = await query(`
       SELECT
+        COUNT(*) OVER() AS total_count,
         sc.id,
         sc.title,
         sc.slug,
@@ -40,6 +46,7 @@ router.get('/', requireAuth, async (req, res, next) => {
         sc.context_depth_score,
         sc.context_diversity_score,
         sc.context_coverage_score,
+        sc.algorithmic_summary,
         (
           SELECT COUNT(sca3.article_id) FILTER (WHERE sca3.relevance_score >= 0.30)::int
           FROM story_cluster_articles sca3
@@ -73,16 +80,17 @@ router.get('/', requireAuth, async (req, res, next) => {
       WHERE sc.status IN ('active', 'ready', 'followed')
         AND sc.is_recurring = false
         AND sc.article_count >= $1
-        AND sc.last_seen > now() - interval '24 hours'
+        AND sc.last_seen > now() - interval '${hours} hours'
       ORDER BY
-        sc.importance_score DESC,
-        sc.source_count DESC,
-        sc.article_count DESC,
-        sc.last_seen DESC
-      LIMIT $2
-    `, [includeAll ? 1 : minArticles, limit]);
+        ${sort === 'score'
+          ? 'sc.importance_score DESC, sc.source_count DESC, sc.last_seen DESC'
+          : 'sc.last_seen DESC, sc.importance_score DESC, sc.source_count DESC'
+        }
+      LIMIT $2 OFFSET $3
+    `, [includeAll ? 1 : minArticles, limit, offset]);
 
-    res.json({ items: rows });
+    const total = parseInt(rows[0]?.total_count || '0');
+    res.json({ items: rows.map(({ total_count, ...r }) => r), total, offset, limit });
   } catch (e) { next(e); }
 });
 
@@ -313,7 +321,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       // 5. editorial_dossier
       const { rows: [d] } = await client.query(`
         INSERT INTO editorial_dossiers (topic_id, status, created_by)
-        VALUES ($1, 'generating', $2)
+        VALUES ($1, 'draft', $2)
         RETURNING *
       `, [topic.id, userId]);
       dossier = d;
@@ -326,22 +334,184 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       client.release();
     }
 
-    // Build the topic object DossierService expects (mirrors editorial_workflow.js lateral join)
-    const topicForGen = {
-      ...topic,
-      executive_summary:    story.summary || dossierTitle,
-      key_facts:            finalKeyFacts,
-      controversies:        [],
-      timeline,
-      opportunities:        oppsSummary,
-      risks:                `Cobertura: ${story.coverage_status}. Importancia: ${story.importance_score}/10.`,
-      source_opportunities: storyOpps,
-      source_articles:      articles,   // full content_text passed directly to generateDossier
-    };
-
-    setImmediate(() => runDossierGeneration(dossier.id, topicForGen));
-
+    // [Cost Killer 2] Auto-generation disabled — use POST /editorial-workflow/dossiers/:id/enrich
     res.json({ ok: true, dossier });
+  } catch (e) { next(e); }
+});
+
+// ── FASE 2: POST /stories/:id/generate-summary — on-demand story summary ────────
+const RELEVANCE_THRESHOLD = 0.30;
+
+router.post('/:id/generate-summary', requireAuth, async (req, res, next) => {
+  const { id } = req.params;
+  const force   = req.query.force === 'true';
+  const userId  = req.user?.sub || 'unknown';
+
+  try {
+    const { rows: [story] } = await query(`SELECT * FROM story_clusters WHERE id = $1`, [id]);
+    if (!story) return res.status(404).json({ error: 'Story not found' });
+
+    // Cache: return existing unless forced
+    if (story.summary && story.status === 'ready' && !force) {
+      await logAiCall({ feature: 'story_summary', trigger: 'on_demand', triggeredBy: userId, storyId: id, cached: true });
+      return res.json({ cached: true, story });
+    }
+
+    const [articlesRes, entitiesRes] = await Promise.all([
+      query(`
+        SELECT ma.title, ma.url, ma.summary, ma.detected_at, ma.content_text, ma.extraction_method,
+               ma.content_words, ts.name AS source_name
+        FROM story_cluster_articles sca
+        JOIN monitored_articles ma ON ma.id = sca.article_id
+        JOIN tracked_sources    ts ON ts.id = ma.source_id
+        WHERE sca.story_id = $1 AND sca.relevance_score >= $2
+        ORDER BY sca.relevance_score DESC, ma.detected_at DESC
+      `, [id, RELEVANCE_THRESHOLD]),
+      query(`
+        SELECT ke.name, ke.entity_type, se.role
+        FROM story_entities se
+        JOIN knowledge_entities ke ON ke.id = se.entity_id
+        WHERE se.story_id = $1 LIMIT 12
+      `, [id]),
+    ]);
+
+    if (articlesRes.rows.length === 0) {
+      return res.status(422).json({ error: 'No articles available for this story' });
+    }
+
+    const inputWords = articlesRes.rows.reduce((s, a) => s + (a.content_words || 0), 0);
+    await query(`UPDATE story_clusters SET status = 'summarizing', updated_at = now() WHERE id = $1`, [id]);
+
+    const t0 = Date.now();
+    let result, success = true, errorMsg = null;
+    try {
+      result = await ai.generateStorySummary(articlesRes.rows, entitiesRes.rows);
+    } catch (aiErr) {
+      success = false; errorMsg = aiErr.message;
+      await query(`UPDATE story_clusters SET status = 'active', updated_at = now() WHERE id = $1`, [id]);
+      await logAiCall({ feature: 'story_summary', trigger: 'on_demand', triggeredBy: userId, storyId: id,
+        inputWords, durationMs: Date.now() - t0, success: false, errorMessage: errorMsg });
+      return next(aiErr);
+    }
+
+    const { rows: [updated] } = await query(`
+      UPDATE story_clusters SET
+        title                   = $1,
+        summary                 = $2,
+        story_type              = $3,
+        importance_score        = $4,
+        coverage_status         = $5,
+        editorial_opportunities = $6,
+        status                  = 'ready',
+        updated_at              = now()
+      WHERE id = $7
+      RETURNING *
+    `, [
+      result.headline,
+      result.summary,
+      result.story_type       || story.story_type || 'news',
+      result.importance_score ?? 5,
+      result.coverage_status  || 'monitoring',
+      JSON.stringify(result.editorial_opportunities || []),
+      id,
+    ]);
+
+    await logAiCall({ feature: 'story_summary', trigger: 'on_demand', triggeredBy: userId, storyId: id,
+      inputWords, durationMs: Date.now() - t0, success: true });
+
+    res.json({ cached: false, story: updated });
+  } catch (e) { next(e); }
+});
+
+// ── FASE 4: POST /stories/:id/generate-opportunities — on-demand opportunities ──
+const VALID_OPP_TYPES = new Set(['NEWS','SEO','ANALYSIS','EXPLAINER','SOCIAL','FACT_CHECK','LIVE_COVERAGE','OPINION']);
+
+function calcComposite(editorial, traffic, seo, urgency) {
+  return parseFloat((editorial * 0.4 + traffic * 0.3 + seo * 0.2 + urgency * 0.1).toFixed(2));
+}
+
+router.post('/:id/generate-opportunities', requireAuth, async (req, res, next) => {
+  const { id } = req.params;
+  const force   = req.query.force === 'true';
+  const userId  = req.user?.sub || 'unknown';
+
+  try {
+    const { rows: [story] } = await query(`SELECT * FROM story_clusters WHERE id = $1`, [id]);
+    if (!story) return res.status(404).json({ error: 'Story not found' });
+
+    // Cache: if fresh opportunities exist (< 4h) and not forced, return them
+    if (!force) {
+      const { rows: existing } = await query(`
+        SELECT * FROM story_opportunities
+        WHERE story_cluster_id = $1 AND status = 'pending' AND created_at > now() - interval '4 hours'
+        ORDER BY composite_score DESC
+      `, [id]);
+      if (existing.length > 0) {
+        await logAiCall({ feature: 'opportunities', trigger: 'on_demand', triggeredBy: userId, storyId: id, cached: true });
+        return res.json({ cached: true, opportunities: existing });
+      }
+    }
+
+    const [articlesRes, entitiesRes] = await Promise.all([
+      query(`
+        SELECT ma.title, ma.url, ma.summary, ma.detected_at, ma.content_text, ma.extraction_method,
+               ma.content_words, ts.name AS source_name
+        FROM story_cluster_articles sca
+        JOIN monitored_articles ma ON ma.id = sca.article_id
+        JOIN tracked_sources    ts ON ts.id = ma.source_id
+        WHERE sca.story_id = $1 AND sca.relevance_score >= $2
+        ORDER BY sca.relevance_score DESC, ma.detected_at DESC
+        LIMIT 15
+      `, [id, RELEVANCE_THRESHOLD]),
+      query(`
+        SELECT ke.name, ke.entity_type
+        FROM story_entities se
+        JOIN knowledge_entities ke ON ke.id = se.entity_id
+        WHERE se.story_id = $1 LIMIT 10
+      `, [id]),
+    ]);
+
+    if (articlesRes.rows.length === 0) {
+      return res.status(422).json({ error: 'No articles available' });
+    }
+
+    const inputWords = articlesRes.rows.reduce((s, a) => s + (a.content_words || 0), 0);
+    const t0 = Date.now();
+    let opps;
+    try {
+      opps = await ai.generateEditorialOpportunities(story, articlesRes.rows, entitiesRes.rows);
+    } catch (aiErr) {
+      await logAiCall({ feature: 'opportunities', trigger: 'on_demand', triggeredBy: userId, storyId: id,
+        inputWords, durationMs: Date.now() - t0, success: false, errorMessage: aiErr.message });
+      return next(aiErr);
+    }
+
+    // Clear stale pending, insert fresh
+    await query(`DELETE FROM story_opportunities WHERE story_cluster_id = $1 AND status = 'pending'`, [id]);
+
+    const inserted = [];
+    for (const opp of opps) {
+      const type      = VALID_OPP_TYPES.has(opp.opportunity_type) ? opp.opportunity_type : 'NEWS';
+      const editorial = Math.min(100, Math.max(0, opp.editorial_score || 50));
+      const traffic   = Math.min(100, Math.max(0, opp.traffic_score   || 50));
+      const seo       = Math.min(100, Math.max(0, opp.seo_score       || 50));
+      const urgency   = Math.min(100, Math.max(0, opp.urgency_score   || 50));
+      const composite = calcComposite(editorial, traffic, seo, urgency);
+
+      const { rows: [row] } = await query(`
+        INSERT INTO story_opportunities
+          (story_cluster_id, title, description, opportunity_type,
+           traffic_score, seo_score, urgency_score, editorial_score, composite_score)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+        RETURNING *
+      `, [id, opp.title, opp.description || null, type, traffic, seo, urgency, editorial, composite]);
+      inserted.push(row);
+    }
+
+    await logAiCall({ feature: 'opportunities', trigger: 'on_demand', triggeredBy: userId, storyId: id,
+      inputWords, durationMs: Date.now() - t0, success: true });
+
+    res.json({ cached: false, opportunities: inserted });
   } catch (e) { next(e); }
 });
 

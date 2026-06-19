@@ -19,12 +19,17 @@
 
 import fetch from 'node-fetch';
 import { query } from '../routes/db.js';
+import { browserManager } from './BrowserManager.js';
 
 const CACHE_TTL_HOURS    = 72;
 const FETCH_TIMEOUT_MS   = 10_000;
 const PLAYWRIGHT_TIMEOUT = 20_000;
 const MAX_WORDS          = 2000;
 const MIN_WORDS_FETCH    = 80;   // below this, try Playwright before giving up
+export const playwrightMetrics = {
+  pagesOpened: 0,
+  browsersLaunched: 0
+};
 
 // ── HTML utilities ────────────────────────────────────────────────────────────
 
@@ -137,25 +142,19 @@ function extractFromHtml(html) {
 
 async function fetchWithPlaywright(url) {
   try {
-    const { chromium } = await import('playwright');
-    let browser;
+    playwrightMetrics.pagesOpened++;
+    const { page, context } = await browserManager.newPage({
+      extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' }
+    });
     try {
-      browser = await chromium.launch({ headless: true });
-      const page = await browser.newPage();
-      await page.setExtraHTTPHeaders({ 'Accept-Language': 'es-AR,es;q=0.9' });
-      await page.setDefaultNavigationTimeout(PLAYWRIGHT_TIMEOUT);
-
-      await page.goto(url, { waitUntil: 'domcontentloaded' });
-      // Wait briefly for content scripts
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PLAYWRIGHT_TIMEOUT });
       await page.waitForTimeout(1500);
-
       const html = await page.content();
       return extractFromHtml(html);
     } finally {
-      browser?.close().catch(() => {});
+      await context.close().catch(() => {});
     }
   } catch {
-    // playwright not installed or browser launch failed — graceful skip
     return null;
   }
 }

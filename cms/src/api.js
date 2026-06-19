@@ -143,7 +143,10 @@ export const getStories = (params = {}) => {
   const qs = new URLSearchParams();
   if (params.minArticles) qs.set('min_articles', params.minArticles);
   if (params.limit)       qs.set('limit', params.limit);
+  if (params.offset)      qs.set('offset', params.offset);
   if (params.includeAll)  qs.set('include_all', 'true');
+  if (params.hours)       qs.set('hours', params.hours);
+  if (params.sort)        qs.set('sort',  params.sort);
   return apiJson(`/stories?${qs}`, { auth: true });
 };
 
@@ -169,6 +172,9 @@ export const getEvents = (params = {}) => {
   const qs = new URLSearchParams();
   if (params.minStories) qs.set('min_stories', params.minStories);
   if (params.limit)      qs.set('limit', params.limit);
+  if (params.offset)     qs.set('offset', params.offset);
+  if (params.hours)      qs.set('hours', params.hours);
+  if (params.sort)       qs.set('sort',  params.sort);
   return apiJson(`/events?${qs}`, { auth: true });
 };
 
@@ -202,8 +208,12 @@ export const createDossierFromEvent = (id) =>
 export const getOpportunities = (params = {}) => {
   const qs = new URLSearchParams();
   if (params.limit)  qs.set('limit', params.limit);
+  if (params.offset) qs.set('offset', params.offset);
   if (params.status) qs.set('status', params.status);
   if (params.type)   qs.set('type', params.type);
+  if (params.age)    qs.set('age', params.age);
+  if (params.hours)  qs.set('hours', params.hours);
+  if (params.sort)   qs.set('sort',  params.sort);
   return apiJson(`/opportunities?${qs}`, { auth: true });
 };
 

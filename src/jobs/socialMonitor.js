@@ -1,8 +1,13 @@
 import Anthropic from '@anthropic-ai/sdk';
+import pLimit from 'p-limit';
 import { query } from '../routes/db.js';
-import { SocialFetcherPlaywrightYouTube, SocialFetcherPlaywrightFacebook } from '../connectors/social/fetchers.js';
-import { fetchYouTubeTranscript, calculateQualityScore, detectEditorialType } from '../connectors/social/transcripts.js';
+import { SocialFetcherPlaywrightYouTube, SocialFetcherPlaywrightFacebook, SocialFetcherGraphApiFacebook, SocialFetcherPlaywrightInstagram, SocialFetcherX } from '../connectors/social/fetchers.js';
+import { fetchYouTubeTranscriptViaPlaywright, calculateQualityScore, detectEditorialType } from '../connectors/social/transcripts.js';
+import { perfTracker } from '../services/PerformanceTracker.js';
 import { startRun, finishRun } from './workerUtils.js';
+
+const limit = pLimit(parseInt(process.env.SOCIAL_MAX_CONCURRENCY) || 3);
+let isSocialRunning = false;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const AI_MODEL  = 'claude-haiku-4-5-20251001';
@@ -51,31 +56,153 @@ async function ensureSchema() {
   await query(`ALTER TABLE video_transcripts ADD COLUMN IF NOT EXISTS quality_score INTEGER`).catch(() => {});
   await query(`ALTER TABLE transcript_analysis ADD COLUMN IF NOT EXISTS editorial_type VARCHAR(20)`).catch(() => {});
   await query(`ALTER TABLE transcript_analysis ADD COLUMN IF NOT EXISTS key_points JSONB DEFAULT '[]'`).catch(() => {});
+
+  // Social Clustering 2.0 — category-gated clustering
+  await query(`ALTER TABLE social_clusters ADD COLUMN IF NOT EXISTS detected_category VARCHAR(30) DEFAULT 'general'`).catch(() => {});
+
+  // Expand content_type constraint to include 'tweets' (X platform)
+  await query(`ALTER TABLE social_sources DROP CONSTRAINT IF EXISTS social_sources_content_type_check`).catch(() => {});
+  await query(`ALTER TABLE social_sources ADD CONSTRAINT social_sources_content_type_check CHECK (content_type IN ('videos', 'shorts', 'posts', 'tweets'))`).catch(() => {});
 }
 
 function getFetcher(source) {
-  if (source.platform === 'youtube') return new SocialFetcherPlaywrightYouTube(source);
-  // Facebook is on-demand only — fetched via /sources/:id/check, not the worker
+  if (source.platform === 'youtube')   return new SocialFetcherPlaywrightYouTube(source);
+  if (source.platform === 'facebook')  return new SocialFetcherGraphApiFacebook(source);
+  if (source.platform === 'instagram') return new SocialFetcherPlaywrightInstagram(source);
+  if (source.platform === 'x')         return new SocialFetcherX(source);
   return null;
 }
 
 const STOP_WORDS = new Set([
   'el','la','los','las','un','una','en','por','que','de','del','al','se','lo','con',
   'es','son','fue','han','este','esta','para','pero','no','si','mas','muy','ya',
-  'cuando','como','sobre','esto','eso','ante','bajo','tras','entre','sin','contra'
+  'cuando','como','sobre','esto','eso','ante','bajo','tras','entre','sin','contra',
+  // 4-letter common words that become visible with the new length threshold
+  'bien','solo','debe','hace','sido','cada','otro','otra','todo','toda','algo',
+  'poco','nada','aqui','alla','caso','vida','dias','anos','hora','hizo','tuvo',
+  'sera','dice','dijo','dado','otro','cabe','unas','unos','cual','cuya',
 ]);
+
+// ── Social Clustering 2.0 ─────────────────────────────────────────────────────
+// Three-gate algorithm: Category → Specific-keyword → Jaccard threshold.
+//
+// Gate 1 (hard): post category must match cluster category. Sports posts never
+//   join an international cluster just because both mention "Estados Unidos".
+// Gate 2 (hard): at least 1 non-generic keyword must be shared. Words like
+//   "argentina", "mundial", "estados", "unidos" are so frequent they cannot
+//   be the sole reason for a match.
+// Gate 3 (threshold): Jaccard ≥ 0.15 on specific (non-generic) keywords.
+//
+// Best-match wins (not first-match).
+
+// Words too common across ALL topics to anchor a cluster on their own.
+// These are not stopwords (they still exist in the keyword list) but
+// they cannot satisfy Gate 2 alone.
+const SOCIAL_GENERIC_TERMS = new Set([
+  // Demonyms / country components — appear in every political AND sports story
+  'argentina', 'estados', 'unidos', 'buenos', 'aires',
+  // "mundial" (World Cup) appears in sports, economy ("crisis mundial"), society
+  'mundial', 'mundo',
+  // Generic geographic / institutional
+  'pais', 'ciudad', 'nacion', 'publica',
+  // Title filler adjectives
+  'nuevo', 'nueva',
+]);
+
+const SOCIAL_CATEGORY_PATTERNS = {
+  sports: [
+    /\bgol\b/, /\bpartido\b/, /\bliga\b/, /\bcopa\b/, /\bequipo\b/,
+    /\bseleccion\b/, /\bfutbol\b/, /\brugby\b/, /\btenis\b/,
+    /\bbasket\b/, /\bdeport/, /\bcancha\b/, /\btorneo\b/,
+    /\bcampeon\b/, /\bfixture\b/, /\bclasico\b/, /\bsuperliga\b/,
+    /\bpremier\b/, /\bchampions\b/, /\briver\b/, /\bboca\b/,
+    /\bfichaje\b/, /\brefuerzo\b/, /\btransferencia\b/, /\bjugador\b/,
+    /\bentrenador\b/, /\bdirector.*tecnico\b/, /\bpase\b/,
+    /\bformacion\b/, /\bconvocado\b/, /\barbitro\b/, /\boffsid/,
+  ],
+  international: [
+    /\birak\b/, /\bisrael\b/, /\bgaza\b/, /\bucrania\b/,
+    /\biran\b/, /\beeuu\b/, /\bestados.*unidos\b/,
+    /\brusia\b/, /\bchina\b/, /\beuropa\b/,
+    /\botan\b/, /\bonu\b/, /\bguerra\b/, /\bbomba\b/,
+    /\bmisil\b/, /\bdiplom/, /\bcancilleria\b/, /\bembajad/,
+    /\bnuclear\b/, /\bconflicto.*internaci/, /\bsancion\b/,
+    /\bgeopolit/, /\bbloqueo\b/, /\bgolpe.*estado/,
+  ],
+  politics: [
+    /\bmilei\b/, /\bkirchn/, /\bmacri\b/, /\bmassa\b/,
+    /\bcongreso\b/, /\bsenado\b/, /\bdiputado\b/, /\bministro\b/,
+    /\bdecreto\b/, /\bveto\b/, /\beleccion\b/, /\bvotacion\b/,
+    /\boficialismo\b/, /\boposicion\b/, /\bcoalicion\b/,
+    /\bcasarosada\b/, /\bpresidenta\b/, /\bgobernador\b/,
+    /\bintendente\b/, /\blegislatura\b/, /\bpartido.*politico/,
+  ],
+  economy: [
+    /\bdolar\b/, /\binflacion\b/, /\breservas\b/, /\bfmi\b/,
+    /\bdeuda\b/, /\bbolsa\b/, /\beconomia\b/, /\brecesion\b/,
+    /\bimpuesto\b/, /\barancel\b/, /\bpresupuesto\b/,
+    /\bbanco.*central\b/, /\bpbi\b/, /\bpib\b/, /\bfinancier/,
+    /\bcriptomoneda\b/, /\bbitcoin\b/, /\bmercado.*financ/,
+    /\bdevalua/, /\bcepo\b/, /\bsubsidio\b/,
+  ],
+  security: [
+    /\bcrimen\b/, /\bhomicidio\b/, /\basesinato\b/, /\brobo\b/, /\basalto\b/,
+    /\btiroteo\b/, /\bbalacera\b/, /\bsecuestro\b/,
+    /\bincendio\b/, /\bexplosion\b/, /\bmuertos\b/, /\bvictima/,
+    /\bdetenido\b/, /\boperativo\b/, /\bpolicial\b/,
+    /\bnarcotrafic/, /\baccidente.*vial\b/, /\bsiniestro\b/,
+    /\bherido\b/, /\bfalleci/, /\batropell/,
+  ],
+  entertainment: [
+    /\bactor\b/, /\bactriz\b/, /\bcantante\b/, /\bmusica\b/, /\bshow\b/,
+    /\bconcierto\b/, /\bfestival\b/, /\bpelicula\b/, /\bserie\b/, /\bnetflix\b/,
+    /\btelevision\b/, /\bcelebrid/, /\bfamoso\b/, /\bescandalo\b/,
+    /\bespectaculo\b/, /\bcine\b/, /\bteatro\b/, /\bstreaming\b/,
+    /\bchisme\b/, /\binfluencer\b/, /\btiktok\b/, /\binstagram\b/,
+  ],
+  society: [
+    /\beducacion\b/, /\bsalud\b/, /\bderechos\b/, /\bprotesta\b/, /\bhuelga\b/,
+    /\bvivienda\b/, /\bpobreza\b/, /\bdiscriminacion\b/, /\bfeminismo\b/,
+    /\bclima\b/, /\becologia\b/, /\bmedioambiente\b/, /\breligion\b/,
+    /\bciencia\b/, /\btecnologia\b/, /\binnovacion\b/, /\bcomunidad\b/,
+  ],
+};
+
+// Precedence resolves ties; security & international trump everything
+const SOCIAL_CATEGORY_PRECEDENCE = [
+  'security', 'international', 'politics', 'economy',
+  'sports', 'entertainment', 'society',
+];
+
+function detectSocialCategory(title) {
+  // Normalize: lowercase + strip accents (same as extractWords)
+  const t = (title || '').toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '');
+  const scores = {};
+  for (const [cat, patterns] of Object.entries(SOCIAL_CATEGORY_PATTERNS)) {
+    scores[cat] = patterns.filter(p => p.test(t)).length;
+  }
+  const maxScore = Math.max(...Object.values(scores));
+  if (maxScore === 0) return 'general';
+  return SOCIAL_CATEGORY_PRECEDENCE.find(cat => scores[cat] === maxScore) || 'general';
+}
 
 function extractWords(title) {
   if (!title) return [];
   return [...new Set(
     title.toLowerCase()
-      .replace(/[^a-záéíóúñ0-9\s]/g, ' ')
+      .normalize('NFD').replace(/[̀-ͯ]/g, '') // strip accents so "iran" = "irán"
+      .replace(/[^a-z0-9\s]/g, ' ')
       .split(/\s+/)
-      .filter(w => w.length > 4 && !STOP_WORDS.has(w))
+      .filter(w =>
+        w.length > 3 &&          // capture 4-char words: iran, otan, copa, boca, gaza
+        !/^\d+$/.test(w) &&      // exclude pure numbers (2026, 2024 …)
+        !STOP_WORDS.has(w)
+      )
   )];
 }
 
-// ── Clustering ────────────────────────────────────────────────────────────────
+// ── Clustering 2.0 ───────────────────────────────────────────────────────────
 
 export async function clusterNewPosts(newPostIds) {
   if (!newPostIds.length) return { created: 0, joined: 0, clusterIds: [] };
@@ -90,7 +217,8 @@ export async function clusterNewPosts(newPostIds) {
   if (!posts.length) return { created: 0, joined: 0, clusterIds: [] };
 
   const { rows: activeClusters } = await query(`
-    SELECT id, title FROM social_clusters WHERE status = 'active'
+    SELECT id, title, COALESCE(detected_category, 'general') AS detected_category
+    FROM social_clusters WHERE status = 'active'
   `);
 
   let created = 0, joined = 0;
@@ -98,42 +226,74 @@ export async function clusterNewPosts(newPostIds) {
 
   for (const post of posts) {
     const words = extractWords(post.title);
-    if (!words.length) continue;
+    if (words.length < 2) continue;
 
-    let matchedClusterId = null;
+    const postCategory = detectSocialCategory(post.title);
+    // Specific words = words that are not ultra-generic; these must anchor any match
+    const specificWords = words.filter(w => !SOCIAL_GENERIC_TERMS.has(w));
+
+    let bestClusterId = null;
+    let bestScore     = 0;
 
     for (const cluster of activeClusters) {
-      const cWords = extractWords(cluster.title);
-      const intersection = words.filter(w => cWords.includes(w));
-      if (intersection.length >= 2) {
-        matchedClusterId = cluster.id;
-        break;
+      // ── Gate 1: category must match (either side 'general' = pass-through) ──
+      const clusterCat = cluster.detected_category;
+      if (postCategory !== 'general' && clusterCat !== 'general' && postCategory !== clusterCat) {
+        continue;
+      }
+
+      const cWords    = extractWords(cluster.title);
+      const cSpecific = cWords.filter(w => !SOCIAL_GENERIC_TERMS.has(w));
+
+      let jaccard;
+
+      if (specificWords.length > 0 && cSpecific.length > 0) {
+        // ── Gate 2: at least 1 specific word must be shared ───────────────────
+        const specificIntersection = specificWords.filter(w => cSpecific.includes(w));
+        if (specificIntersection.length === 0) continue;
+
+        // ── Gate 3: Jaccard on specific words ≥ 0.15 ─────────────────────────
+        const specificUnion = new Set([...specificWords, ...cSpecific]).size;
+        jaccard = specificIntersection.length / specificUnion;
+        if (jaccard < 0.15) continue;
+      } else {
+        // Both sides lack specific words — fall back to all-word Jaccard ≥ 0.20
+        const allIntersection = words.filter(w => cWords.includes(w));
+        if (allIntersection.length < 2) continue;
+        const allUnion = new Set([...words, ...cWords]).size;
+        jaccard = allIntersection.length / allUnion;
+        if (jaccard < 0.20) continue;
+      }
+
+      if (jaccard > bestScore) {
+        bestScore     = jaccard;
+        bestClusterId = cluster.id;
       }
     }
 
-    if (matchedClusterId) {
+    if (bestClusterId) {
       await query(`
         INSERT INTO social_cluster_posts (cluster_id, post_id) VALUES ($1, $2) ON CONFLICT DO NOTHING
-      `, [matchedClusterId, post.id]);
-      affectedClusterIds.add(matchedClusterId);
+      `, [bestClusterId, post.id]);
+      affectedClusterIds.add(bestClusterId);
       joined++;
     } else {
       const topWords = words.slice(0, 8);
       const views = post.views || 0;
       const { rows: [nc] } = await query(`
         INSERT INTO social_clusters
-          (title, keywords, post_count, source_count, sources_count,
+          (title, keywords, detected_category, post_count, source_count, sources_count,
            total_views, total_likes, total_engagement,
            engagement_score, viral_score, status, first_seen, last_seen)
-        VALUES ($1, $2, 1, 1, 1, $3::bigint, 0, $3::bigint, $3::float,
-                LEAST(GREATEST(($3::float / 500)::int, 5), 30),
+        VALUES ($1, $2, $3, 1, 1, 1, $4::bigint, 0, $4::bigint, $4::float,
+                LEAST(GREATEST(($4::float / 500)::int, 5), 30),
                 'active', now(), now())
         RETURNING id
-      `, [post.title.slice(0, 200), JSON.stringify(topWords), views]);
+      `, [post.title.slice(0, 200), JSON.stringify(topWords), postCategory, views]);
       await query(`
         INSERT INTO social_cluster_posts (cluster_id, post_id) VALUES ($1, $2) ON CONFLICT DO NOTHING
       `, [nc.id, post.id]);
-      activeClusters.push({ id: nc.id, title: post.title });
+      activeClusters.push({ id: nc.id, title: post.title, detected_category: postCategory });
       affectedClusterIds.add(nc.id);
       created++;
     }
@@ -345,7 +505,7 @@ async function fetchPendingTranscripts() {
   let found = 0;
 
   for (const post of pending) {
-    const result = await fetchYouTubeTranscript(post.url);
+    const result = await fetchYouTubeTranscriptViaPlaywright(post.url);
 
     if (result === null) continue; // transient — retry next cycle
 
@@ -390,7 +550,7 @@ async function backfillTranscripts() {
 
     await Promise.all(batch.map(async (post) => {
       try {
-        const result = await fetchYouTubeTranscript(post.url);
+        const result = await fetchYouTubeTranscriptViaPlaywright(post.url);
         if (result === null) return; // transient — will retry next cycle
         if (result.available) {
           await processTranscriptResult(post, result);
@@ -434,8 +594,17 @@ async function backfillTranscripts() {
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function runSocialMonitor() {
+  if (isSocialRunning) {
+    console.log('[SocialMonitor] A cycle is already in progress. Skipping this run.');
+    return;
+  }
+
+  isSocialRunning = true;
   const cycleStart = Date.now();
-  console.log('[SocialMonitor] ─── Cycle start ───────────────────────────────');
+  perfTracker.resetSocial();
+
+  console.log('\n=== Perf Profile: Social Monitor Cycle Start ===');
+  console.time('Social Intelligence');
 
   await ensureSchema();
 
@@ -450,16 +619,19 @@ export async function runSocialMonitor() {
   if (!sources.length) {
     console.log('[SocialMonitor] No active sources. Exiting cycle.');
     await finishRun(runId, { status: 'success' });
+    isSocialRunning = false;
     return;
   }
 
-  console.log(`[SocialMonitor] ${sources.length} active sources to process`);
+  console.log(`[SocialMonitor] ${sources.length} active sources to process (Concurrency: ${process.env.SOCIAL_MAX_CONCURRENCY || 3})`);
 
   let totalSaved = 0;
   const allNewPostIds = [];
 
-  for (const source of sources) {
+  // Parallel execution with p-limit
+  await Promise.all(sources.map(source => limit(async () => {
     const startedAt = new Date();
+    const platformStart = Date.now();
     let postsFound = 0;
     let postsSaved = 0;
     let errorMessage = null;
@@ -468,7 +640,7 @@ export async function runSocialMonitor() {
     const fetcher = getFetcher(source);
     if (!fetcher) {
       console.log(`[SocialMonitor] Skip ${source.platform}/${source.name} — no fetcher yet`);
-      continue;
+      return;
     }
 
     try {
@@ -517,7 +689,18 @@ export async function runSocialMonitor() {
 
       success = true;
       totalSaved += postsSaved;
-      console.log(`[SocialMonitor] ${source.name} [${source.content_type}]: found=${postsFound} new=${postsSaved}`);
+      
+      const duration = Date.now() - platformStart;
+      // Map platform/type to performance tracker key
+      let perfKey = source.platform;
+      if (source.platform === 'youtube') {
+        if (source.content_type === 'posts') perfKey = 'youtube_posts';
+        else if (source.content_type === 'videos') perfKey = 'youtube_videos';
+        else if (source.content_type === 'shorts') perfKey = 'youtube_shorts';
+      }
+      perfTracker.trackSocialPlatform(perfKey, duration, postsFound, postsSaved);
+      
+      console.log(`[SocialMonitor] ${source.name} [${source.content_type}]: found=${postsFound} new=${postsSaved} (${duration}ms)`);
 
     } catch (e) {
       errorMessage = e.message.slice(0, 500);
@@ -530,7 +713,7 @@ export async function runSocialMonitor() {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
     `, [source.id, source.platform, startedAt, new Date(), success, postsFound, postsSaved, errorMessage])
       .catch(e => console.warn(`[SocialMonitor] fetch log write failed: ${e.message}`));
-  }
+  })));
 
   // Clustering, metrics, staleness
   if (allNewPostIds.length > 0) {
@@ -542,16 +725,31 @@ export async function runSocialMonitor() {
 
   await markStaleClusters();
   await recalcGapScores();
-  // Sprint 8.4: transcripts now ON DEMAND only — editor triggers via UI
-  // await fetchPendingTranscripts();
-  // await backfillTranscripts();
+  await fetchPendingTranscripts();
+  console.timeEnd('Social Intelligence');
 
-  const elapsed = ((Date.now() - cycleStart) / 1000).toFixed(1);
-  console.log(`[SocialMonitor] ─── Done in ${elapsed}s — new_posts=${totalSaved} sources_processed=${sources.length} ───`);
+  const totalTime = Date.now() - cycleStart;
+
+  // Final Report
+  console.log('\n=== Social Performance Report ===');
+  console.log(`Facebook:       ${perfTracker.social.platforms.facebook.duration} ms`);
+  console.log(`Instagram:      ${perfTracker.social.platforms.instagram.duration} ms`);
+  console.log(`YouTube Posts:  ${perfTracker.social.platforms.youtube_posts.duration} ms`);
+  console.log(`YouTube Videos: ${perfTracker.social.platforms.youtube_videos.duration} ms`);
+  console.log(`YouTube Shorts: ${perfTracker.social.platforms.youtube_shorts.duration} ms`);
+  console.log(`X:              ${perfTracker.social.platforms.x.duration} ms`);
+  console.log('---------------------------');
+  console.log(`Pages Opened:       ${perfTracker.social.pagesOpened}`);
+  console.log(`Chromium Instances: ${perfTracker.social.browsersLaunched}`);
+  console.log(`Total Social Time:  ${totalTime} ms`);
+  console.log('=================================\n');
+
   await finishRun(runId, {
     status: 'success',
     sources_processed: sources.length,
     items_found: allNewPostIds.length,
     items_saved: totalSaved,
   });
+
+  isSocialRunning = false;
 }

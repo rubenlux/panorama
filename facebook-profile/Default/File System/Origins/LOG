@@ -1,3 +1,4 @@
-2026/06/14-00:43:21.944 2c60 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/MANIFEST-000001
-2026/06/14-00:43:21.945 2c60 Recovering log #3
-2026/06/14-00:43:21.945 2c60 Reusing old log C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/000003.log 
+2026/06/19-16:20:07.651 4ff4 Creating DB C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins since it was missing.
+2026/06/19-16:20:07.656 4ff4 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/MANIFEST-000001
+2026/06/19-16:20:07.657 4ff4 Recovering log #22
+2026/06/19-16:20:07.657 4ff4 Reusing old log C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\File System\Origins/000022.log 

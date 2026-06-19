@@ -1,0 +1,141 @@
+{
+  "dossier": {
+    "id": "068f8694-8cb8-415d-8f13-9ce42cc8c07c",
+    "status": "ready",
+    "executive_summary": "El jueves 18 de junio de 2026, la actriz y conductora Florencia Peña anunció en vivo durante 'El show del verano' de Luzu TV que Jorge Messi, padre del futbolista Lionel Messi, había fallecido. La información era falsa y fue recibida por Peña a través de la cucaracha, el sistema de comunicación interna de producción. La familia Messi emitió un comunicado oficial aclarando que Jorge, de 68 años, 'se encuentra bajo seguimiento médico, recuperándose y evolucionando favorablemente', y expresó su 'profundo malestar por la falta de sensibilidad, respeto y escrúpulos'. Como consecuencia, Nicolás Occhiato, fundador de Luzu TV, anunció la desvinculación de todos los responsables involucrados y señaló que Peña 'tomará la decisión de dar un paso al costado'.",
+    "verified_facts": [
+      "El incidente ocurrió el jueves 18 de junio de 2026 durante la emisión de 'El show del verano' en Luzu TV",
+      "Florencia Peña anunció al aire: 'No quiero darles una mala noticia, pero acaba de morir el papá Messi'",
+      "Peña recibió la información falsa a través de la cucaracha, el sistema de comunicación interna entre producción y conductores",
+      "La familia Messi emitió un comunicado oficial confirmando que Jorge Messi, de 68 años, 'se encuentra bajo seguimiento médico, recuperándose y evolucionando favorablemente dentro del cuadro que presenta'",
+      "La familia Messi expresó 'profundo malestar por la falta de sensibilidad, respeto y escrúpulos' con que se trató la situación",
+      "La familia Messi aclaró que solo la familia cercana cuenta con información real sobre el estado de Jorge",
+      "Nicolás Occhiato publicó en X: 'Lo que acaba de suceder al aire de LUZU me indigna igual que a todos ustedes, no me representan a mí ni a lo que queremos transmitir desde nuestro trabajo. Mi desacuerdo es total'",
+      "Occhiato anunció mediante comunicado oficial la desvinculación de 'todos los responsables involucrados'",
+      "Occhiato señaló que Florencia Peña 'tomará la decisión de dar un paso al costado'",
+      "Florencia Peña publicó en Instagram: 'Pido perdón a la familia Messi por el momento espantoso que imagino que están viviendo. Estoy muy avergonzada de haber sido el vehículo para este dolor'",
+      "Peña declaró en LAM (América) entre lágrimas: 'No estoy acostumbrada a que me pase. Me dieron una noticia y me invitaron a que la diga al aire'",
+      "Yanina Latorre criticó el episodio en redes sociales: 'Me comí el fake. Vergüenza ajena siento por ella, su producción y el programa. Hoy cualquiera tiene un espacio para comunicar'"
+    ],
+    "timeline": [
+      "18 de junio de 2026 — Florencia Peña anuncia en vivo en Luzu TV la supuesta muerte de Jorge Messi durante 'El show del verano'",
+      "18 de junio de 2026 — La familia Messi emite comunicado oficial desmintiendo la muerte y confirmando que Jorge, 68 años, evoluciona favorablemente bajo seguimiento médico",
+      "18 de junio de 2026 — Florencia Peña publica disculpas en Instagram y declara entre lágrimas en LAM (América), culpando a la producción por haberle pasado la información falsa",
+      "18 de junio de 2026 — Nicolás Occhiato publica en X su indignación y anuncia mediante comunicado oficial la desvinculación de todos los responsables involucrados",
+      "18 de junio de 2026 — Yanina Latorre y otros periodistas y conductores expresan repudio público en redes sociales"
+    ],
+    "suggested_angles": [
+      {
+        "title": "Luzu TV desvincula a Peña tras fake news sobre el padre de Messi",
+        "summary": "Florencia Peña anunció en vivo el 18 de junio de 2026 en Luzu TV que Jorge Messi había muerto; la información era falsa y fue desmentida por la propia familia mediante comunicado oficial. Nicolás Occhiato, fundador del canal, anunció la desvinculación de todos los responsables y señaló que Peña dará un paso al costado. La nota cubre las 5W del incidente con declaraciones de todas las partes involucradas.",
+        "angle_type": "noticia",
+        "seo_keywords": [
+          "Florencia Peña desvinculada Luzu TV",
+          "fake news padre Messi",
+          "Jorge Messi falsa muerte"
+        ],
+        "target_audience": "Lectores generales interesados en noticias de espectáculos, medios y actualidad argentina"
+      },
+      {
+        "title": "El costo de difundir sin verificar: el caso Peña en Luzu TV",
+        "summary": "El episodio de Florencia Peña expone una falla sistémica en los procesos editoriales del streaming: la información llegó sin verificar a través de la cucaracha y fue emitida al aire sin ningún filtro. Este análisis examina las responsabilidades compartidas entre conductora y producción, las consecuencias institucionales para Luzu TV y el debate sobre los estándares mínimos de verificación en los medios digitales en vivo.",
+        "angle_type": "analisis",
+        "seo_keywords": [
+          "verificación periodística streaming",
+          "responsabilidad conductores fake news",
+          "ética medios digitales Argentina"
+        ],
+        "target_audience": "Periodistas, comunicadores, estudiantes de medios y audiencias interesadas en ética periodística y medios digitales"
+      },
+      {
+        "title": "¿Qué es la cucaracha y por qué falló en Luzu TV?",
+        "summary": "La cucaracha es el sistema de comunicación interna mediante el cual la producción transmite información a los conductores en tiempo real durante una emisión en vivo. Este explicador detalla cómo funciona ese mecanismo, por qué es un eslabón crítico en la cadena de verificación y qué protocolos deberían existir para evitar que información no confirmada llegue al aire, tomando como caso de estudio el incidente del 18 de junio en Luzu TV.",
+        "angle_type": "explicador",
+        "seo_keywords": [
+          "qué es la cucaracha televisión",
+          "sistema comunicación producción conductores",
+          "cómo funciona producción streaming en vivo"
+        ],
+        "target_audience": "Audiencia general curiosa sobre el funcionamiento interno de los medios, estudiantes de comunicación y seguidores del caso"
+      },
+      {
+        "title": "¿Murió Jorge Messi? Verificación de la noticia falsa de Luzu TV",
+        "summary": "El 18 de junio de 2026, Florencia Peña afirmó en vivo que Jorge Messi, de 68 años, había fallecido. Este fact-check contrasta esa afirmación con el comunicado oficial emitido por la familia Messi, que confirmó que Jorge 'se encuentra bajo seguimiento médico, recuperándose y evolucionando favorablemente', y analiza el origen de la información falsa según las propias declaraciones de Peña y la reacción de Luzu TV.",
+        "angle_type": "fact_check",
+        "seo_keywords": [
+          "murió Jorge Messi verdad o mentira",
+          "fact check padre Messi muerte",
+          "comunicado familia Messi Jorge salud"
+        ],
+        "target_audience": "Lectores que buscan confirmar o desmentir la noticia, usuarios de redes sociales expuestos a la viralización del clip"
+      }
+    ],
+    "suggested_headlines": [
+      "Luzu TV desvincula a Florencia Peña tras fake news sobre el padre de Messi",
+      "Florencia Peña anunció en vivo la muerte del padre de Messi: era falso y la echaron de Luzu TV",
+      "Fake news en streaming: Florencia Peña dijo que murió el papá de Messi y fue desvinculada de Luzu TV"
+    ]
+  },
+  "angles": [
+    {
+      "id": "8250d989-c7db-4ab0-bdbb-4bbe5a35f332",
+      "dossier_id": "068f8694-8cb8-415d-8f13-9ce42cc8c07c",
+      "title": "Luzu TV desvincula a Peña tras fake news sobre el padre de Messi",
+      "angle_type": "noticia",
+      "summary": "Florencia Peña anunció en vivo el 18 de junio de 2026 en Luzu TV que Jorge Messi había muerto; la información era falsa y fue desmentida por la propia familia mediante comunicado oficial. Nicolás Occhiato, fundador del canal, anunció la desvinculación de todos los responsables y señaló que Peña dará un paso al costado. La nota cubre las 5W del incidente con declaraciones de todas las partes involucradas.",
+      "target_audience": "Lectores generales interesados en noticias de espectáculos, medios y actualidad argentina",
+      "seo_keywords": [
+        "Florencia Peña desvinculada Luzu TV",
+        "fake news padre Messi",
+        "Jorge Messi falsa muerte"
+      ],
+      "position": 0,
+      "created_at": "2026-06-18T20:39:22.131Z"
+    },
+    {
+      "id": "211c7170-e071-49ca-b99c-544593f77f3b",
+      "dossier_id": "068f8694-8cb8-415d-8f13-9ce42cc8c07c",
+      "title": "El costo de difundir sin verificar: el caso Peña en Luzu TV",
+      "angle_type": "analisis",
+      "summary": "El episodio de Florencia Peña expone una falla sistémica en los procesos editoriales del streaming: la información llegó sin verificar a través de la cucaracha y fue emitida al aire sin ningún filtro. Este análisis examina las responsabilidades compartidas entre conductora y producción, las consecuencias institucionales para Luzu TV y el debate sobre los estándares mínimos de verificación en los medios digitales en vivo.",
+      "target_audience": "Periodistas, comunicadores, estudiantes de medios y audiencias interesadas en ética periodística y medios digitales",
+      "seo_keywords": [
+        "verificación periodística streaming",
+        "responsabilidad conductores fake news",
+        "ética medios digitales Argentina"
+      ],
+      "position": 1,
+      "created_at": "2026-06-18T20:39:22.137Z"
+    },
+    {
+      "id": "18dd81b0-b32b-4ce5-bcf9-f0adb87a8b33",
+      "dossier_id": "068f8694-8cb8-415d-8f13-9ce42cc8c07c",
+      "title": "¿Qué es la cucaracha y por qué falló en Luzu TV?",
+      "angle_type": "explicador",
+      "summary": "La cucaracha es el sistema de comunicación interna mediante el cual la producción transmite información a los conductores en tiempo real durante una emisión en vivo. Este explicador detalla cómo funciona ese mecanismo, por qué es un eslabón crítico en la cadena de verificación y qué protocolos deberían existir para evitar que información no confirmada llegue al aire, tomando como caso de estudio el incidente del 18 de junio en Luzu TV.",
+      "target_audience": "Audiencia general curiosa sobre el funcionamiento interno de los medios, estudiantes de comunicación y seguidores del caso",
+      "seo_keywords": [
+        "qué es la cucaracha televisión",
+        "sistema comunicación producción conductores",
+        "cómo funciona producción streaming en vivo"
+      ],
+      "position": 2,
+      "created_at": "2026-06-18T20:39:22.144Z"
+    },
+    {
+      "id": "d9efde53-95ef-4119-a756-a2dbbb1d3698",
+      "dossier_id": "068f8694-8cb8-415d-8f13-9ce42cc8c07c",
+      "title": "¿Murió Jorge Messi? Verificación de la noticia falsa de Luzu TV",
+      "angle_type": "fact_check",
+      "summary": "El 18 de junio de 2026, Florencia Peña afirmó en vivo que Jorge Messi, de 68 años, había fallecido. Este fact-check contrasta esa afirmación con el comunicado oficial emitido por la familia Messi, que confirmó que Jorge 'se encuentra bajo seguimiento médico, recuperándose y evolucionando favorablemente', y analiza el origen de la información falsa según las propias declaraciones de Peña y la reacción de Luzu TV.",
+      "target_audience": "Lectores que buscan confirmar o desmentir la noticia, usuarios de redes sociales expuestos a la viralización del clip",
+      "seo_keywords": [
+        "murió Jorge Messi verdad o mentira",
+        "fact check padre Messi muerte",
+        "comunicado familia Messi Jorge salud"
+      ],
+      "position": 3,
+      "created_at": "2026-06-18T20:39:22.147Z"
+    }
+  ]
+}

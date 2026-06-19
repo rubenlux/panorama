@@ -48,22 +48,39 @@ function Tag({ name }) {
   return <span className="pn-tag" style={{ color: CAT_COLORS[key] || 'var(--red)' }}>{name}</span>;
 }
 
-const OPINIONS = [
-  { initials: 'CM', name: 'Carlos Méndez', role: 'Editor político', title: 'El costo político de gobernar sin acuerdos duraderos' },
-  { initials: 'VP', name: 'Valeria Paz', role: 'Analista internacional', title: 'Por qué la coyuntura global importa más de lo que parece' },
-  { initials: 'JR', name: 'Julián Rivas', role: 'Columnista económico', title: 'La estabilidad no se decreta: se construye con previsibilidad' },
-];
+function ReelCard({ reel }) {
+  return (
+    <a href={reel.url} target="_blank" rel="noopener noreferrer" className="pn-reel-card">
+      <img src={resolveUrl(reel.thumbnail)} alt={reel.title} className="pn-reel-thumb" />
+      <div className="pn-reel-play">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="#fff"><path d="M8 5v14l11-7z"/></svg>
+      </div>
+      <div className="pn-reel-overlay">
+        <h4 className="pn-reel-title">{reel.title}</h4>
+      </div>
+    </a>
+  );
+}
 
 /* ═══════════════════════════════════════ */
 export default function Home() {
   const [articles, setArticles] = useState([]);
+  const [reels, setReels] = useState([]);
+  const [reelSettings, setReelSettings] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    apiJson('/articles?limit=20&status=published')
-      .then(d => setArticles(d.items || []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+    Promise.all([
+      apiJson('/articles?limit=20&status=published'),
+      apiJson('/reels?status=active'),
+      apiJson('/reels/settings')
+    ]).then(([artData, reelData, settingsData]) => {
+      setArticles(artData.items || []);
+      setReels(reelData.reels || []);
+      setReelSettings(settingsData.settings || null);
+    })
+    .catch(() => {})
+    .finally(() => setLoading(false));
   }, []);
 
   if (loading) {
@@ -163,25 +180,20 @@ export default function Home() {
           </section>
         )}
 
-        {/* OPINION */}
-        <section className="pn-zone pn-opinion">
-          <div className="pn-sec-head pn-sec-head--light">
-            <h2>Opinión</h2>
-            <a href="#">Todas las columnas →</a>
-          </div>
-          <div className="pn-op-grid">
-            {OPINIONS.map(op => (
-              <a key={op.initials} className="pn-op-item" href="#">
-                <div className="pn-op-avatar">{op.initials}</div>
-                <div>
-                  <div className="pn-op-author">{op.name}</div>
-                  <div className="pn-op-role">{op.role}</div>
-                  <h3 className="pn-headline pn-op-item__h">{op.title}</h3>
-                </div>
-              </a>
-            ))}
-          </div>
-        </section>
+        {/* REELS */}
+        {reels.length > 0 && (
+          <section className="pn-zone pn-reels" style={{ background: reelSettings?.background_color || '' }}>
+            <div className="pn-sec-head pn-sec-head--light">
+              <h2>Reels</h2>
+              <Link to="/reels">Ver todos →</Link>
+            </div>
+            <div className="pn-reels-grid">
+              {reels.map(reel => (
+                <ReelCard key={reel.id} reel={reel} />
+              ))}
+            </div>
+          </section>
+        )}
 
         {/* MOST READ + MULTIMEDIA */}
         <section className="pn-zone pn-zone--last">

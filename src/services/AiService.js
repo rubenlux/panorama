@@ -1089,15 +1089,24 @@ Ideal para lectores que necesitan contexto para entender una noticia
     const hasArticles = articlesBlock.length > 0;
 
     const prompt = `Eres un editor estratégico senior de una redacción digital.
-Tu tarea: a partir de una investigación periodística con artículos fuente completos, crear un DOSSIER EDITORIAL preciso y accionable.
+Tu tarea: a partir de una investigación periodística con artículos fuente completos, crear un DOSSIER EDITORIAL preciso y accionable que se comporte como un editor de investigación.
 
-REGLAS CRÍTICAS:
-🚫 NO inventes datos, citas, fechas o nombres
-🚫 NO uses conocimiento de entrenamiento como fuente primaria${hasArticles ? `
-✅ PRIORIZA los ARTÍCULOS FUENTE como evidencia principal — tienen el texto completo
-✅ En "verified_facts": extrae hechos concretos directamente de los artículos (cifras exactas, resultados, citas textuales, fechas, nombres)
-✅ Si un hecho aparece en los artículos fuente, es VERIFICADO — no requiere marca de advertencia` : `
-✅ Basa todas las recomendaciones en los hechos del brief`}
+NUEVA POLÍTICA EDITORIAL:
+
+NIVEL 1 — HECHOS CONFIRMADOS:
+* Sólo pueden incluirse datos presentes explícitamente en las fuentes ("verified_facts", "timeline").
+* PROHIBIDO inferir nombres, edades, fechas, ubicaciones, citas, estadísticas o antecedentes.
+* Si algún dato falta en las fuentes, o no es sólido, escribe EXACTAMENTE: "Información no disponible en las fuentes analizadas"
+
+NIVEL 2 — SÍNTESIS EDITORIAL ("executive_summary"):
+* PERMITIDO: resumir, conectar hechos confirmados, explicar relaciones entre hechos y describir la cobertura mediática en general.
+* PROHIBIDO: crear nuevos hechos, entidades o declaraciones (ej. no inventes "emitió un comunicado" si las fuentes no lo dicen textualmente).
+
+NIVEL 3 — PREGUNTAS ABIERTAS ("information_gaps"):
+* CUANDO falte información importante, NO escribas "Información no disponible..." repetidamente para rellenar espacios vacíos mayores.
+* En su lugar, usa la sección "information_gaps" para listar Preguntas abiertas (Ej: ¿Quién originó la información? ¿Hubo antecedentes similares?).${hasArticles ? `
+✅ PRIORIZA los ARTÍCULOS FUENTE como evidencia principal — tienen el texto completo.` : `
+✅ Basa todas las recomendaciones en los hechos del brief.`}
 ✅ El hero_image_prompt debe ser en inglés, fotorrealista, evocador
 
 TEMA: ${topicTitle}
@@ -1114,9 +1123,10 @@ Genera EXACTAMENTE 4 ángulos respetando el orden obligatorio:
 
 Genera el dossier en JSON ESTRICTO sin markdown:
 {
-  "executive_summary": "Resumen editorial de 3-4 oraciones con datos concretos de los artículos",
-  "verified_facts": ["Hecho con dato específico extraído de los artículos: cifra, fecha, resultado, cita o nombre exacto", "..."],
-  "timeline": ["Evento más reciente — descripción breve con fecha", "Evento anterior — descripción"],
+  "executive_summary": "Resumen editorial (NIVEL 2) que conecta los hechos y resume la cobertura mediática pero NO inventa hechos",
+  "verified_facts": ["Hecho explícitamente sacado de las fuentes (NIVEL 1)", "O 'Información no disponible...' si no hay hechos sólidos"],
+  "timeline": ["Evento de la noticia extraída de fuentes", "O 'Información no disponible...'"],
+  "information_gaps": ["¿Quién originó la información?", "¿Cómo se verificó?", "¿Qué dice el texto oficial del comunicado?"],
   "seo_keywords": ["keyword principal", "variación semántica 1", "long-tail 1", "long-tail 2"],
   "suggested_categories": ["Categoría Principal", "Categoría Secundaria"],
   "suggested_tags": ["tag1", "tag2", "tag3", "tag4"],
@@ -1160,8 +1170,10 @@ Genera el dossier en JSON ESTRICTO sin markdown:
     const prompt = `Eres un editor estratégico de una redacción digital.
 Genera 4 ángulos editoriales para el siguiente tema periodístico.
 
-REGLAS CRÍTICAS:
-🚫 NO inventes datos que no estén en el brief
+POLÍTICA EDITORIAL — 3 NIVELES:
+NIVEL 1 — TÍTULOS y KEYWORDS: solo use nombres, entidades y fechas presentes en el brief.
+NIVEL 2 — SÍNTESIS EN SUMMARY: PERMITIDO conectar hechos y sugerir enfoques narrativos a partir de los datos existentes. PROHIBIDO inventar declaraciones, cifras o entidades.
+NIVEL 3 — PREGUNTAS ABIERTAS: si para un tipo de ángulo falta información (ej. fact_check sin datos verificables), es preferible señalar vacíos como preguntas en el summary en vez de inventar premisas.
 ✅ El primer ángulo SIEMPRE debe ser "noticia" — pirámide invertida, 5W+H, tono de agencia
 ✅ Los otros 3 deben ser de tipos distintos (analisis/cronica/explicador/investigacion/fact_check)
 ${exclude}
@@ -1217,8 +1229,10 @@ TEMA: ${topicTitle}
 BRIEF: ${briefText.slice(0, 600)}
 ENTIDADES: ${entityList || '—'}
 
-REGLAS:
-🚫 NO inventes datos que no estén en el brief
+POLÍTICA EDITORIAL — 3 NIVELES:
+NIVEL 1 — TÍTULO y KEYWORDS: solo use nombres, entidades y fechas presentes en el brief.
+NIVEL 2 — SÍNTESIS EN SUMMARY: PERMITIDO conectar hechos y sugerir el enfoque narrativo a partir de los datos disponibles. PROHIBIDO inventar declaraciones, cifras o entidades.
+NIVEL 3 — PREGUNTAS ABIERTAS: si faltan datos esenciales para el ángulo solicitado, señalalo en el summary como preguntas de investigación en lugar de inventar premisas.
 ✅ El título debe tener 50-60 caracteres
 ✅ El summary debe describir específicamente qué cubriría este artículo
 
@@ -1263,9 +1277,16 @@ NO empieces con contexto. NO empieces con historia. Empieza con el hecho.
 
 ${typeInstructions}
 ${noticiaReminder}
-REGLAS UNIVERSALES:
-🚫 NO inventes datos, nombres, fechas o cifras que no estén en el dossier o brief
-🚫 NO uses tu conocimiento de entrenamiento como fuente primaria
+POLÍTICA EDITORIAL — 3 NIVELES:
+
+NIVEL 1 — HECHOS CONFIRMADOS: Solo incluí datos explícitamente presentes en "HECHOS VERIFICADOS" y "TIMELINE".
+* PROHIBIDO inventar nombres, edades, fechas, citas, estadísticas.
+* Si falta un dato concreto, marcalo en "verification_notes" como ⚠️ dato no disponible en fuentes — NO rellenes con datos inventados.
+
+NIVEL 2 — SÍNTESIS EDITORIAL: PERMITIDO conectar hechos confirmados, explicar relaciones causales y resumir la cobertura. PROHIBIDO crear nuevas entidades o declaraciones no respaldadas.
+
+NIVEL 3 — PREGUNTAS ABIERTAS: Si hay vacíos importantes de información, registralos en "verification_notes" como preguntas periodísticas (¿Quién?, ¿Cómo?, ¿Cuándo exactamente?). NO rellenes esos huecos.
+
 🚫 NO escribas introducción tipo blog ("En este artículo veremos...", "Es importante destacar que...")
 🚫 NO escribas conclusión ni cierre editorial
 ✅ Mínimo 400 palabras en el body
@@ -1345,11 +1366,18 @@ OUTPUT (JSON ONLY, sin markdown, sin texto extra):
     const prompt = `Eres un investigador periodístico senior. Tu tarea es sintetizar múltiples fuentes en un brief ejecutivo estructurado.
 
 REGLAS CRÍTICAS:
-🚫 NO inventes datos que no estén en las fuentes
-🚫 NO mezcles hechos de diferentes eventos
-✅ CITA el número de fuente [1], [2]... cuando uses datos específicos
-✅ INDICA cuando la información es parcial o requiere verificación
-✅ Las fuentes marcadas "artículo completo" tienen el texto íntegro — aprovéchalas para citas y datos específicos
+🚫 NO completes vacíos con tu conocimiento general.
+POLÍTICA EDITORIAL — 3 NIVELES:
+NIVEL 1 — HECHOS: Solo incluyas datos explícitamente presentes en las fuentes. PROHIBIDO inferir.
+🚫 NO inventes datos que no estén explícitamente en las fuentes.
+🚫 NO mezcles hechos de diferentes eventos.
+✅ CITA el número de fuente [1], [2]... cuando uses datos específicos.
+
+NIVEL 2 — SÍNTESIS: PERMITIDO resumir y conectar hechos de distintas fuentes. Útil para executive_summary, controversies y opportunities.
+✅ INDICA cuando la información es parcial o requiere verificación.
+✅ Las fuentes marcadas "artículo completo" tienen el texto íntegro — aprovéchalas para citas y datos específicos.
+
+NIVEL 3 — VACÍOS: En lugar de inventar o repetir "no disponible", detecta y registra los vacíos como preguntas de investigación pendientes.
 
 TEMA DE INVESTIGACIÓN: ${topic}
 
@@ -1359,12 +1387,13 @@ ${sourcesText}
 
 Genera un brief con este JSON ESTRICTO:
 {
-  "executive_summary": "Resumen ejecutivo de 4-6 oraciones que capture el estado actual del tema con datos específicos. Cita hechos concretos de las fuentes.",
-  "key_facts": ["Hecho verificado con fuente [N] y dato específico", "..."],
+  "executive_summary": "Resumen editorial (NIVEL 2) de 4-6 oraciones que conecta los hechos. Cita datos concretos de las fuentes.",
+  "key_facts": ["Hecho verificado con fuente [N] y dato específico (NIVEL 1)", "..."],
   "controversies": ["Punto de debate o tensión identificado en las fuentes", "..."],
   "timeline": ["Fecha/período — evento concreto extraído de las fuentes", "..."],
-  "opportunities": "Ángulos periodísticos que vale la pena desarrollar, basados en vacíos o datos relevantes encontrados",
-  "risks": "Información no verificada, contradicciones entre fuentes, vacíos importantes o limitaciones del corpus"
+  "opportunities": "Ángulos periodísticos a desarrollar, basados en vacíos o datos relevantes encontrados (NIVEL 2)",
+  "risks": "Información no verificada, contradicciones entre fuentes, vacíos o limitaciones del corpus",
+  "information_gaps": ["¿Pregunta abierta 1?", "¿Pregunta abierta 2?"]
 }
 
 JSON ONLY, sin markdown. Si hay artículos completos disponibles, el brief debe ser denso y específico.`;
@@ -1794,5 +1823,123 @@ Responde SOLO con JSON válido, array en la raíz, sin texto adicional:
     const parsed = JSON.parse(jsonMatch[0]);
     if (!Array.isArray(parsed)) throw new Error('generateEditorialOpportunities: response is not an array');
     return parsed;
+  }
+
+  // --- ATOMIC SOCIAL ENGINE V2 (BY CHANNEL) ---
+  // Esta arquitectura previene el truncamiento de respuestas largas de la IA
+  // generando cada formato de forma independiente.
+
+  async generateChannel(dossier, channel, config) {
+    if (!process.env.ANTHROPIC_API_KEY) throw new Error('Missing ANTHROPIC_API_KEY');
+
+    const facts = (dossier.verified_facts || []).slice(0, 10).join('\n- ');
+    const summary = (dossier.executive_summary || '').substring(0, 600);
+
+    const prompt = `Eres un estratega de contenido senior. Genera contenido para ${channel.toUpperCase()} basado en:
+TEMA: ${dossier.topic_title}
+RESUMEN: ${summary}
+HECHOS: ${facts}
+
+FORMATO REQUERIDO (Estrictamente JSON):
+${config.format}
+
+IMPORTANTE: Responde SOLO con un objeto JSON plano. NO incluyas markdown (sin \`\`\`json).`;
+
+    try {
+      const msg = await this.anthropic.messages.create({
+        model: this.model,
+        max_tokens: 1000,
+        temperature: 0.2,
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const raw = msg.content[0].text;
+      const start = raw.indexOf('{');
+      const end = raw.lastIndexOf('}');
+      if (start === -1) return null;
+      
+      const jsonStr = raw.substring(start, end + 1);
+      return JSON.parse(jsonStr);
+    } catch (e) {
+      console.warn(`[Social Engine] Failed to generate ${channel}:`, e.message);
+      return null; 
+    }
+  }
+
+  async generateSocialDistribution(dossier, entities) {
+    console.log(`[Social Engine] Inciando generación atómica para dossier: ${dossier.id}`);
+    
+    const channels = {
+      facebook_post: { 
+        format: '{"text": "string (Tono periodístico y cercano, máx 120 palabras)", "hashtags": "string"}',
+        strategy: 'Enfoque en comunidad y debate local.'
+      },
+      instagram_feed: { 
+        format: '{"caption": "string (Visual, emojis, máximo engagement)", "hashtags": "string"}',
+        strategy: 'Estética y copy inspirador/informativo.'
+      },
+      instagram_story: { 
+        format: '{"text": "string (Ultra breve, impacto visual)", "cta": "string"}',
+        strategy: 'Interactividad y rapidez.'
+      },
+      instagram_carousel: { 
+        format: '{"slides": [{"slide": 1, "title": "string", "body": "string"}]}',
+        strategy: 'Valor educativo, paso a paso (máx 5 slides).'
+      },
+      x_post: { 
+        format: '{"body": "string (Máxima síntesis, tono informativo directo, máx 260 chars)"}',
+        strategy: 'Inmediatez y viralidad.'
+      },
+      linkedin_post: { 
+        format: '{"body": "string (Tono profesional, análisis, networking)", "cta": "string"}',
+        strategy: 'Autoridad y contexto corporativo/laboral.'
+      },
+      newsletter_content: { 
+        format: '{"subject": "string", "body": "string (Profundidad, resumen ejecutivo)"}',
+        strategy: 'Valor agregado para suscriptores.'
+      },
+      push_notification: { 
+        format: '{"text": "string (Alerta crítica, máx 80 chars)"}',
+        strategy: 'Urgencia pura.'
+      },
+      tiktok_script: { 
+        format: '{"hook": "string (Impacto inicial)", "script": "string (Conversacional, dinámico, rápido)", "cta": "string"}',
+        strategy: 'Viralidad y entretenimiento (lo-fi).'
+      },
+      instagram_reel: { 
+        format: '{"hook": "string", "narration": "string (Narrativa visual)", "cta": "string"}',
+        strategy: 'Engagement visual y tendencias.'
+      },
+      facebook_reel: { 
+        format: '{"hook": "string", "narration": "string (Relato directo)", "cta": "string"}',
+        strategy: 'Alcance masivo.'
+      },
+      youtube_short: { 
+        format: '{"title": "string", "script": "string (Directo al grano)", "tags": "string"}',
+        strategy: 'Retención de audiencia móvil.'
+      }
+    };
+
+    const tasks = Object.entries(channels).map(([key, cfg]) => {
+      const specializedConfig = {
+        ...cfg,
+        format: `${cfg.format}. ESTRATEGIA: ${cfg.strategy}`
+      };
+      return this.generateChannel(dossier, key, specializedConfig).then(res => ({ key, res }));
+    });
+
+    const results = await Promise.allSettled(tasks);
+    const consolidated = {};
+    
+    results.forEach(res => {
+      if (res.status === 'fulfilled' && res.value.res) {
+        consolidated[res.value.key] = res.value.res;
+      } else {
+        console.error(`[Social Engine] Channel ${res.status === 'fulfilled' ? res.value.key : 'unknown'} failed`);
+      }
+    });
+
+    console.log(`[Social Engine] Generación completada. Canales exitosos: ${Object.keys(consolidated).length}`);
+    return consolidated;
   }
 }
