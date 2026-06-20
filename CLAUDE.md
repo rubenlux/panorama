@@ -235,6 +235,41 @@ Columns en `story_cluster_articles`: `category_match`, `category_score`, `entity
 - `STORY_MATCH_THRESHOLD = 0.20` — Jaccard mínimo para el gate 3 (keyword)
 - `STORY_WINDOW_HOURS = 24` — ventana para historias activas
 
+### Story/Event Intelligence — Forensic Fixes (2026-06-19)
+
+Three root-cause fixes applied to `src/jobs/newsMonitor.js` after regression audit (tournament context cross-clustering).
+
+**FIX 1 — STORY_STOPWORDS: tournament context words** (Gate 3 keyword filter, line ~539)
+Added to prevent intra-tournament Jaccard inflation (e.g. "Argentina gana" vs "Brasil eliminado" sharing 'mundial' → 1/2 = 0.50 ≥ 0.20 → false cluster):
+```js
+'copa','mundial','torneo','campeonato','fixture','grupo','fase',
+'final','semifinal','cuartos','octavos','16avos','32avos',
+```
+Named entities like "Copa Libertadores" or "Copa América" still pass Gate 2 via NER → `knowledge_entities` (Gate 3 filters lowercased keywords, Gate 2 uses entities — separate pipelines).
+
+**FIX 2 — MONITOR_STOPWORDS: ALL-CAPS title normalization** (NER entity extraction, line ~195)
+ALL-CAPS titles (common in Facebook posts) bypassed `MONITOR_STOPWORDS` entirely because the set uses Title-case keys ('De','Los','El') but comparison used the raw all-caps word ('DE','LOS','EL').
+```js
+// BEFORE (bug):
+const isNotStopword = !MONITOR_STOPWORDS.has(bare);
+// AFTER (fix):
+const normalizedBare = bare[0].toUpperCase() + bare.slice(1).toLowerCase();
+const isNotStopword  = !MONITOR_STOPWORDS.has(normalizedBare);
+```
+Effect: 'DE FINAL' no longer extracted as a NER entity. Verb contamination remains (e.g. 'ESTADOS UNIDOS GANÓ' still accumulates 'GANÓ' since verbs aren't in MONITOR_STOPWORDS — separate problem).
+
+**FIX 3 — `detectEvents()`: removed cascade entity accumulation** (line ~1751)
+`storyEntities.forEach(e => ev.entities.add(e))` was accumulating in-memory event entities each cycle, widening Jaccard matches for later stories — same bug Story Clustering 2.0 fixed at story level.
+```js
+// REMOVED: storyEntities.forEach(e => ev.entities.add(e));
+// KEPT:
+ev.storyIds.add(String(story.id));
+// Comment: DB-loaded entity set is the only source of truth; next cycle re-evaluates with full merged entity set.
+```
+
+**Pre-existing finding (NOT fixed — separate decision):**
+`detectEvents()` matching loop (line ~1737) has no minimum-entity guard for incoming stories — only for creating new events (line 1759 checks `storyEntities.size >= 2`). A story with 1 entity (e.g. {'mundial'}) can match a 2-entity event at Jaccard 0.50 ≥ EVENT_ENTITY_THRESHOLD (0.35). Potential fix: `if (storyEntities.size < 2) continue;` before the matching loop to mirror the new-event guard.
+
 ### News Monitor — Critical distinction
 
 The news monitor writes to **`monitored_articles`**, NOT `articles`. The `articles` table (22 rows) is manual CMS content only. All monitoring activity is in `monitored_articles` (8,976+ rows). Use `detected_at` as the timestamp column — not `created_at` or `ingested_at`.
@@ -301,10 +336,11 @@ The Social Intelligence module uses headless Playwright scraper (`src/connectors
 - **Architecture Invariant**: One source record in the DB strictly equals one content tab/URL.
 - **YouTube Strategy**: Do NOT auto-derive URLs. A channel's shorts, videos, and community posts must be registered as three separate sources with an explicit `content_type` (`videos`, `shorts`, or `posts`).
 - **Facebook Strategy**: One page = one source with `content_type='posts'` (always). No content_type selector needed in the UI.
-- **Platform status**: YouTube ✓ active, Facebook ✓ active (Sprint 8.7), X/Twitter ✓ active (Sprint X). Instagram, TikTok — stubs return `[]`. Do NOT activate without explicit user authorization.
+- **Platform status**: YouTube ✓ active, Facebook ✓ active (Sprint 8.7), X/Twitter ⛔ DISABLED (`ENABLE_X_MONITOR=false` in `.env`). Instagram, TikTok — stubs return `[]`. Do NOT activate without explicit user authorization.
+- **Concurrency guards**: `isSocialRunning` (module-level bool) prevents overlapping social cycles. `isNewsRunning` in `newsMonitor.js` prevents overlapping news cycles. Both use identical skip-and-count pattern (`socialSkippedCycles++`).
 
 **Worker (`src/jobs/socialMonitor.js`):**
-Full pipeline: `ensureSchema` → `startRun('social_monitor')` → `getFetcher(source)` (routes youtube/facebook to their Playwright fetchers) → fetch per source → upsert posts → `clusterNewPosts` (word-overlap, ≥2 shared **unique** words) → `recalcClusterMetrics` → `markStaleClusters` (48h) → `recalcGapScores` (Jaccard vs `story_clusters.keywords`) → `fetchPendingTranscripts()` (8 newest, Playwright UI) → `backfillTranscripts()` (50 oldest) → `finishRun()`. Runs every 30 minutes.
+Full pipeline: `ensureSchema` → `incrementalStats.reset()` → `startRun('social_monitor')` → per-source: X-flag check → freshness check → `getFetcher(source)` → Facebook `_knownIds` load → fetch → upsert posts → YouTube `last_external_id` update → `clusterNewPosts` → `recalcClusterMetrics` → `markStaleClusters` (48h) → `recalcGapScores` → `fetchPendingTranscripts()` (8 newest) → `backfillTranscripts()` (50 oldest) → `finishRun()`. **Runs every 5 minutes** (`*/5 * * * *` in worker.js — changed from 1 min in Sprint 10.0 to prevent cycle overlap).
 
 **`extractWords(title)` (Sprint 8.8G fix):** Returns `[...new Set(...)]` — words are deduplicated before returning. Without this, a title like `"El Uno X Uno de Brasil\nOLE.COM.AR\nEl Uno X Uno de Brasil"` produces `['brasil','brasil']` → `intersection.length = 2` → false cluster match on a single real word. The dedup ensures threshold ≥2 means ≥2 **distinct** words.
 
@@ -346,8 +382,9 @@ Full pipeline: `ensureSchema` → `startRun('social_monitor')` → `getFetcher(s
 - Cookie bootstrap: first-run reads `facebook_cookies.json` → loads into persistent context → writes `.initialized` marker so subsequent runs skip re-injection.
 
 **Common:**
-- `SocialFetcherGraphApiFacebook` (wrapper): tries Graph API token first → falls back to `SocialFetcherPlaywrightFacebook` on any API error.
-- Facebook is **on-demand only** (no automatic worker). `getFetcher()` returns `null` for facebook → worker skips. Only `POST /sources/:id/check` triggers a scrape.
+- `SocialFetcherGraphApiFacebook` (wrapper): checks `source.graph_api_supported` first — if `false`, skips API entirely and goes straight to Playwright. On `OAuthException` (code 10), persists `graph_api_supported=false` in DB so all future cycles skip the HTTP round-trip. On success, persists `true`.
+- All 18 current Facebook sources are marked `graph_api_supported=false` in DB (confirmed via logs — none are owned by the token). The Graph API call is effectively dead-code for Panorama's source list.
+- Facebook is **now included in the automatic worker** (Sprint 10.0). `getFetcher()` returns `SocialFetcherGraphApiFacebook` → hits Playwright directly (via `graph_api_supported=false` fast-path). Freshness windows (15 min) prevent redundant scrapes.
 
 **X/Twitter scraper (`SocialFetcherX` in `fetchers.js`) — Sprint X:**
 - **Primary**: Playwright + X session cookies → intercepts internal GraphQL `UserTweets` API. Same pattern as Facebook mode 2.
@@ -358,6 +395,48 @@ Full pipeline: `ensureSchema` → `startRun('social_monitor')` → `getFetcher(s
   - Cookie lifetime: typically 1–3 months. When expired, scraper falls back to Nitter (which likely returns 0).
 - **Dedup**: `external_id` = tweet status ID (numeric). `ON CONFLICT (platform, external_id)` handles duplicates.
 - **`_debug` in check endpoint**: `auth_configured: true/false` + renewal hint when 0 posts returned.
+
+**Sprint Performance 10.0 — Social Intelligence Incremental Fetching (completed 2026-06-19)**
+
+**New DB columns on `social_sources`:**
+- `last_external_id VARCHAR(500)` — YouTube only. Newest `external_id` seen on last successful fetch. Used for smart stop: `posts.splice(cutIdx)` when found in results. Populated automatically by worker after each YouTube fetch. **Safe design:** 1 source row = 1 content_type (confirmed in audit) — no mixing risk.
+- `freshness_window_seconds INTEGER DEFAULT 900` — per-source override for freshness check. Defaults: FB/YT-videos/YT-posts = 900s (15 min), YT-shorts = 1800s (30 min). Configurable per row.
+- `graph_api_supported BOOLEAN` — tri-state: `NULL`=untried, `true`=API works, `false`=skip to Playwright. Auto-updated on each `SocialFetcherGraphApiFacebook` call.
+
+**New `social_posts` index needed (Sprint 10.1 audit finding — NOT YET CREATED):**
+```sql
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_social_posts_source_captured
+  ON social_posts (source_id, captured_at DESC);
+```
+Required for the Facebook `_knownIds` query: `WHERE source_id=$1 ORDER BY captured_at DESC LIMIT 100`. Currently uses `idx_social_posts_source` (source_id only) + in-memory sort.
+
+**Freshness check (in worker loop, before `getFetcher`):**
+```js
+if (source.last_checked && (Date.now() - new Date(source.last_checked).getTime()) < freshnessWindow * 1000) {
+  sourcesSkipped++; return; // logs: [SocialMonitor] Skip platform/name (checked N min ago)
+}
+```
+
+**Facebook smart stop (in Playwright scroll loop):**
+- Loads `_knownIds` = Set of last 100 `external_id` for that source (from DB before `fetchLatest()`)
+- Per scroll step: tracks `seqKnown` counter. At 3 consecutive known posts → `break` + `incrementalStats.facebookSmartStops++`
+- `_knownIds` is a duck-typed property on the `source` object — ephemeral, lives only in the `p-limit` closure. Only 2 references: `socialMonitor.js:687` (write, FB only) and `fetchers.js:276` (read, inside Playwright class). Fallback `|| new Set()` safe.
+
+**YouTube smart stop (in `_fetchVideos`, `_fetchShorts`, `_fetchPosts`):**
+- Receives `lastExternalId` from `fetchLatest()` via `source.last_external_id`
+- After scroll loop: `posts.findIndex(p => p.external_id === lastExternalId)` → `posts.splice(cutIdx)` if found
+- Logs: `[YouTube/VIDEOS] Smart stop — N new items (known: <id>)`
+
+**`incrementalStats` export (in `fetchers.js`):**
+```js
+export const incrementalStats = { facebookSmartStops: 0, youtubeSmartStops: 0, reset() {...} }
+```
+Imported in `socialMonitor.js`. Reset at cycle start. Reported in "Social Optimization Report" block at end of each cycle.
+
+**`src/services/browserLifecycleLogger.js` — Logging regression fix (2026-06-19):**
+- `logBrowserLifecycle()` no longer calls `new Error().stack` — that was prepending "Error:" to every log line, creating hundreds of false `[PAGE_CLOSED]` stack traces.
+- `watchBrowserDisconnect()` removed from `fetchers.js`, `transcripts.js`, `editorial-dossiers.js` — those files already log browser close in `finally` blocks; the disconnect listener was double-firing. Kept only in `BrowserManager.js` (singleton, unexpected disconnect is meaningful there).
+- Clean log format: `[PAGE_CLOSED] source=YouTube/posts timestamp=2026-...` (single line, no stack).
 
 **Re-clustering:** Run `node scripts/recluster_all.js` to reset and rebuild all clusters from scratch.
 

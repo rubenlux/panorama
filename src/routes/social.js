@@ -160,7 +160,11 @@ router.post('/sources/:id/check', async (req, res, next) => {
     if (source.platform === 'youtube')        fetcher = new SocialFetcherPlaywrightYouTube(source);
     else if (source.platform === 'facebook')  fetcher = new SocialFetcherGraphApiFacebook(source);
     else if (source.platform === 'instagram') fetcher = new SocialFetcherPlaywrightInstagram(source);
-    else if (source.platform === 'x')         fetcher = new SocialFetcherX(source);
+    else if (source.platform === 'x') {
+      if (process.env.ENABLE_X_MONITOR === 'false')
+        return res.status(503).json({ error: 'X/Twitter deshabilitado — ENABLE_X_MONITOR=false' });
+      fetcher = new SocialFetcherX(source);
+    }
     else return res.status(400).json({ error: `Plataforma '${source.platform}' no soportada aún.` });
 
     const posts = await fetcher.fetchLatest();

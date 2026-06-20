@@ -1,13 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
 import pLimit from 'p-limit';
 import { query } from '../routes/db.js';
-import { SocialFetcherPlaywrightYouTube, SocialFetcherPlaywrightFacebook, SocialFetcherGraphApiFacebook, SocialFetcherPlaywrightInstagram, SocialFetcherX } from '../connectors/social/fetchers.js';
+import { SocialFetcherPlaywrightYouTube, SocialFetcherPlaywrightFacebook, SocialFetcherGraphApiFacebook, SocialFetcherPlaywrightInstagram, SocialFetcherX, incrementalStats } from '../connectors/social/fetchers.js';
+import { browserAudit } from '../services/browserLifecycleLogger.js';
 import { fetchYouTubeTranscriptViaPlaywright, calculateQualityScore, detectEditorialType } from '../connectors/social/transcripts.js';
 import { perfTracker } from '../services/PerformanceTracker.js';
 import { startRun, finishRun } from './workerUtils.js';
 
 const limit = pLimit(parseInt(process.env.SOCIAL_MAX_CONCURRENCY) || 3);
 let isSocialRunning = false;
+let socialSkippedCycles = 0;
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const AI_MODEL  = 'claude-haiku-4-5-20251001';
@@ -63,6 +65,11 @@ async function ensureSchema() {
   // Expand content_type constraint to include 'tweets' (X platform)
   await query(`ALTER TABLE social_sources DROP CONSTRAINT IF EXISTS social_sources_content_type_check`).catch(() => {});
   await query(`ALTER TABLE social_sources ADD CONSTRAINT social_sources_content_type_check CHECK (content_type IN ('videos', 'shorts', 'posts', 'tweets'))`).catch(() => {});
+
+  // Sprint Performance 10.0 — incremental fetching
+  await query(`ALTER TABLE social_sources ADD COLUMN IF NOT EXISTS last_external_id VARCHAR(500)`).catch(() => {});
+  await query(`ALTER TABLE social_sources ADD COLUMN IF NOT EXISTS freshness_window_seconds INTEGER DEFAULT 900`).catch(() => {});
+  await query(`ALTER TABLE social_sources ADD COLUMN IF NOT EXISTS graph_api_supported BOOLEAN`).catch(() => {});
 }
 
 function getFetcher(source) {
@@ -591,10 +598,19 @@ async function backfillTranscripts() {
   console.log(`[Backfill] Done: processed=${processed} remaining=${rem.remaining}`);
 }
 
+// ── Sprint Performance 10.0 — Freshness window ───────────────────────────────
+
+function getFreshnessWindow(source) {
+  if (source.freshness_window_seconds) return source.freshness_window_seconds;
+  if (source.platform === 'youtube' && source.content_type === 'shorts') return 1800;
+  return 900;
+}
+
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export async function runSocialMonitor() {
   if (isSocialRunning) {
+    socialSkippedCycles++;
     console.log('[SocialMonitor] A cycle is already in progress. Skipping this run.');
     return;
   }
@@ -602,6 +618,10 @@ export async function runSocialMonitor() {
   isSocialRunning = true;
   const cycleStart = Date.now();
   perfTracker.resetSocial();
+  let sourcesProcessed = 0;
+  let sourcesSkipped = 0;
+  incrementalStats.reset();
+  browserAudit.resetPeaks();
 
   console.log('\n=== Perf Profile: Social Monitor Cycle Start ===');
   console.time('Social Intelligence');
@@ -637,10 +657,36 @@ export async function runSocialMonitor() {
     let errorMessage = null;
     let success = false;
 
+    if (source.platform === 'x' && process.env.ENABLE_X_MONITOR === 'false') {
+      console.log(`[SocialMonitor] Skip X/Twitter — disabled by ENABLE_X_MONITOR=false`);
+      return;
+    }
+
+    // Freshness check — skip source if recently scraped
+    const freshnessWindow = getFreshnessWindow(source);
+    if (source.last_checked) {
+      const ageMs = Date.now() - new Date(source.last_checked).getTime();
+      if (ageMs < freshnessWindow * 1000) {
+        const minsAgo = Math.floor(ageMs / 60000);
+        console.log(`[SocialMonitor] Skip ${source.platform}/${source.name} (checked ${minsAgo} min ago)`);
+        sourcesSkipped++;
+        return;
+      }
+    }
+
     const fetcher = getFetcher(source);
     if (!fetcher) {
       console.log(`[SocialMonitor] Skip ${source.platform}/${source.name} — no fetcher yet`);
       return;
+    }
+
+    // Facebook — load known IDs for smart stop
+    if (source.platform === 'facebook') {
+      const { rows: knownRows } = await query(
+        `SELECT external_id FROM social_posts WHERE source_id = $1 ORDER BY captured_at DESC LIMIT 100`,
+        [source.id]
+      ).catch(() => ({ rows: [] }));
+      source._knownIds = new Set(knownRows.map(r => r.external_id));
     }
 
     try {
@@ -687,7 +733,16 @@ export async function runSocialMonitor() {
         WHERE id = $1
       `, [source.id]);
 
+      // YouTube — persist newest external_id for smart stop on next cycle
+      if (source.platform === 'youtube' && posts.length > 0) {
+        await query(
+          `UPDATE social_sources SET last_external_id = $1 WHERE id = $2`,
+          [posts[0].external_id, source.id]
+        ).catch(() => {});
+      }
+
       success = true;
+      sourcesProcessed++;
       totalSaved += postsSaved;
       
       const duration = Date.now() - platformStart;
@@ -742,7 +797,18 @@ export async function runSocialMonitor() {
   console.log(`Pages Opened:       ${perfTracker.social.pagesOpened}`);
   console.log(`Chromium Instances: ${perfTracker.social.browsersLaunched}`);
   console.log(`Total Social Time:  ${totalTime} ms`);
+  console.log(`Ciclos omitidos por lock:   ${socialSkippedCycles}`);
   console.log('=================================\n');
+
+  console.log('=== Social Optimization Report ===');
+  console.log(`Sources Processed:        ${sourcesProcessed}`);
+  console.log(`Sources Skipped:          ${sourcesSkipped}`);
+  console.log(`Facebook Smart Stops:     ${incrementalStats.facebookSmartStops}`);
+  console.log(`YouTube Smart Stops:      ${incrementalStats.youtubeSmartStops}`);
+  console.log(`Est. Chromium Saved:      ${sourcesSkipped}`);
+  console.log('==================================\n');
+
+  browserAudit.report('SocialMonitor');
 
   await finishRun(runId, {
     status: 'success',

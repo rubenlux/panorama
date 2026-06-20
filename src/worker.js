@@ -23,12 +23,12 @@ pool.query("SELECT NOW()").then(async () => {
     });
     console.log("📡 News Intelligence Monitor: running every 60s");
 
-    // Run social monitor immediately on start, then every minute
+    // Run social monitor immediately on start, then every 5 minutes
     runSocialMonitor().catch(e => console.error("❌ Social Monitor initial run failed:", e.message));
-    cron.schedule("* * * * *", () => {
+    cron.schedule("*/5 * * * *", () => {
       runSocialMonitor().catch(e => console.error("❌ Social Monitor error:", e.message));
     });
-    console.log("📱 Social Intelligence Monitor: running every 60s");
+    console.log("📱 Social Intelligence Monitor: running every 5min");
 
     // Recalculate freshness scores every 30 minutes (independent of ingestion cycle)
     recalcFreshness().catch(e => console.error("❌ Freshness initial recalc failed:", e.message));

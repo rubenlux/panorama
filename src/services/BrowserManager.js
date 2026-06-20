@@ -1,5 +1,6 @@
 import { chromium } from 'playwright';
 import { perfTracker } from './PerformanceTracker.js';
+import { logBrowserLifecycle, watchBrowserDisconnect } from './browserLifecycleLogger.js';
 
 /**
  * BrowserManager — Singleton manager for Playwright Chromium.
@@ -20,18 +21,16 @@ class BrowserManager {
       return this.launchPromise;
     }
 
-    console.log('[BROWSER_CREATED] BrowserManager Singleton');
-    console.log(new Error().stack);
-    
     this.launchPromise = (async () => {
       try {
         const browser = await chromium.launch({
           headless: true,
           args: ['--disable-blink-features=AutomationControlled', '--no-sandbox']
         });
+        logBrowserLifecycle('BROWSER_CREATED', 'BrowserManager');
         this.browser = browser;
+        watchBrowserDisconnect(this.browser, 'BrowserManager');
         this.browser.once('disconnected', () => {
-          console.warn('[BROWSER_CLOSED] BrowserManager Singleton (Unexpected)');
           this.browser = null;
           this.launchPromise = null;
         });
@@ -46,15 +45,16 @@ class BrowserManager {
   }
 
   async newContext(options = {}) {
-    console.log('[CONTEXT_CREATED] BrowserManager');
     const browser = await this.getBrowser();
-    return await browser.newContext(options);
+    const context = await browser.newContext(options);
+    logBrowserLifecycle('CONTEXT_CREATED', 'BrowserManager');
+    return context;
   }
 
   async newPage(options = {}) {
-    console.log('[PAGE_CREATED] BrowserManager');
     const context = await this.newContext(options);
     const page = await context.newPage();
+    logBrowserLifecycle('PAGE_CREATED', 'BrowserManager');
     return { page, context };
   }
 }

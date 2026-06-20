@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from './db.js';
 import { chromium } from 'playwright';
+import { logBrowserLifecycle } from '../services/browserLifecycleLogger.js';
 
 const router = Router();
 
@@ -23,6 +24,7 @@ router.get('/:id', async (req, res, next) => {
 router.get('/:id/pdf', async (req, res, next) => {
   const { id } = req.params;
   let browser;
+  let page;
   try {
     const result = await query(
       `SELECT e.*, 
@@ -71,10 +73,10 @@ ${event.articles ? `
   <div class="footer">Generado por Panorama CMS · ${new Date().toLocaleString('es-AR')} · Confidencial</div>
 </div></body></html>`;
 
-    console.log('[BROWSER_CREATED] Direct Launch (PDF Export)');
-    console.log(new Error().stack);
     browser = await chromium.launch({ headless: true });
-    const page = await browser.newPage();
+    logBrowserLifecycle('BROWSER_CREATED', 'PDF Export');
+    page = await browser.newPage();
+    logBrowserLifecycle('PAGE_CREATED', 'PDF Export');
     await page.setContent(html, { waitUntil: 'domcontentloaded' });
     const pdf = await page.pdf({
       format:          'A4',
@@ -89,8 +91,12 @@ ${event.articles ? `
   } catch (e) {
     next(e);
   } finally {
+    if (page) {
+      logBrowserLifecycle('PAGE_CLOSED', 'PDF Export');
+      await page.close().catch(() => {});
+    }
     if (browser) {
-      console.log('[BROWSER_CLOSED] Direct Launch (PDF Export)');
+      logBrowserLifecycle('BROWSER_CLOSED', 'PDF Export');
       await browser.close().catch(() => {});
     }
   }

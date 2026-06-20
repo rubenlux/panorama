@@ -4,8 +4,12 @@ import { query } from '../routes/db.js';
 import { AiService } from '../services/AiService.js';
 import { fetchArticleContentForMonitor, playwrightMetrics } from '../services/ArticleFetcher.js';
 import { startRun, finishRun } from './workerUtils.js';
+import { browserAudit } from '../services/browserLifecycleLogger.js';
 
 const ai = new AiService();
+
+let isNewsRunning = false;
+let newsSkippedCycles = 0;
 
 const TRENDING_WINDOW_MIN    = 30;
 const AUTO_RESEARCH_MENTIONS = 5;
@@ -189,7 +193,10 @@ function extractMonitorEntities(title) {
     if (!bare) continue;
 
     const isCapStart      = /^[A-ZÁÉÍÓÚÜÑ]/.test(bare);
-    const isNotStopword   = !MONITOR_STOPWORDS.has(bare);
+    // Normalize to title-case before stopword check so ALL-CAPS titles
+    // ("ESTADOS UNIDOS GANÓ") don't bypass 'De', 'En', 'Al', etc.
+    const normalizedBare  = bare[0].toUpperCase() + bare.slice(1).toLowerCase();
+    const isNotStopword   = !MONITOR_STOPWORDS.has(normalizedBare);
     const isDigitOrHyphen = current.length > 0 && /^[\d-]/.test(bare) && bare.length <= 4;
 
     if ((isCapStart && isNotStopword && bare.length >= 2) || isDigitOrHyphen) {
@@ -533,6 +540,11 @@ const STORY_STOPWORDS = new Set([
   'what','when','where','which','they','their','about','after','before',
   // High-frequency Argentine news words that don't define a story
   'pesos','dolares','porcentaje','inflacion','economia',
+  // Tournament context words — identify domain (World Cup, Copa) but cannot
+  // distinguish between different facts within the same tournament.
+  // Named entities ("Copa América") are matched via NER/Gate 2, not Gate 3 keywords.
+  'copa','mundial','torneo','campeonato','fixture','grupo','fase',
+  'final','semifinal','cuartos','octavos','16avos','32avos',
 ]);
 
 // Templated/recurring content that should never create editorial stories
@@ -1641,9 +1653,10 @@ async function generateOpportunitiesForStories() {
 
 // ── Event Intelligence (Sprint 5.6) ──────────────────────────────────────────
 
-const EVENT_WINDOW_HOURS         = 48;
-const EVENT_ENTITY_THRESHOLD     = 0.35; // Jaccard on shared entities to group stories into one event
-const EVENT_SUMMARY_MIN_STORIES  = 2;    // min story clusters before event gets AI summary
+const EVENT_WINDOW_HOURS           = 48;
+const EVENT_ENTITY_THRESHOLD       = 0.35; // Jaccard on shared entities to group stories into one event
+const EVENT_SUMMARY_MIN_STORIES    = 2;    // min story clusters before event gets AI summary
+const MIN_EVENT_MATCH_ENTITIES     = 2;    // min story entities to qualify for event matching (mirrors creation guard)
 
 function calcEditorialScore(importanceScore, sourceCount, articleCount, coverageStatus) {
   const impPart    = (importanceScore / 10) * 40;
@@ -1653,8 +1666,10 @@ function calcEditorialScore(importanceScore, sourceCount, articleCount, coverage
   return Math.round(impPart + srcPart + livePart + artPart);
 }
 
+const EMPTY_EVENT_STATS = { storiesAnalyzed: 0, storiesMatched: 0, newEventsCreated: 0, singleEntityStoriesSkipped: 0 };
+
 async function detectEvents(affectedStoryIds) {
-  if (affectedStoryIds.length === 0) return;
+  if (affectedStoryIds.length === 0) return EMPTY_EVENT_STATS;
 
   // Load each affected story with its entity set
   const { rows: newStories } = await query(`
@@ -1678,7 +1693,7 @@ async function detectEvents(affectedStoryIds) {
       AND sc.status IN ('active','summarizing','ready','followed')
   `, [affectedStoryIds]);
 
-  if (newStories.length === 0) return;
+  if (newStories.length === 0) return EMPTY_EVENT_STATS;
 
   // Load active non-stale event clusters with their entity union and linked story ids
   const { rows: activeEvents } = await query(`
@@ -1711,6 +1726,12 @@ async function detectEvents(affectedStoryIds) {
   }));
 
   const affectedEventIds = new Set();
+  const eventStats = {
+    storiesAnalyzed:             0,
+    storiesMatched:              0,
+    newEventsCreated:            0,
+    singleEntityStoriesSkipped:  0,
+  };
 
   for (const story of newStories) {
     const storyEntities = new Set((story.entities || []).map(n => n.toLowerCase()));
@@ -1718,6 +1739,17 @@ async function detectEvents(affectedStoryIds) {
 
     // Skip stories already linked to any active event — prevents creating duplicate events
     if (eventSigs.some(ev => ev.storyIds.has(String(story.id)))) continue;
+
+    eventStats.storiesAnalyzed++;
+
+    if (storyEntities.size < MIN_EVENT_MATCH_ENTITIES) {
+      console.log(
+        `[EventMatcher] Skip story ${story.id} "${(story.title || '').slice(0, 60)}": ` +
+        `only ${storyEntities.size} entity (${[...storyEntities].join(', ')})`
+      );
+      eventStats.singleEntityStoriesSkipped++;
+      continue;
+    }
 
     let bestEventId = null;
     let bestScore   = 0;
@@ -1736,10 +1768,13 @@ async function detectEvents(affectedStoryIds) {
         [bestEventId, story.id]
       );
       affectedEventIds.add(bestEventId);
-      // Extend the in-memory entity set for subsequent stories
+      eventStats.storiesMatched++;
+      // Track story membership only — do NOT accumulate entities into ev.entities.
+      // Cascade entity accumulation caused the same contamination bug fixed in
+      // Story Clustering 2.0. DB-loaded entity set is the only source of truth;
+      // next cycle re-evaluates with the full merged entity set from the DB.
       const ev = eventSigs.find(e => e.id === bestEventId);
       if (ev) {
-        storyEntities.forEach(e => ev.entities.add(e));
         ev.storyIds.add(String(story.id));
       }
     } else if (storyEntities.size >= 2) {
@@ -1755,6 +1790,7 @@ async function detectEvents(affectedStoryIds) {
         [newEventId, story.id]
       );
       affectedEventIds.add(newEventId);
+      eventStats.newEventsCreated++;
       eventSigs.push({
         id:       newEventId,
         entities: new Set(storyEntities),
@@ -1799,6 +1835,8 @@ async function detectEvents(affectedStoryIds) {
       WHERE ec.id = $1
     `, [eventId]);
   }
+
+  return eventStats;
 }
 
 async function markStaleEvents() {
@@ -2010,6 +2048,15 @@ async function fetchPendingArticleContent() {
 // ── Main job ──────────────────────────────────────────────────────────────────
 
 export async function runNewsMonitor() {
+  if (isNewsRunning) {
+    newsSkippedCycles++;
+    console.log('[NewsMonitor] A cycle is already in progress. Skipping this run.');
+    return;
+  }
+  isNewsRunning = true;
+  const cycleStart = Date.now();
+  browserAudit.resetPeaks();
+
   // Respect pause flag — lets the CMS pause AI consumption without stopping the process
   const { rows: pauseFlag } = await query(`SELECT value FROM settings WHERE key = 'news_monitor_paused'`).catch(() => ({ rows: [] }));
   if (pauseFlag[0]?.value === 'true') {
@@ -2017,6 +2064,7 @@ export async function runNewsMonitor() {
     // Record skipped run so health endpoint can confirm worker is alive
     const runId = await startRun('news_monitor');
     await finishRun(runId, { status: 'skipped' });
+    isNewsRunning = false;
     return;
   }
 
@@ -2051,6 +2099,7 @@ export async function runNewsMonitor() {
       console.timeEnd('1. Feed (Sources + Fetching)');
       console.timeEnd('Full Cycle');
       await finishRun(runId, { status: 'success' });
+      isNewsRunning = false;
       return;
     }
 
@@ -2076,9 +2125,13 @@ export async function runNewsMonitor() {
       console.log(`Artículos nuevos en este ciclo: ${itemsFound}`);
       console.log(`Páginas Playwright abiertas:    ${playwrightMetrics.pagesOpened}`);
       console.log(`Instancias Chromium abiertas:  ${playwrightMetrics.browsersLaunched}`);
+      console.log(`News Monitor duration:          ${Date.now() - cycleStart}ms`);
+      console.log(`Ciclos omitidos por lock:       ${newsSkippedCycles}`);
       console.log('=== Perf Profile: Cycle End ===\n');
+      browserAudit.report('NewsMonitor');
 
       await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed });
+      isNewsRunning = false;
       return;
     }
 
@@ -2136,9 +2189,15 @@ export async function runNewsMonitor() {
         AND last_seen > now() - interval '2 hours'
     `);
     const recentStoryIds = recentStories.map(r => r.id);
-    await detectEvents(recentStoryIds);
+    const eventStats = await detectEvents(recentStoryIds);
     await markStaleEvents();
     console.timeEnd('6. Event Intelligence (Events)');
+    console.log('\n=== Event Clustering Report ===');
+    console.log(`Stories analyzed:               ${eventStats.storiesAnalyzed}`);
+    console.log(`Stories matched to event:       ${eventStats.storiesMatched}`);
+    console.log(`New events created:             ${eventStats.newEventsCreated}`);
+    console.log(`Single-entity stories skipped:  ${eventStats.singleEntityStoriesSkipped}`);
+    console.log('================================\n');
 
     console.timeEnd('Full Cycle');
 
@@ -2147,6 +2206,8 @@ export async function runNewsMonitor() {
     console.log(`Artículos nuevos en este ciclo: ${itemsFound}`);
     console.log(`Páginas Playwright abiertas:    ${playwrightMetrics.pagesOpened}`);
     console.log(`Instancias Chromium abiertas:  ${playwrightMetrics.browsersLaunched}`);
+    console.log(`News Monitor duration:          ${Date.now() - cycleStart}ms`);
+    console.log(`Ciclos omitidos por lock:       ${newsSkippedCycles}`);
     console.log('=== Perf Profile: Cycle End ===\n');
 
     await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed, items_found: itemsFound });
@@ -2155,4 +2216,5 @@ export async function runNewsMonitor() {
     console.error('[Monitor] Job error:', e.message);
     await finishRun(runId, { status: 'error', sources_processed: sourcesProcessed, items_found: itemsFound, errors_count: 1, error_message: e.message.slice(0, 500) });
   }
+  isNewsRunning = false;
 }

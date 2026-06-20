@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { chromium } from 'playwright';
+import { logBrowserLifecycle } from '../../services/browserLifecycleLogger.js';
 
 const LANG_PRIORITY = ['es', 'es-419', 'es-US', 'en', 'pt'];
 const FETCH_TIMEOUT = 20_000;
@@ -147,18 +148,23 @@ export async function fetchYouTubeTranscriptViaPlaywright(url) {
   if (!videoId) return { available: false, source: 'none', reason: 'no_video_id' };
 
   let browser;
+  let context;
+  let page;
   const t0 = Date.now();
   try {
     browser = await chromium.launch({
       headless: true,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-blink-features=AutomationControlled'],
     });
-    const context = await browser.newContext({
+    logBrowserLifecycle('BROWSER_CREATED', 'Transcript/UI');
+    context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       locale: 'es-419',
       viewport: { width: 1280, height: 900 },
     });
-    const page = await context.newPage();
+    logBrowserLifecycle('CONTEXT_CREATED', 'Transcript/UI');
+    page = await context.newPage();
+    logBrowserLifecycle('PAGE_CREATED', 'Transcript/UI');
 
     await page.goto(`https://www.youtube.com/watch?v=${videoId}`, {
       waitUntil: 'domcontentloaded',
@@ -233,7 +239,18 @@ export async function fetchYouTubeTranscriptViaPlaywright(url) {
     console.error(`[Transcript/UI] Error for ${videoId}: ${e.message}`);
     return null;
   } finally {
-    if (browser) await browser.close().catch(() => {});
+    if (page) {
+      logBrowserLifecycle('PAGE_CLOSED', 'Transcript/UI');
+      await page.close().catch(() => {});
+    }
+    if (context) {
+      logBrowserLifecycle('CONTEXT_CLOSED', 'Transcript/UI');
+      await context.close().catch(() => {});
+    }
+    if (browser) {
+      logBrowserLifecycle('BROWSER_CLOSED', 'Transcript/UI');
+      await browser.close().catch(() => {});
+    }
   }
 }
 

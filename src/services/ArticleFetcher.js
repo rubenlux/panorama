@@ -17,9 +17,10 @@
  *   Does NOT use the article_content_cache — content stored in monitored_articles.
  */
 
+import { chromium } from 'playwright';
 import fetch from 'node-fetch';
 import { query } from '../routes/db.js';
-import { browserManager } from './BrowserManager.js';
+import { browserAudit } from './browserLifecycleLogger.js';
 
 const CACHE_TTL_HOURS    = 72;
 const FETCH_TIMEOUT_MS   = 10_000;
@@ -141,11 +142,16 @@ function extractFromHtml(html) {
 // If playwright is not installed, this returns null gracefully.
 
 async function fetchWithPlaywright(url) {
+  let browser;
   try {
     playwrightMetrics.pagesOpened++;
-    const { page, context } = await browserManager.newPage({
-      extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' }
+    playwrightMetrics.browsersLaunched++;
+    browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    browserAudit.browserOpen('Article/Playwright');
+    const context = await browser.newContext({
+      extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' },
     });
+    const page = await context.newPage();
     try {
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PLAYWRIGHT_TIMEOUT });
       await page.waitForTimeout(1500);
@@ -156,6 +162,11 @@ async function fetchWithPlaywright(url) {
     }
   } catch {
     return null;
+  } finally {
+    if (browser) {
+      browserAudit.browserClose('Article/Playwright');
+      await browser.close().catch(() => {});
+    }
   }
 }
 

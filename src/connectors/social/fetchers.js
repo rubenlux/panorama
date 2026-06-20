@@ -7,6 +7,31 @@ import { chromium } from 'playwright';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
+import { logBrowserLifecycle } from '../../services/browserLifecycleLogger.js';
+import { query } from '../../routes/db.js';
+
+// Sprint Performance 10.0 — incremental fetching metrics
+export const incrementalStats = {
+  facebookSmartStops: 0,
+  youtubeSmartStops: 0,
+  reset() { this.facebookSmartStops = 0; this.youtubeSmartStops = 0; }
+};
+
+let facebookPersistentProfileLock = Promise.resolve();
+
+async function withFacebookPersistentProfileLock(fn) {
+  const previous = facebookPersistentProfileLock.catch(() => {});
+  let release;
+  facebookPersistentProfileLock = new Promise(resolve => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
 
 export class SocialFetcherBase {
   constructor(source) {
@@ -17,12 +42,13 @@ export class SocialFetcherBase {
     throw new Error('Not implemented.');
   }
 
-  async _launchBrowser() {
-    console.log('[BROWSER_LAUNCHED] SocialFetcherBase');
-    return await chromium.launch({
+  async _launchBrowser(source = this.constructor.name) {
+    const browser = await chromium.launch({
       headless: true,
       args: ['--disable-blink-features=AutomationControlled', '--no-sandbox']
     });
+    logBrowserLifecycle('BROWSER_CREATED', source);
+    return browser;
   }
 }
 
@@ -30,14 +56,14 @@ export class SocialFetcherPlaywrightX extends SocialFetcherBase {
   async fetchLatest() {
     console.log(`[X/Twitter] Fetching via Playwright for ${this.source.handle}...`);
 
-    const browser = await this._launchBrowser();
+    const browser = await this._launchBrowser('X/Twitter');
     const context = await browser.newContext({
       viewport: { width: 1280, height: 720 },
       userAgent: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
     });
-    console.log('[CONTEXT_CREATED] X/Twitter');
+    logBrowserLifecycle('CONTEXT_CREATED', 'X/Twitter');
     const page = await context.newPage();
-    console.log('[PAGE_CREATED] X/Twitter');
+    logBrowserLifecycle('PAGE_CREATED', 'X/Twitter');
     const posts = [];
 
     try {
@@ -79,16 +105,19 @@ export class SocialFetcherPlaywrightX extends SocialFetcherBase {
         }
       }
     } finally {
-      console.log('[PAGE_CLOSED] Isolated');
-      console.log('[CONTEXT_CLOSED] Isolated');
+      logBrowserLifecycle('PAGE_CLOSED', 'X/Twitter');
+      await page.close().catch(() => { });
+      logBrowserLifecycle('CONTEXT_CLOSED', 'X/Twitter');
       await context.close().catch(() => { });
-      console.log('[BROWSER_CLOSED] Isolated');
+      logBrowserLifecycle('BROWSER_CLOSED', 'X/Twitter');
       await browser.close().catch(() => { });
     }
 
     return posts;
   }
 }
+
+export const SocialFetcherX = SocialFetcherPlaywrightX;
 
 export class SocialFetcherPlaywrightInstagram extends SocialFetcherBase {
   async fetchLatest() {
@@ -101,6 +130,11 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
   async fetchLatest() {
     const profileUrl = this.source.profile_url;
     const sourceName = this.source.name;
+    const lockRequestAt = Date.now();
+    return withFacebookPersistentProfileLock(async () => {
+    const lockWaitMs = Date.now() - lockRequestAt;
+    const scrapeStart = Date.now();
+    console.log(`[Facebook] ${sourceName}: lock_wait=${lockWaitMs}ms`);
     console.log(`[Facebook] Fetching ${sourceName} → ${profileUrl}`);
 
     const baseUrl = profileUrl.replace('mbasic.facebook.com', 'www.facebook.com').replace(/\/$/, '');
@@ -111,10 +145,12 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
 
     // First-run bootstrap: inject cookies once so they persist to disk via storageState.
     if (!existsSync(stateFile)) {
-      console.log('[BROWSER_CREATED] Facebook Bootstrap');
       const browser = await chromium.launch({ headless: true });
+      logBrowserLifecycle('BROWSER_CREATED', 'Facebook Bootstrap');
       const context = await browser.newContext();
+      logBrowserLifecycle('CONTEXT_CREATED', 'Facebook Bootstrap');
       const page = await context.newPage();
+      logBrowserLifecycle('PAGE_CREATED', 'Facebook Bootstrap');
       try {
         if (existsSync(cookiesFile)) {
           const raw = JSON.parse(readFileSync(cookiesFile, 'utf-8'));
@@ -126,8 +162,8 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
           console.log('[Facebook] Perfil persistente (state.json) inicializado');
         }
       } finally {
+        logBrowserLifecycle('BROWSER_CLOSED', 'Facebook Bootstrap');
         await browser.close();
-        console.log('[BROWSER_CLOSED] Facebook Bootstrap');
       }
     }
 
@@ -139,14 +175,16 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
       args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox'],
       storageState: existsSync(stateFile) ? stateFile : undefined,
     });
-    console.log('[CONTEXT_CREATED] Facebook Persistent');
+    logBrowserLifecycle('BROWSER_CREATED', 'Facebook Persistent');
+    // context.browser() returns null for launchPersistentContext — no browser object to watch
+    logBrowserLifecycle('CONTEXT_CREATED', 'Facebook Persistent');
 
     await context.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
 
     const page = await context.newPage();
-    console.log('[PAGE_CREATED] Facebook');
+    logBrowserLifecycle('PAGE_CREATED', 'Facebook');
     const posts = [];
 
     try {
@@ -235,6 +273,7 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
       };
 
       // accumulated across all scroll steps — keyed by first-line dedup key
+      const knownIds = this.source._knownIds || new Set();
       const accumulated = new Map();
       let noGrowthStreak = 0;
 
@@ -244,13 +283,33 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
 
         const sizeBefore = accumulated.size;
         const snapshot = await page.evaluate(EXTRACT_FN, POST_BODY_SEL);
+
+        // Phase 2 — smart stop: count consecutive known posts in this scroll step
+        let seqKnown = 0;
+        let triggerSmartStop = false;
         for (const item of snapshot) {
           if (!accumulated.has(item.key)) accumulated.set(item.key, item);
+          if (knownIds.size > 0) {
+            const eid = `fb${createHash('md5').update(`${this.source.id}:${item.text.slice(0, 200)}`).digest('hex').slice(0, 14)}`;
+            if (knownIds.has(eid)) {
+              seqKnown++;
+              if (seqKnown >= 3) { triggerSmartStop = true; break; }
+            } else {
+              seqKnown = 0;
+            }
+          }
         }
+
         const grew = accumulated.size > sizeBefore;
         console.log(`[Facebook] Scroll ${i + 1}: ${snapshot.length} en DOM, ${accumulated.size} acumulados${grew ? '' : ' (sin nuevos)'}`);
 
-        // Stop only when no new unique posts have appeared for 2 consecutive scrolls
+        if (triggerSmartStop) {
+          console.log(`[Facebook] Smart stop — 3 posts conocidos consecutivos (scroll ${i + 1})`);
+          incrementalStats.facebookSmartStops++;
+          break;
+        }
+
+        // Stop when no new unique posts have appeared for 2 consecutive scrolls
         if (i >= 2) {
           noGrowthStreak = grew ? 0 : noGrowthStreak + 1;
           if (noGrowthStreak >= 2) {
@@ -289,12 +348,16 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
     } catch (e) {
       console.error(`[Facebook] Error scraping ${sourceName}: ${e.message}`);
     } finally {
+      logBrowserLifecycle('PAGE_CLOSED', 'Facebook');
       await page.close().catch(() => {});
+      logBrowserLifecycle('CONTEXT_CLOSED', 'Facebook Persistent');
       await context.close().catch(() => {});
     }
 
     console.log(`[Facebook] Extraídos: ${posts.length} posts de ${sourceName}`);
+    console.log(`[Facebook] ${sourceName}: scraping=${Date.now() - scrapeStart}ms`);
     return posts;
+    });
   }
 }
 
@@ -312,6 +375,11 @@ function _parseFbMetric(str = '') {
 // Fetches posts from the last 24 hours natively via the `since` param.
 export class SocialFetcherGraphApiFacebook extends SocialFetcherBase {
   async fetchLatest() {
+    // Skip API entirely if previously confirmed inaccessible for this page
+    if (this.source.graph_api_supported === false) {
+      return new SocialFetcherPlaywrightFacebook(this.source).fetchLatest();
+    }
+
     const token      = process.env.FB_PAGE_ACCESS_TOKEN;
     const apiVersion = process.env.FB_API_VERSION || 'v21.0';
     const pageSlug   = this._extractPageSlug(this.source.profile_url);
@@ -334,7 +402,9 @@ export class SocialFetcherGraphApiFacebook extends SocialFetcherBase {
     if (data.error) {
       // Code 10 = permissions error — this page is not managed by the token owner
       if (data.error.code === 10 || data.error.type === 'OAuthException') {
-        console.warn(`[Facebook/GraphAPI] Sin acceso a '${pageSlug}' con este token — usando Playwright`);
+        console.warn(`[Facebook/GraphAPI] Sin acceso a '${pageSlug}' — marcando Playwright-only`);
+        await query(`UPDATE social_sources SET graph_api_supported = false WHERE id = $1`, [this.source.id]).catch(() => {});
+        this.source.graph_api_supported = false;
         return new SocialFetcherPlaywrightFacebook(this.source).fetchLatest();
       }
       console.error(`[Facebook/GraphAPI] API error: ${data.error.message}`);
@@ -343,6 +413,11 @@ export class SocialFetcherGraphApiFacebook extends SocialFetcherBase {
 
     const items = data.data || [];
     console.log(`[Facebook/GraphAPI] ${pageSlug}: ${items.length} posts de las últimas 24h`);
+
+    // Cache successful API access so future cycles skip the API check
+    if (this.source.graph_api_supported !== true) {
+      await query(`UPDATE social_sources SET graph_api_supported = true WHERE id = $1`, [this.source.id]).catch(() => {});
+    }
 
     return items
       .filter(p => (p.message || p.story || '').trim().length > 5)
@@ -395,12 +470,14 @@ export class SocialFetcherPlaywrightYouTube extends SocialFetcherBase {
 
     console.log(`[YouTube/${contentType.toUpperCase()}] → ${targetUrl}`);
 
-    const browser = await this._launchBrowser();
+    const browser = await this._launchBrowser(`YouTube/${contentType}`);
     const context = await browser.newContext({
       viewport: { width: 1280, height: 900 },
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     });
+    logBrowserLifecycle('CONTEXT_CREATED', `YouTube/${contentType}`);
     const page = await context.newPage();
+    logBrowserLifecycle('PAGE_CREATED', `YouTube/${contentType}`);
     const posts = [];
 
     try {
@@ -409,16 +486,22 @@ export class SocialFetcherPlaywrightYouTube extends SocialFetcherBase {
       await page.goto(targetUrl, { waitUntil: waitStrategy, timeout: 40000 })
         .catch(e => console.warn(`[YouTube/${contentType.toUpperCase()}] goto warning: ${e.message}`));
 
+      const lastExternalId = this.source.last_external_id || null;
       if (contentType === 'videos') {
-        await _fetchVideos(page, targetUrl, posts);
+        await _fetchVideos(page, targetUrl, posts, lastExternalId);
       } else if (contentType === 'shorts') {
-        await _fetchShorts(page, targetUrl, posts);
+        await _fetchShorts(page, targetUrl, posts, lastExternalId);
       } else if (contentType === 'posts') {
-        await _fetchPosts(page, targetUrl, posts);
+        await _fetchPosts(page, targetUrl, posts, lastExternalId);
       }
 
     } finally {
-      await browser.close();
+      logBrowserLifecycle('PAGE_CLOSED', `YouTube/${contentType}`);
+      await page.close().catch(() => {});
+      logBrowserLifecycle('CONTEXT_CLOSED', `YouTube/${contentType}`);
+      await context.close().catch(() => {});
+      logBrowserLifecycle('BROWSER_CLOSED', `YouTube/${contentType}`);
+      await browser.close().catch(() => {});
     }
 
     console.log(`[YouTube/${contentType.toUpperCase()}] Extraídos: ${posts.length} items`);
@@ -428,7 +511,7 @@ export class SocialFetcherPlaywrightYouTube extends SocialFetcherBase {
 
 // ── VIDEOS ────────────────────────────────────────────────────────────────────
 
-async function _fetchVideos(page, targetUrl, posts) {
+async function _fetchVideos(page, targetUrl, posts, lastExternalId = null) {
   // YouTube new layout: ytd-rich-item-renderer > yt-lockup-view-model, no more a#video-title-link
   await page.waitForSelector('ytd-rich-item-renderer a[href*="/watch?v="]', { state: 'attached', timeout: 20000 })
     .catch(() => console.warn('[YouTube/VIDEOS] No video links in DOM after 20s'));
@@ -479,11 +562,19 @@ async function _fetchVideos(page, targetUrl, posts) {
       engagement_score: views, published_at: new Date().toISOString(), keywords: ['videos']
     });
   }
+  if (lastExternalId) {
+    const cutIdx = posts.findIndex(p => p.external_id === lastExternalId);
+    if (cutIdx !== -1) {
+      console.log(`[YouTube/VIDEOS] Smart stop — ${cutIdx} new items (known: ${lastExternalId})`);
+      incrementalStats.youtubeSmartStops++;
+      posts.splice(cutIdx);
+    }
+  }
 }
 
 // ── SHORTS ────────────────────────────────────────────────────────────────────
 
-async function _fetchShorts(page, targetUrl, posts) {
+async function _fetchShorts(page, targetUrl, posts, lastExternalId = null) {
   await page.waitForSelector('a[href*="/shorts/"]', { state: 'attached', timeout: 20000 })
     .catch(() => console.warn('[YouTube/SHORTS] No shorts links in DOM'));
 
@@ -546,6 +637,14 @@ async function _fetchShorts(page, targetUrl, posts) {
       engagement_score: views, published_at: new Date().toISOString(), keywords: ['shorts']
     });
   }
+  if (lastExternalId) {
+    const cutIdx = posts.findIndex(p => p.external_id === lastExternalId);
+    if (cutIdx !== -1) {
+      console.log(`[YouTube/SHORTS] Smart stop — ${cutIdx} new items (known: ${lastExternalId})`);
+      incrementalStats.youtubeSmartStops++;
+      posts.splice(cutIdx);
+    }
+  }
 }
 
 const OEMBED_TRIGGER = new Set(['', 'short', 'sin título', 'sin titulo', 'más acciones', 'mas acciones', 'untitled']);
@@ -581,7 +680,7 @@ async function _enrichShortsOembed(items) {
 
 // ── COMMUNITY POSTS ───────────────────────────────────────────────────────────
 
-async function _fetchPosts(page, targetUrl, posts) {
+async function _fetchPosts(page, targetUrl, posts, lastExternalId = null) {
   await page.waitForSelector('ytd-backstage-post-thread-renderer', { state: 'attached', timeout: 15000 })
     .catch(() => console.warn('[YouTube/POSTS] No community posts in DOM'));
 
@@ -616,6 +715,14 @@ async function _fetchPosts(page, targetUrl, posts) {
       thumbnail_url: item.thumbnail_url, views: 0, likes, comments: 0, shares: 0,
       engagement_score: likes, published_at: new Date().toISOString(), keywords: ['posts']
     });
+  }
+  if (lastExternalId) {
+    const cutIdx = posts.findIndex(p => p.external_id === lastExternalId);
+    if (cutIdx !== -1) {
+      console.log(`[YouTube/POSTS] Smart stop — ${cutIdx} new items (known: ${lastExternalId})`);
+      incrementalStats.youtubeSmartStops++;
+      posts.splice(cutIdx);
+    }
   }
 }
 
