@@ -108,16 +108,20 @@ router.get('/:id', requireAuth, async (req, res, next) => {
 
     const [timelineR, entitiesR, mediaR, opportunitiesR, storyOppsR] = await Promise.all([
 
-      // Stories inside this event (timeline proxy)
+      // Individual articles for this event — ordered ASC for Cronología tab
       query(`
-        SELECT sc.id, sc.title, sc.summary, sc.story_type, sc.coverage_status,
-               sc.article_count, sc.source_count, sc.importance_score,
-               sc.first_seen, sc.last_seen
+        SELECT
+          ma.id, ma.title, ma.url,
+          ma.published_at  AS ts,
+          ma.summary,
+          rs.name          AS source_name
         FROM event_cluster_stories ecs
-        JOIN story_clusters sc ON sc.id = ecs.story_id
+        JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
+        JOIN monitored_articles     ma  ON ma.id        = sca.article_id
+        JOIN rss_sources            rs  ON rs.id        = ma.source_id
         WHERE ecs.event_id = $1
-        ORDER BY sc.last_seen DESC
-        LIMIT 20
+        ORDER BY ma.published_at ASC
+        LIMIT 50
       `, [id]),
 
       // Named entities across this event
