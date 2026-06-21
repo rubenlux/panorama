@@ -40,7 +40,11 @@ import SocialIntelligence from "./pages/SocialIntelligence.jsx";
 import SocialSources from "./pages/SocialSources.jsx";
 import SocialOpportunities from "./pages/SocialOpportunities.jsx";
 import EditorialDossierPage from "./pages/EditorialDossierPage.jsx";
-import KnowledgeGraph       from "./pages/KnowledgeGraph.jsx";
+import TrackedSources          from "./pages/TrackedSources.jsx";
+import KnowledgeGraph         from "./pages/KnowledgeGraph.jsx";
+import CoverageFeed           from "./pages/CoverageFeed.jsx";
+import CoverageDetail         from "./pages/CoverageDetail.jsx";
+import CoverageArticleDetail  from "./pages/CoverageArticleDetail.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -79,6 +83,7 @@ export default function App() {
         <Route path="editorial-studio" element={<EditorialStudio />} />
         <Route path="research" element={<ResearchCenter />} />
         <Route path="monitor" element={<MediaMonitor />} />
+        <Route path="monitor/tracked" element={<TrackedSources />} />
         <Route path="trends/:id" element={<TrendDetail />} />
         <Route path="stories/:id" element={<StoryDetail />} />
         <Route path="events/:id" element={<EventDetail />} />
@@ -103,6 +108,11 @@ export default function App() {
 
         {/* Knowledge Graph — Sprint 8.6A */}
         <Route path="knowledge-graph" element={<KnowledgeGraph />} />
+
+        {/* Coverage V2 — independent tracking module */}
+        <Route path="coverage" element={<CoverageFeed />} />
+        <Route path="coverage/article/:articleId" element={<CoverageArticleDetail />} />
+        <Route path="coverage/:id" element={<CoverageDetail />} />
 
 
         <Route path="ads" element={<AdsDashboardV2 />} /> {/* Replaced V1 with V2 default */}

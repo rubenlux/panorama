@@ -42,7 +42,7 @@ router.get('/', requireAuth, async (req, res, next) => {
           FROM event_cluster_stories ecs
           JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
           JOIN monitored_articles ma ON ma.id = sca.article_id
-          JOIN tracked_sources ts ON ts.id = ma.source_id
+          JOIN rss_sources ts ON ts.id = ma.source_id
           WHERE ecs.event_id = ec.id
         ) AS sources,
         (
@@ -89,7 +89,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       FROM event_cluster_stories ecs
       JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
       JOIN monitored_articles ma ON ma.id = sca.article_id
-      JOIN tracked_sources ts ON ts.id = ma.source_id
+      JOIN rss_sources ts ON ts.id = ma.source_id
       WHERE ecs.event_id = $1
       ORDER BY ts.name
     `, [req.params.id]);
@@ -132,7 +132,7 @@ router.get('/:id/articles', requireAuth, async (req, res, next) => {
       FROM event_cluster_stories ecs
       JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
       JOIN monitored_articles ma ON ma.id = sca.article_id
-      JOIN tracked_sources ts ON ts.id = ma.source_id
+      JOIN rss_sources ts ON ts.id = ma.source_id
       JOIN story_clusters sc ON sc.id = ecs.story_id
       WHERE ecs.event_id = $1
       ORDER BY ma.id, ma.detected_at DESC
@@ -234,7 +234,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       FROM event_cluster_stories ecs
       JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
       JOIN monitored_articles ma ON ma.id = sca.article_id
-      JOIN tracked_sources ts ON ts.id = ma.source_id
+      JOIN rss_sources ts ON ts.id = ma.source_id
       WHERE ecs.event_id = $1
         AND sca.relevance_score >= 0.30
       ORDER BY ma.id, sca.relevance_score DESC
@@ -406,7 +406,7 @@ router.post('/:id/generate-summary', requireAuth, async (req, res, next) => {
         FROM event_cluster_stories ecs
         JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
         JOIN monitored_articles ma ON ma.id = sca.article_id
-        JOIN tracked_sources ts ON ts.id = ma.source_id
+        JOIN rss_sources ts ON ts.id = ma.source_id
         WHERE ecs.event_id = $1 AND sca.relevance_score >= $2
         ORDER BY ma.id, ma.detected_at DESC
         LIMIT 25

@@ -32,7 +32,7 @@ router.get('/', requireAuth, async (req, res, next) => {
           SELECT json_agg(DISTINCT ts.name ORDER BY ts.name)
           FROM trend_cluster_articles tca
           JOIN monitored_articles ma ON ma.id = tca.article_id
-          JOIN tracked_sources    ts ON ts.id = ma.source_id
+          JOIN rss_sources    ts ON ts.id = ma.source_id
           WHERE tca.trend_id = tc.id
         ) AS sources
       FROM trend_clusters tc
@@ -89,7 +89,7 @@ router.get('/:id/articles', requireAuth, async (req, res, next) => {
           ts.id   AS source_id
         FROM trend_cluster_articles tca
         JOIN monitored_articles ma ON ma.id = tca.article_id
-        JOIN tracked_sources    ts ON ts.id = ma.source_id
+        JOIN rss_sources    ts ON ts.id = ma.source_id
         WHERE tca.trend_id = $1
         ORDER BY ma.detected_at DESC
         LIMIT $2 OFFSET $3
@@ -136,7 +136,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
       SELECT ma.title, ma.url, ma.published_at, ts.name AS source_name
       FROM trend_cluster_articles tca
       JOIN monitored_articles ma ON ma.id = tca.article_id
-      JOIN tracked_sources    ts ON ts.id = ma.source_id
+      JOIN rss_sources    ts ON ts.id = ma.source_id
       WHERE tca.trend_id = $1
       ORDER BY ma.detected_at DESC
       LIMIT 5
@@ -203,7 +203,7 @@ router.post('/:id/generate-summary', requireAuth, async (req, res, next) => {
       SELECT ma.title, ma.url, ma.published_at, ma.detected_at, ts.name AS source_name
       FROM trend_cluster_articles tca
       JOIN monitored_articles ma ON ma.id = tca.article_id
-      JOIN tracked_sources    ts ON ts.id = ma.source_id
+      JOIN rss_sources    ts ON ts.id = ma.source_id
       WHERE tca.trend_id = $1
       ORDER BY ma.detected_at DESC
     `, [id]);

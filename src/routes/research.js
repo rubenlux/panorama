@@ -156,7 +156,7 @@ async function _runPipeline(topic, title, connectors) {
   try {
     // Use tracked_sources from DB instead of hardcoded DEFAULT_FEEDS (Phase 2 fix — W1)
     const { rows: trackedFeeds } = await query(
-      `SELECT name, rss_url AS url FROM tracked_sources
+      `SELECT name, rss_url AS url FROM rss_sources
        WHERE enabled = true AND rss_url IS NOT NULL
        ORDER BY trust_score DESC NULLS LAST`
     );

@@ -263,7 +263,7 @@ async function processSource(source) {
     }
 
     await query(
-      `UPDATE tracked_sources SET last_checked = now(), last_format_detected = $2 WHERE id = $1`,
+      `UPDATE rss_sources SET last_checked = now(), last_format_detected = $2 WHERE id = $1`,
       [source.id, format]
     );
     if (items.length > 0)
@@ -449,7 +449,7 @@ async function summarizePendingClusters() {
       SELECT ma.title, ma.url, ma.published_at, ma.detected_at, ts.name AS source_name
       FROM trend_cluster_articles tca
       JOIN monitored_articles ma ON ma.id = tca.article_id
-      JOIN tracked_sources ts    ON ts.id = ma.source_id
+      JOIN rss_sources ts    ON ts.id = ma.source_id
       WHERE tca.trend_id = $1
       ORDER BY ma.detected_at DESC
     `, [cluster.id]);
@@ -1591,7 +1591,7 @@ async function generateOpportunitiesForStories() {
                  ma.content_words, ts.name AS source_name
           FROM story_cluster_articles sca
           JOIN monitored_articles ma ON ma.id = sca.article_id
-          JOIN tracked_sources    ts ON ts.id = ma.source_id
+          JOIN rss_sources    ts ON ts.id = ma.source_id
           WHERE sca.story_id = $1
             AND sca.relevance_score >= ${RELEVANCE_FILTER_THRESHOLD}
           ORDER BY sca.relevance_score DESC, ma.detected_at DESC
@@ -1876,7 +1876,7 @@ async function summarizePendingEvents() {
           FROM event_cluster_stories ecs
           JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
           JOIN monitored_articles ma ON ma.id = sca.article_id
-          JOIN tracked_sources ts ON ts.id = ma.source_id
+          JOIN rss_sources ts ON ts.id = ma.source_id
           WHERE ecs.event_id = $1
             AND sca.relevance_score >= ${RELEVANCE_FILTER_THRESHOLD}
           ORDER BY ma.id, ma.detected_at DESC
@@ -2089,7 +2089,7 @@ export async function runNewsMonitor() {
   try {
     console.time('1. Feed (Sources + Fetching)');
     const { rows: sources } = await query(`
-      SELECT * FROM tracked_sources
+      SELECT * FROM rss_sources
       WHERE enabled = true
         AND (last_checked IS NULL
              OR last_checked < now() - (check_interval || ' seconds')::interval)

@@ -3,6 +3,7 @@ import cron from "node-cron";
 import { calculateAdRevenue } from "./jobs/calculateAdRevenue.js";
 import { runNewsMonitor, recalcFreshness } from "./jobs/newsMonitor.js";
 import { runSocialMonitor }   from "./jobs/socialMonitor.js";
+import { trackedSourceMonitor } from "./jobs/trackedSourceMonitor.js";
 import { pool } from "./routes/db.js";
 import { ensureObservabilitySchema, logEvent } from "./jobs/workerUtils.js";
 
@@ -29,6 +30,13 @@ pool.query("SELECT NOW()").then(async () => {
       runSocialMonitor().catch(e => console.error("❌ Social Monitor error:", e.message));
     });
     console.log("📱 Social Intelligence Monitor: running every 5min");
+    
+    // Coverage Monitor (Tracked Sources) - every 5 minutes
+    trackedSourceMonitor().catch(e => console.error("❌ Tracked Source initial run failed:", e.message));
+    cron.schedule("*/5 * * * *", () => {
+      trackedSourceMonitor().catch(e => console.error("❌ Tracked Source error:", e.message));
+    });
+    console.log("📡 Coverage Monitor: running every 5min");
 
     // Recalculate freshness scores every 30 minutes (independent of ingestion cycle)
     recalcFreshness().catch(e => console.error("❌ Freshness initial recalc failed:", e.message));

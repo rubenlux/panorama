@@ -34,15 +34,20 @@ router.get('/entities/trending', async (req, res, next) => {
     const { rows } = await query(`
       SELECT
         ke.id, ke.name, ke.entity_type, ke.mention_count,
-        COUNT(DISTINCT ecs.event_id)::int                           AS events_count,
-        COUNT(DISTINCT aem.article_id)::int                        AS articles_count,
-        (ke.mention_count + COUNT(DISTINCT ecs.event_id) * 10)::int AS score
+        (SELECT COUNT(DISTINCT aem2.article_id)::int
+           FROM article_entity_matches aem2 WHERE aem2.entity_id = ke.id) AS articles_count,
+        (SELECT COUNT(DISTINCT ecs2.event_id)::int
+           FROM story_entities se2
+           JOIN event_cluster_stories ecs2 ON ecs2.story_id = se2.story_id
+           WHERE se2.entity_id = ke.id) AS events_count,
+        (ke.mention_count +
+          (SELECT COUNT(DISTINCT ecs3.event_id)
+             FROM story_entities se3
+             JOIN event_cluster_stories ecs3 ON ecs3.story_id = se3.story_id
+             WHERE se3.entity_id = ke.id) * 10
+        )::int AS score
       FROM knowledge_entities ke
-      LEFT JOIN article_entity_matches aem ON aem.entity_id = ke.id
-      LEFT JOIN story_entities         se  ON se.entity_id  = ke.id
-      LEFT JOIN event_cluster_stories  ecs ON ecs.story_id  = se.story_id
       WHERE ${where}
-      GROUP BY ke.id, ke.name, ke.entity_type, ke.mention_count
       ORDER BY score DESC, ke.mention_count DESC
       LIMIT $${p}
     `, [...params, limit]);

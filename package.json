@@ -20,6 +20,7 @@
     "@anthropic-ai/sdk": "^0.71.2",
     "@tinymce/tinymce-react": "^6.3.0",
     "bcryptjs": "^3.0.3",
+    "cheerio": "^1.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",

@@ -1,105 +1,183 @@
 import { Router } from 'express';
 import { query } from './db.js';
-import { chromium } from 'playwright';
-import { logBrowserLifecycle } from '../services/browserLifecycleLogger.js';
+import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
 
-router.get('/:id', async (req, res, next) => {
-  const { id } = req.params;
+// ── GET / — list event_clusters ───────────────────────────────────────────────
+
+router.get('/', requireAuth, async (req, res, next) => {
   try {
-    const result = await query(
-      `SELECT e.*, 
-       (SELECT json_agg(n.*) FROM news_articles n WHERE n.event_id = e.id) as articles
-       FROM events e WHERE e.id = $1`,
-      [id]
-    );
-    if (!result.rows[0]) return res.status(404).json({ error: 'Event not found' });
-    res.json(result.rows[0]);
-  } catch (e) {
-    next(e);
-  }
+    const status   = req.query.status   || null;
+    const minScore = parseInt(req.query.min_score) || 0;
+    const q        = req.query.q        || null;
+    const limit    = Math.min(parseInt(req.query.limit) || 20, 200);
+    const offset   = parseInt(req.query.offset) || 0;
+
+    const conds  = [];
+    const params = [];
+
+    if (status === 'active') {
+      conds.push(`ec.status IN ('active', 'followed')`);
+    } else if (status === 'stale') {
+      conds.push(`ec.status = 'stale'`);
+    }
+    if (minScore > 0) {
+      params.push(minScore);
+      conds.push(`ec.editorial_score >= $${params.length}`);
+    }
+    if (q) {
+      params.push(`%${q}%`);
+      conds.push(`ec.headline ILIKE $${params.length}`);
+    }
+
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    params.push(limit, offset);
+
+    const { rows } = await query(`
+      SELECT
+        COUNT(*) OVER()::int AS total_count,
+        ec.id, ec.headline, ec.summary, ec.event_type,
+        ec.importance_score, ec.editorial_score, ec.coverage_status, ec.status,
+        ec.story_count, ec.article_count, ec.source_count,
+        ec.main_entities, ec.first_detected_at, ec.last_updated_at,
+        (
+          SELECT json_agg(DISTINCT ts.name ORDER BY ts.name)
+          FROM event_cluster_stories ecs
+          JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
+          JOIN monitored_articles ma ON ma.id = sca.article_id
+          JOIN rss_sources ts ON ts.id = ma.source_id
+          WHERE ecs.event_id = ec.id
+        ) AS sources,
+        (
+          SELECT json_agg(json_build_object(
+            'id', eo.id, 'type', eo.type, 'title', eo.title,
+            'traffic_potential', eo.traffic_potential, 'difficulty', eo.difficulty,
+            'status', eo.status
+          ) ORDER BY eo.seo_value DESC NULLS LAST)
+          FROM editorial_opportunities eo
+          WHERE eo.event_id = ec.id AND eo.status NOT IN ('dismissed')
+          LIMIT 5
+        ) AS opportunities
+      FROM event_clusters ec
+      ${where}
+      ORDER BY ec.editorial_score DESC NULLS LAST, ec.last_updated_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}
+    `, params);
+
+    const total = rows[0]?.total_count ?? 0;
+    res.json({ items: rows.map(({ total_count, ...r }) => r), total, offset, limit });
+  } catch (e) { next(e); }
 });
 
-router.get('/:id/pdf', async (req, res, next) => {
-  const { id } = req.params;
-  let browser;
-  let page;
+// ── GET /stats ────────────────────────────────────────────────────────────────
+
+router.get('/stats', requireAuth, async (req, res, next) => {
   try {
-    const result = await query(
-      `SELECT e.*, 
-       (SELECT json_agg(n.*) FROM news_articles n WHERE n.event_id = e.id) as articles
-       FROM events e WHERE e.id = $1`,
-      [id]
+    const { rows: [stats] } = await query(`
+      SELECT
+        COUNT(*)::int                                                            AS total_events,
+        COUNT(*) FILTER (WHERE status IN ('active','followed'))::int            AS active_events,
+        COUNT(*) FILTER (WHERE coverage_status = 'breaking')::int              AS breaking,
+        COUNT(*) FILTER (WHERE coverage_status = 'growing')::int               AS growing,
+        ROUND(AVG(editorial_score))::int                                        AS avg_score,
+        MAX(editorial_score)::int                                               AS max_score,
+        (SELECT COUNT(*)::int FROM editorial_opportunities WHERE status = 'pending') AS pending_opps
+      FROM event_clusters
+    `);
+    res.json(stats);
+  } catch (e) { next(e); }
+});
+
+// ── GET /:id/pdf — stub (PDF generation not yet ported to event_clusters) ─────
+
+router.get('/:id/pdf', requireAuth, (_req, res) => {
+  res.status(501).json({ error: 'PDF generation not available for this version' });
+});
+
+// ── GET /:id — event cluster detail ──────────────────────────────────────────
+
+router.get('/:id', requireAuth, async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const { rows: [event] } = await query(
+      `SELECT ec.* FROM event_clusters ec WHERE ec.id = $1`, [id]
     );
+    if (!event) return res.status(404).json({ error: 'Event not found' });
 
-    const event = result.rows[0];
-    if (!event) return res.status(404).send('Event not found');
+    const [timelineR, entitiesR, mediaR, opportunitiesR, storyOppsR] = await Promise.all([
 
-    const html = `<!DOCTYPE html><html><head>
-<style>
-  body { font-family: 'Inter', sans-serif; padding: 40px; color: #1a202c; line-height: 1.6; }
-  .header { border-bottom: 2px solid #e2e8f0; padding-bottom: 20px; margin-bottom: 30px; }
-  .headline { font-size: 28px; font-weight: 800; color: #2d3748; margin: 0; }
-  .meta { color: #718096; font-size: 14px; margin-top: 8px; }
-  .section { margin-bottom: 40px; }
-  .section-title { font-size: 18px; font-weight: 700; color: #4a5568; text-transform: uppercase; letter-spacing: 0.05em; border-left: 4px solid #3182ce; padding-left: 12px; margin-bottom: 20px; }
-  .article { margin-bottom: 25px; padding: 15px; background: #f7fafc; border-radius: 8px; }
-  .article-title { font-weight: 700; font-size: 16px; margin-bottom: 6px; color: #2d3748; }
-  .article-meta { font-size: 12px; color: #a0aec0; margin-bottom: 8px; }
-  .content { font-size: 14px; white-space: pre-wrap; color: #4a5568; }
-  .footer { margin-top: 50px; padding-top: 20px; border-top: 1px solid #edf2f7; font-size: 12px; color: #a0aec0; text-align: center; }
-</style>
-</head><body>
-<div class="header">
-  <h1 class="headline">${event.headline}</h1>
-  <div class="meta">Panorama Intelligence Report · Event #${id} · ${new Date().toLocaleDateString('es-AR')}</div>
-</div>
-<div class="section">
-  <div class="section-title">Contexto del Evento</div>
-  <p>${event.summary || 'Sin resumen disponible.'}</p>
-</div>
-${event.articles ? `
-<div class="section">
-  <div class="section-title">Artículos Relacionados (${event.articles.length})</div>
-  ${event.articles.map(a => `
-    <div class="article">
-      <div class="article-title">${a.title}</div>
-      <div class="article-meta">${a.source_name || 'Desconocido'} · ${new Date(a.published_at).toLocaleString('es-AR')}</div>
-      <div class="content">${(a.content || '').slice(0, 800)}${(a.content || '').length > 800 ? '...' : ''}</div>
-    </div>
-  `).join('')}` : ''}
+      // Stories inside this event (timeline proxy)
+      query(`
+        SELECT sc.id, sc.title, sc.summary, sc.story_type, sc.coverage_status,
+               sc.article_count, sc.source_count, sc.importance_score,
+               sc.first_seen, sc.last_seen
+        FROM event_cluster_stories ecs
+        JOIN story_clusters sc ON sc.id = ecs.story_id
+        WHERE ecs.event_id = $1
+        ORDER BY sc.last_seen DESC
+        LIMIT 20
+      `, [id]),
 
-  <div class="footer">Generado por Panorama CMS · ${new Date().toLocaleString('es-AR')} · Confidencial</div>
-</div></body></html>`;
+      // Named entities across this event
+      query(`
+        SELECT ke.id, ke.name, ke.entity_type, ke.mention_count
+        FROM story_entities se
+        JOIN knowledge_entities ke ON ke.id = se.entity_id
+        JOIN event_cluster_stories ecs ON ecs.story_id = se.story_id
+        WHERE ecs.event_id = $1
+        GROUP BY ke.id, ke.name, ke.entity_type, ke.mention_count
+        ORDER BY ke.mention_count DESC
+        LIMIT 30
+      `, [id]),
 
-    browser = await chromium.launch({ headless: true });
-    logBrowserLifecycle('BROWSER_CREATED', 'PDF Export');
-    page = await browser.newPage();
-    logBrowserLifecycle('PAGE_CREATED', 'PDF Export');
-    await page.setContent(html, { waitUntil: 'domcontentloaded' });
-    const pdf = await page.pdf({
-      format:          'A4',
-      printBackground: true,
-      margin:          { top: '0', bottom: '0', left: '0', right: '0' },
+      // Media coverage breakdown
+      query(`
+        SELECT ts.id, ts.name AS source_name,
+               COUNT(DISTINCT ma.id)::int AS article_count,
+               MIN(ma.detected_at) AS first_article,
+               MAX(ma.detected_at) AS last_article
+        FROM event_cluster_stories ecs
+        JOIN story_cluster_articles sca ON sca.story_id = ecs.story_id
+        JOIN monitored_articles ma ON ma.id = sca.article_id
+        JOIN rss_sources ts ON ts.id = ma.source_id
+        WHERE ecs.event_id = $1
+        GROUP BY ts.id, ts.name
+        ORDER BY article_count DESC
+      `, [id]),
+
+      // Editorial opportunities for this event
+      query(`
+        SELECT id, type, title, traffic_potential, difficulty, status, seo_value, created_at
+        FROM editorial_opportunities
+        WHERE event_id = $1 AND status NOT IN ('dismissed')
+        ORDER BY seo_value DESC NULLS LAST
+      `, [id]),
+
+      // Story opportunities for stories inside this event
+      query(`
+        SELECT DISTINCT ON (so.id)
+          so.id, so.title, so.opportunity_type AS type,
+          so.composite_score, so.traffic_score, so.seo_score,
+          so.status, so.trigger, so.created_at
+        FROM story_opportunities so
+        JOIN event_cluster_stories ecs ON ecs.story_id = so.story_cluster_id
+        WHERE ecs.event_id = $1 AND so.status NOT IN ('dismissed')
+        ORDER BY so.id, so.composite_score DESC NULLS LAST
+        LIMIT 20
+      `, [id]),
+    ]);
+
+    res.json({
+      event,
+      timeline:            timelineR.rows,
+      entities:            entitiesR.rows,
+      media:               mediaR.rows,
+      opportunities:       opportunitiesR.rows,
+      story_opportunities: storyOppsR.rows,
     });
-
-    const slug = event.headline.slice(0, 40).replace(/[^a-z0-9]/gi, '-').toLowerCase();
-    res.set('Content-Type', 'application/pdf');
-    res.set('Content-Disposition', `attachment; filename="dossier-${id}-${slug}.pdf"`);
-    res.send(pdf);
-  } catch (e) {
-    next(e);
-  } finally {
-    if (page) {
-      logBrowserLifecycle('PAGE_CLOSED', 'PDF Export');
-      await page.close().catch(() => {});
-    }
-    if (browser) {
-      logBrowserLifecycle('BROWSER_CLOSED', 'PDF Export');
-      await browser.close().catch(() => {});
-    }
-  }
+  } catch (e) { next(e); }
 });
 
 export default router;

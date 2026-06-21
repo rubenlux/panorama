@@ -9,8 +9,8 @@ router.get('/stats', requireAuth, async (req, res, next) => {
   try {
     const { rows: [r] } = await query(`
       SELECT
-        (SELECT COUNT(*)::int FROM tracked_sources   WHERE enabled = true)                                  AS sources_active,
-        (SELECT COUNT(*)::int FROM tracked_sources)                                                         AS sources_total,
+        (SELECT COUNT(*)::int FROM rss_sources   WHERE enabled = true)                                  AS sources_active,
+        (SELECT COUNT(*)::int FROM rss_sources)                                                         AS sources_total,
         (SELECT COUNT(*)::int FROM monitored_articles WHERE detected_at > now() - interval '24 hours')      AS articles_today,
         (SELECT COUNT(*)::int FROM trending_topics    WHERE last_seen_at > now() - interval '30 minutes')   AS trending_now,
         (SELECT COUNT(*)::int FROM story_opportunities so
@@ -18,8 +18,8 @@ router.get('/stats', requireAuth, async (req, res, next) => {
          WHERE so.status = 'pending'
            AND sc.last_seen > now() - interval '7 days'
            AND sc.is_recurring = false)                                                                     AS opportunities,
-        (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)                                AS last_worker_run,
-        extract(epoch FROM (now() - (SELECT MAX(last_checked) FROM tracked_sources WHERE enabled = true)))::int
+        (SELECT MAX(last_checked) FROM rss_sources WHERE enabled = true)                                AS last_worker_run,
+        extract(epoch FROM (now() - (SELECT MAX(last_checked) FROM rss_sources WHERE enabled = true)))::int
                                                                                                             AS worker_idle_seconds
     `);
     res.json(r);
@@ -56,7 +56,7 @@ router.get('/content-stats', requireAuth, async (req, res, next) => {
         COUNT(*) FILTER (WHERE ma.extraction_method = 'rss_only')::int        AS rss_only,
         ROUND(AVG(ma.content_words) FILTER (WHERE ma.extraction_method IN ('fetch','playwright'))) AS avg_words
       FROM monitored_articles ma
-      JOIN tracked_sources ts ON ts.id = ma.source_id
+      JOIN rss_sources ts ON ts.id = ma.source_id
       WHERE ma.detected_at > now() - ($1 || ' days')::interval
       GROUP BY ts.id, ts.name
       HAVING COUNT(*) > 3
@@ -76,7 +76,7 @@ router.get('/sources', requireAuth, async (req, res, next) => {
         CASE WHEN last_checked IS NULL THEN NULL
              ELSE extract(epoch FROM (now() - last_checked))::int
         END AS seconds_since_check
-       FROM tracked_sources ORDER BY enabled DESC, name`
+       FROM rss_sources ORDER BY enabled DESC, name`
     );
     res.json({ items: rows });
   } catch (e) { next(e); }
@@ -90,7 +90,7 @@ router.post('/sources', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'name and rss_url are required' });
     }
     const { rows } = await query(
-      `INSERT INTO tracked_sources (name, type, rss_url, homepage, check_interval)
+      `INSERT INTO rss_sources (name, type, rss_url, homepage, check_interval)
        VALUES ($1,$2,$3,$4,$5) RETURNING *`,
       [name.trim(), type, rss_url.trim(), homepage || null, check_interval]
     );
@@ -104,7 +104,7 @@ router.put('/sources/:id', requireAuth, async (req, res, next) => {
     const { id } = req.params;
     const { name, type, rss_url, homepage, enabled, check_interval } = req.body;
     const { rows } = await query(
-      `UPDATE tracked_sources SET
+      `UPDATE rss_sources SET
          name           = COALESCE($1, name),
          type           = COALESCE($2, type),
          rss_url        = COALESCE($3, rss_url),
@@ -122,7 +122,7 @@ router.put('/sources/:id', requireAuth, async (req, res, next) => {
 // DELETE /monitor/sources/:id
 router.delete('/sources/:id', requireAuth, async (req, res, next) => {
   try {
-    await query('DELETE FROM tracked_sources WHERE id = $1', [req.params.id]);
+    await query('DELETE FROM rss_sources WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
   } catch (e) { next(e); }
 });
@@ -156,7 +156,7 @@ const XML_FORMAT_LABELS = {
 // POST /monitor/sources/:id/verify
 router.post('/sources/:id/verify', requireAuth, async (req, res, next) => {
   try {
-    const { rows: [source] } = await query('SELECT * FROM tracked_sources WHERE id = $1', [req.params.id]);
+    const { rows: [source] } = await query('SELECT * FROM rss_sources WHERE id = $1', [req.params.id]);
     if (!source) return res.status(404).json({ error: 'Source not found' });
 
     const userId = parseInt(req.user?.sub) || null;
@@ -231,7 +231,7 @@ router.post('/sources/:id/verify', requireAuth, async (req, res, next) => {
     }
 
     const { rows: [updated] } = await query(
-      `UPDATE tracked_sources
+      `UPDATE rss_sources
          SET verification_status       = $1,
              verified_at               = NOW(),
              verified_by               = $2,
@@ -259,7 +259,7 @@ router.post('/sources/:id/approve', requireAuth, async (req, res, next) => {
     const userId = parseInt(req.user?.sub) || null;
 
     const { rows: [updated] } = await query(
-      `UPDATE tracked_sources
+      `UPDATE rss_sources
          SET verification_status = 'approved', verified_at = NOW(), verified_by = $1
        WHERE id = $2 RETURNING *`,
       [userId, req.params.id]
@@ -329,7 +329,7 @@ router.get('/articles', requireAuth, async (req, res, next) => {
           '[]'
         ) AS entities
       FROM monitored_articles ma
-      JOIN tracked_sources ts ON ts.id = ma.source_id
+      JOIN rss_sources ts ON ts.id = ma.source_id
       LEFT JOIN article_entity_matches aem ON aem.article_id = ma.id
       LEFT JOIN knowledge_entities ke ON ke.id = aem.entity_id
       WHERE ${where}
@@ -483,7 +483,7 @@ router.get('/story/:id/explain', requireAuth, async (req, res, next) => {
         sca.linked_at
       FROM story_cluster_articles sca
       JOIN monitored_articles ma ON ma.id = sca.article_id
-      JOIN tracked_sources    ts ON ts.id = ma.source_id
+      JOIN rss_sources    ts ON ts.id = ma.source_id
       WHERE sca.story_id = $1
       ORDER BY sca.relevance_score DESC, sca.linked_at ASC
     `, [req.params.id]);

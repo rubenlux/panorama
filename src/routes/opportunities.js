@@ -69,7 +69,7 @@ router.get('/', requireAuth, async (req, res, next) => {
           SELECT json_agg(DISTINCT ts.name ORDER BY ts.name)
           FROM story_cluster_articles sca
           JOIN monitored_articles ma ON ma.id = sca.article_id
-          JOIN tracked_sources ts ON ts.id = ma.source_id
+          JOIN rss_sources ts ON ts.id = ma.source_id
           WHERE sca.story_id = sc.id
         ) AS story_sources
       FROM story_opportunities so
@@ -171,7 +171,7 @@ router.post('/:id/create-dossier', requireAuth, async (req, res, next) => {
              ma.content_words, ts.name AS source_name, sca.relevance_score
       FROM story_cluster_articles sca
       JOIN monitored_articles ma ON ma.id = sca.article_id
-      JOIN tracked_sources    ts ON ts.id = ma.source_id
+      JOIN rss_sources    ts ON ts.id = ma.source_id
       WHERE sca.story_id = $1
         AND sca.relevance_score >= 0.30
       ORDER BY sca.relevance_score DESC, ma.detected_at DESC

@@ -37,6 +37,7 @@ import opportunitiesRoutes from "./routes/opportunities.js";
 import socialRoutes from "./routes/social.js";
 import marketsRoutes from "./routes/markets.js";
 import editorialDossiersRoutes from "./routes/editorial-dossiers.js";
+import coverageRoutes from "./routes/coverage.js";
 import editorialGraphRoutes    from "./routes/editorial-graph.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 const __filename = fileURLToPath(import.meta.url);
@@ -90,6 +91,7 @@ export function createApp() {
   app.use("/social", socialRoutes);
   app.use("/markets", marketsRoutes);
   app.use("/editorial-dossiers", editorialDossiersRoutes);
+  app.use("/coverage",           coverageRoutes);
   app.use("/editorial",         editorialGraphRoutes);
 
 

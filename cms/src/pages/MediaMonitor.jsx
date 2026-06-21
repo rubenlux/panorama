@@ -1127,10 +1127,16 @@ export default function MediaMonitor() {
             {/* Add source */}
             <div style={{ marginBottom: 16 }}>
               {!addOpen ? (
-                <button onClick={() => setAddOpen(true)}
-                  style={{ padding: '8px 16px', borderRadius: 8, background: '#6366f1', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
-                  + Agregar fuente
-                </button>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <button onClick={() => setAddOpen(true)}
+                    style={{ padding: '8px 16px', borderRadius: 8, background: '#6366f1', color: 'white', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
+                    + Agregar fuente RSS
+                  </button>
+                  <button onClick={() => navigate('/monitor/tracked')}
+                    style={{ padding: '8px 16px', borderRadius: 8, background: '#fff', color: '#6366f1', border: '1px solid #6366f1', cursor: 'pointer', fontWeight: 600, fontSize: 14 }}>
+                    🌐 Coverage Monitor (URLs)
+                  </button>
+                </div>
               ) : (
                 <form onSubmit={handleAddSource} style={{ background: 'white', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <input value={addForm.name} onChange={e => setAddForm(p => ({...p, name: e.target.value}))} placeholder="Nombre *" style={inputStyle} required />
