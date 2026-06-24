@@ -182,6 +182,99 @@ function formatContextAsText(context, intent) {
 }
 
 /**
+ * DEBUG ENDPOINT: Inspect entire pipeline
+ * GET /openclaw/debug?question=XXX
+ */
+router.get('/debug', requireAuth, async (req, res, next) => {
+  try {
+    const { question } = req.query;
+    if (!question) return res.status(400).json({ error: 'Question required' });
+
+    const startTime = Date.now();
+    const debug = {};
+
+    // Step 1: Parse question
+    debug.step_1_parse = {
+      input: question,
+      output: parseQuestion(question)
+    };
+    const parsed = debug.step_1_parse.output;
+
+    // Step 2: Build context
+    debug.step_2_context_builder = {
+      intent: parsed.intent,
+      entity: parsed.entity
+    };
+
+    let context = {};
+    try {
+      switch (parsed.intent) {
+        case 'what_happening':
+          const whatsHappening = await ContextBuilder.buildWhatsHappening();
+          context = whatsHappening.context;
+          break;
+        case 'entity_update':
+          if (parsed.entity) {
+            const entity = await ContextBuilder.buildEntityContext(parsed.entity);
+            context = entity.context;
+          }
+          break;
+        default:
+          const def = await ContextBuilder.buildWhatsHappening();
+          context = def.context;
+      }
+    } catch (e) {
+      debug.step_2_context_builder.error = e.message;
+    }
+
+    debug.step_2_context_builder.context_keys = Object.keys(context);
+    debug.step_2_context_builder.context_sample = {
+      stories_count: context.stories?.items?.length || 0,
+      events_count: context.events?.items?.length || 0,
+      social_count: context.social?.items?.length || 0,
+      coverage_count: context.coverage?.length || 0
+    };
+
+    // Step 3: Build panorama (if what_happening)
+    debug.step_3_panorama = { skipped: parsed.intent !== 'what_happening' };
+    if (parsed.intent === 'what_happening') {
+      try {
+        const panorama = await PanoramaBuilder.buildDailyPanorama();
+        debug.step_3_panorama.success = !!panorama;
+        if (panorama) {
+          debug.step_3_panorama.global_stats = panorama.global_stats;
+          debug.step_3_panorama.top_stories_count = panorama.top_stories?.length || 0;
+        }
+      } catch (e) {
+        debug.step_3_panorama.error = e.message;
+      }
+    }
+
+    // Step 4: Prepare narrative
+    debug.step_4_narrative = { intent: parsed.intent };
+    try {
+      let narrative = 'PENDIENTE';
+      if (parsed.intent === 'what_happening') {
+        const result = await NarrativeBuilder.buildDayNarrative(context);
+        narrative = result.narrative?.substring(0, 200) + '...';
+      } else if (parsed.entity) {
+        const result = await NarrativeBuilder.buildEntityNarrative(parsed.entity, context);
+        narrative = result.narrative?.substring(0, 200) + '...';
+      }
+      debug.step_4_narrative.output_preview = narrative;
+    } catch (e) {
+      debug.step_4_narrative.error = e.message;
+    }
+
+    debug.elapsed_ms = Date.now() - startTime;
+
+    return res.json(debug);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * POST /openclaw/ask
  * Input: { question: string }
  * Output: { answer, context, elapsed, sources, synthesized }
@@ -197,8 +290,12 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'Question required' });
     }
 
+    console.log('\n=== OPENCLAW REQUEST ===');
+    console.log('Question:', question);
+
     const session = getSession(userId);
     const parsed = parseQuestion(question);
+    console.log('Parsed:', { intent: parsed.intent, entity: parsed.entity, requiresSynthesis: parsed.requiresSynthesis });
 
     // If no entity detected, use last entity from session
     if (!parsed.entity && session.lastEntity) {
@@ -249,9 +346,17 @@ router.post('/ask', requireAuth, async (req, res, next) => {
           }
       }
     } catch (error) {
-      console.warn('OpenClaw context error:', error.message);
-      // Graceful degradation: respond with partial context
+      console.error('[OpenClaw] Context Builder error:', error.message, error.stack);
     }
+
+    console.log('Context built:', {
+      stories: context.stories?.items?.length || context.stories?.length || 0,
+      events: context.events?.items?.length || context.events?.length || 0,
+      social: context.social?.items?.length || context.social?.length || 0,
+      coverage: context.coverage?.items?.length || context.coverage?.length || 0,
+      opportunities: context.opportunities?.items?.length || context.opportunities?.length || 0,
+      keys: Object.keys(context)
+    });
 
     // Update session
     if (parsed.entity) {
