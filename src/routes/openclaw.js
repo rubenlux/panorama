@@ -30,7 +30,7 @@ const apiClient = {
 
 const openClaw = new OpenClawService(apiClient);
 
-// Session memory (in-memory, per-user, 1h TTL)
+// Session memory (in-memory, per-user, 10min TTL)
 const sessionMemory = new Map();
 
 function getSession(userId) {
@@ -40,11 +40,128 @@ function getSession(userId) {
       lastEntity: null,
       lastContext: {},
       conversationHistory: [],
-      expiresAt: Date.now() + 3600000 // 1 hour
+      expiresAt: Date.now() + 600000 // 10 minutes
     };
     sessionMemory.set(userId, session);
   }
   return session;
+}
+
+/**
+ * Format context as readable text (not JSON)
+ */
+function formatContextAsText(context, intent) {
+  if (intent === 'what_happening') {
+    let text = '🔥 **Hoy**\n\n';
+
+    if (context.stories?.items?.length) {
+      text += '**Historias principales:**\n';
+      context.stories.items.slice(0, 3).forEach((s, i) => {
+        text += `${i + 1}. ${s.title}\n`;
+        text += `   📰 ${s.article_count} artículos • 🔗 ${s.source_count} medios\n`;
+        text += `   ${s.coverage_status || 'monitoring'}\n\n`;
+      });
+    }
+
+    if (context.events?.items?.length) {
+      text += '**Eventos creciendo:**\n';
+      context.events.items.forEach(e => {
+        text += `• ${e.headline} (${e.coverage_status})\n`;
+      });
+      text += '\n';
+    }
+
+    if (context.opportunities?.items?.length) {
+      text += '**Oportunidades:**\n';
+      context.opportunities.items.slice(0, 3).forEach(o => {
+        text += `• ${o.title} (score: ${o.composite_score?.toFixed(0) || '—'})\n`;
+      });
+    }
+
+    return text;
+  }
+
+  if (intent === 'entity_update') {
+    const entity = context.entity || 'Entidad';
+    let text = `📊 **${entity}**\n\n`;
+
+    if (context.stories?.length) {
+      text += `**Historias:** ${context.stories.length} encontradas\n`;
+      context.stories.slice(0, 2).forEach(s => {
+        text += `• ${s.title}\n`;
+      });
+      text += '\n';
+    }
+
+    if (context.events?.length) {
+      text += `**Eventos:** ${context.events.length} encontrados\n`;
+      context.events.forEach(e => {
+        text += `• ${e.headline}\n`;
+      });
+      text += '\n';
+    }
+
+    if (context.social?.length) {
+      text += `**Social:** ${context.social.length} clusters\n`;
+      context.social.slice(0, 2).forEach(s => {
+        text += `• ${s.title} (${s.total_engagement?.toLocaleString() || '0'} engagement)\n`;
+      });
+      text += '\n';
+    }
+
+    if (context.coverage?.length) {
+      text += `**Coverage:** ${context.coverage.length} cambios recientes\n`;
+      context.coverage.slice(0, 2).forEach(c => {
+        text += `• ${c.source_name}: ${c.change_type}\n`;
+      });
+    }
+
+    return text;
+  }
+
+  if (intent === 'coverage_changes') {
+    let text = '📊 **Cambios en Coverage**\n\n';
+
+    if (context.changes?.length) {
+      const bySource = {};
+      context.changes.forEach(c => {
+        if (!bySource[c.source_name]) bySource[c.source_name] = { adds: 0, changes: 0 };
+        if (c.change_type === 'link_added') bySource[c.source_name].adds++;
+        else bySource[c.source_name].changes++;
+      });
+
+      Object.entries(bySource).forEach(([source, stats]) => {
+        if (stats.adds) text += `• **${source}:** +${stats.adds} artículos\n`;
+        if (stats.changes) text += `  └─ ${stats.changes} cambios\n`;
+      });
+    }
+
+    return text;
+  }
+
+  if (intent === 'opportunities') {
+    let text = '🎯 **Oportunidades por prioridad**\n\n';
+
+    if (context.opportunities?.items?.length) {
+      context.opportunities.items.slice(0, 5).forEach((o, i) => {
+        text += `${i + 1}. ${o.title}\n`;
+        text += `   Score: ${o.composite_score?.toFixed(0) || '—'} `;
+        text += `| Tráfico: ${o.traffic_score || '—'} | Editorial: ${o.editorial_score || '—'}\n\n`;
+      });
+    }
+
+    return text;
+  }
+
+  // Fallback: simple text summary
+  return Object.entries(context)
+    .filter(([k, v]) => v && (Array.isArray(v) || Object.keys(v || {}).length > 0))
+    .map(([k, v]) => {
+      if (Array.isArray(v)) return `**${k}**: ${v.length} items`;
+      if (v?.items) return `**${k}**: ${v.items.length} items`;
+      return `**${k}**: found`;
+    })
+    .join('\n');
 }
 
 /**
@@ -124,7 +241,7 @@ router.post('/ask', requireAuth, async (req, res, next) => {
 
     const elapsed = Date.now() - startTime;
 
-    // No LLM for simple queries
+    // No LLM for simple queries — return formatted readable text
     if (!parsed.requiresSynthesis) {
       const sourcesCount = Object.values(context).reduce((sum, val) => {
         if (Array.isArray(val)) return sum + val.length;
@@ -132,7 +249,10 @@ router.post('/ask', requireAuth, async (req, res, next) => {
         return sum;
       }, 0);
 
+      const textResponse = formatContextAsText(context, parsed.intent);
+
       return res.json({
+        answer: textResponse,
         context,
         elapsed,
         sources: sourcesCount,
