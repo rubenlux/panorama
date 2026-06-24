@@ -331,19 +331,15 @@ router.post('/ask', requireAuth, async (req, res, next) => {
         synthesized: true
       });
     } catch (error) {
-      console.warn('OpenClaw synthesis error:', error.message);
-      // Fallback: return best-effort narrative
+      console.error('OpenClaw synthesis error:', error.message, error.stack);
+      // If synthesis fails, return error message, NOT raw data dump
       return res.json({
-        answer: formatContextAsText(context, parsed.intent),
-        context,
+        answer: `Error procesando tu pregunta: ${error.message}. Intenta de nuevo.`,
+        context: {},
         elapsed: Date.now() - startTime,
-        sources: Object.values(context).reduce((sum, val) => {
-          if (Array.isArray(val)) return sum + val.length;
-          if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
-          return sum;
-        }, 0),
+        sources: 0,
         synthesized: false,
-        error: 'Synthesis unavailable, returning structured summary'
+        error: error.message
       });
     }
   } catch (error) {
