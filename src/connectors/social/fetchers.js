@@ -220,6 +220,16 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
           if (/^[a-zA-Z0-9+/]{2,25}\.(com|me|net|ar|org)/.test(text)) return true;
           if (/^[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑA-Za-z\s]+\.COM\n/.test(text)) return true;
           if (/\n(Canal|Página|Grupo)\s*·\s*[\d]/.test(text)) return true;
+          // Repetición de "Facebook" sin newline (FacebookFacebookFacebook...)
+          if (/(Facebook){3,}/i.test(text)) return true;
+          // "Compartido con: Público/Amigos/Tus amigos"
+          if (/^Compartido con:/i.test(text)) return true;
+          // Nombre de página + "verificada" (ej: "Clarín verificada")
+          if (/^[\w\s]{1,50}\s+verificad[ao]$/i.test(text.trim())) return true;
+          // Token tracking de Facebook (bloque alfanumérico sin espacios, >25 chars)
+          if (/^[A-Za-z0-9]{25,}(\s[A-Za-z0-9]{15,})*$/.test(text.trim())) return true;
+          // "Página verificada · N seguidores"
+          if (/verificad[ao]\s*·/.test(text)) return true;
           return false;
         };
 

@@ -209,6 +209,26 @@ function extractWords(title) {
   )];
 }
 
+// ── Title sanitization ────────────────────────────────────────────────────────
+
+function cleanSocialTitle(raw) {
+  if (!raw) return null;
+  // Tomar la primera línea no vacía como candidato
+  const firstLine = raw.split('\n').map(l => l.trim()).find(l => l.length >= 15);
+  if (!firstLine) return null;
+  // Rechazar tokens tracking (alfanumérico sin espacios, >25 chars)
+  if (/^[A-Za-z0-9]{25,}/.test(firstLine)) return null;
+  // Rechazar repetición de "Facebook"
+  if (/(Facebook){3,}/i.test(firstLine)) return null;
+  // Rechazar "Compartido con:"
+  if (/^Compartido con:/i.test(firstLine)) return null;
+  // Rechazar "verificada" solo o con nombre corto
+  if (/^[\w\s]{1,50}\s+verificad[ao]$/i.test(firstLine)) return null;
+  // Rechazar URLs crudas
+  if (/^https?:\/\//.test(firstLine)) return null;
+  return firstLine.slice(0, 300);
+}
+
 // ── Clustering 2.0 ───────────────────────────────────────────────────────────
 
 export async function clusterNewPosts(newPostIds) {
@@ -315,6 +335,16 @@ export async function recalcClusterMetrics(clusterIds) {
   await query(`
     UPDATE social_clusters sc
     SET
+      title            = COALESCE((
+        SELECT sp.title FROM social_cluster_posts scp2
+        JOIN social_posts sp ON sp.id = scp2.post_id
+        WHERE scp2.cluster_id = sc.id
+          AND sp.title IS NOT NULL
+          AND LENGTH(sp.title) >= 15
+          AND sp.title NOT SIMILAR TO '[A-Za-z0-9]{25,}%'
+        ORDER BY sp.likes DESC
+        LIMIT 1
+      ), sc.title),
       post_count       = stats.post_count,
       source_count     = stats.source_count,
       sources_count    = stats.source_count,
@@ -694,7 +724,8 @@ export async function runSocialMonitor() {
       postsFound = posts.length;
 
       for (const p of posts) {
-        if (!p.external_id || !p.title?.trim()) continue;
+        const cleanedTitle = cleanSocialTitle(p.title);
+        if (!p.external_id || !cleanedTitle) continue;
         try {
           const res = await query(`
             INSERT INTO social_posts
@@ -712,7 +743,7 @@ export async function runSocialMonitor() {
           `, [
             source.id, p.platform, p.external_id, p.url || '',
             p.published_at || new Date().toISOString(),
-            p.title.slice(0, 500), p.content || '', p.thumbnail_url || '',
+            cleanedTitle.slice(0, 500), p.content || '', p.thumbnail_url || '',
             p.views || 0, p.likes || 0, p.comments || 0, p.shares || 0,
             p.engagement_score || 0, JSON.stringify(p.keywords || [])
           ]);

@@ -314,6 +314,7 @@ router.get('/clusters', async (req, res, next) => {
     const limit    = Math.min(parseInt(req.query.limit)  || 100, 300);
     const hours    = parseInt(req.query.hours) || 0;
     const platform = req.query.platform || '';
+    const sort     = req.query.sort || 'trend';
 
     const params = [];
     let timeCondition     = '';
@@ -328,12 +329,22 @@ router.get('/clusters', async (req, res, next) => {
       platformCondition = `AND $${params.length} = ANY(COALESCE(agg.platforms, '{}'))`;
     }
 
+    const sortClause = {
+      recent:     'sc.last_seen DESC',
+      engagement: 'sc.total_engagement DESC, sc.viral_score DESC',
+      trend:      'trend_score DESC, sc.total_engagement DESC',
+    }[sort] ?? 'trend_score DESC, sc.total_engagement DESC';
+
     const data = await query(`
       SELECT sc.*,
         COALESCE(sc.opportunity_score, 0) AS opportunity_score,
         CASE WHEN COALESCE(sc.opportunity_score,0) >= 70 THEN 'MUY_ALTA'
              WHEN COALESCE(sc.opportunity_score,0) >= 40 THEN 'MEDIA'
              ELSE 'BAJA' END AS opportunity_tier,
+        ROUND(
+          COALESCE(sc.total_engagement, 0)::numeric /
+          GREATEST(EXTRACT(EPOCH FROM (now() - sc.last_seen)) / 60, 1),
+        4) AS trend_score,
         COALESCE(agg.platforms, '{}') AS platforms,
         COALESCE(agg.regions,   '{}') AS regions,
         COALESCE(agg.sources,   '{}') AS sources
@@ -351,7 +362,7 @@ router.get('/clusters', async (req, res, next) => {
       WHERE sc.status = 'active'
         ${timeCondition}
         ${platformCondition}
-      ORDER BY sc.viral_score DESC, sc.total_engagement DESC
+      ORDER BY ${sortClause}
       LIMIT ${limit}
     `, params);
     res.json({ items: data.rows });

@@ -254,6 +254,7 @@ export const getSocialClusters = (params = {}) => {
   if (params.hours)  qs.set('hours',  params.hours);
   if (params.limit)  qs.set('limit',  params.limit);
   if (params.status) qs.set('status', params.status);
+  if (params.sort)   qs.set('sort',   params.sort);
   return apiJson(`/social/clusters?${qs}`, { auth: true });
 };
 

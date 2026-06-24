@@ -488,6 +488,7 @@ export default function SocialIntelligence() {
   const [filterRegion,   setFilterRegion]   = useState('');
   const [filterPlatform, setFilterPlatform] = useState('');
   const [hours,          setHours]          = useState(48);
+  const [sortBy,         setSortBy]         = useState('trend');
 
   // Load stats always
   useEffect(() => {
@@ -499,7 +500,7 @@ export default function SocialIntelligence() {
   useEffect(() => {
     if (tab === 0) {
       setLoadingClusters(true);
-      apiJson(`/social/clusters?hours=${hours}&limit=300`, { auth: true })
+      apiJson(`/social/clusters?hours=${hours}&limit=300&sort=${sortBy}`, { auth: true })
         .then(d => setClusters(d.items || []))
         .catch(() => {})
         .finally(() => setLoadingClusters(false));
@@ -516,7 +517,7 @@ export default function SocialIntelligence() {
         .catch(() => {})
         .finally(() => setLoadingGap(false));
     }
-  }, [tab, hours]);
+  }, [tab, hours, sortBy]);
 
   const maxEngagement = clusters.length > 0 ? Math.max(...clusters.map(c => c.total_engagement || 0)) : 1;
 
@@ -628,8 +629,33 @@ export default function SocialIntelligence() {
             />
           ) : (
             <>
-              <div style={{ fontSize: 13, color: '#6b7280', marginBottom: 12 }}>
-                {filteredClusters.length} temas · ordenados por engagement total (Haz click en un cluster para ver el contenido)
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+                <div style={{ fontSize: 13, color: '#6b7280' }}>
+                  {filteredClusters.length} temas (Haz click en un cluster para ver el contenido)
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  {[
+                    { value: 'trend',      label: '🔥 Tendencia' },
+                    { value: 'recent',     label: '🕐 Reciente' },
+                    { value: 'engagement', label: '⭐ Engagement' },
+                  ].map(opt => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setSortBy(opt.value)}
+                      style={{
+                        padding: '5px 12px',
+                        borderRadius: 6,
+                        border: sortBy === opt.value ? '2px solid #2b5cff' : '1px solid #d1d5db',
+                        background: sortBy === opt.value ? '#eff6ff' : '#f9fafb',
+                        color: sortBy === opt.value ? '#2b5cff' : '#6b7280',
+                        fontWeight: sortBy === opt.value ? 700 : 500,
+                        fontSize: 12,
+                        cursor: 'pointer',
+                      }}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
               </div>
               {filteredClusters.map(c => (
                 <div key={c.id} style={{ cursor: 'pointer' }} onClick={() => setDrillDown({ type: 'cluster', item: c })}>
