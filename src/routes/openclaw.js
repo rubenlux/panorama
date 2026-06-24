@@ -1,21 +1,24 @@
 /**
  * OpenClaw Routes
- * Conversational interface to editorial intelligence
- * - POST /openclaw/ask — answer natural language questions
- * - Calls services directly (no HTTP, no auth issues)
- * - Optional LLM synthesis for complex queries
+ * Editorial intelligence engine
+ * - Conversational interface to Panorama
+ * - Uses Sonnet (NOT Haiku) for synthesis
+ * - Simple, direct pipeline: Parse → Context → Sonnet → Response
  */
 
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
 import ContextBuilder from '../services/ContextBuilder.js';
-import NarrativeBuilder from '../services/NarrativeBuilder.js';
-import PanoramaBuilder from '../services/PanoramaBuilder.js';
+import Anthropic from '@anthropic-ai/sdk';
 
 const router = express.Router();
+const claude = new Anthropic();
 
-// Session memory (in-memory, per-user, 10min TTL)
+// FORCE Sonnet for editorial reasoning
+const MODEL = 'claude-sonnet-4-6';
+
+// Session memory (10 min TTL)
 const sessionMemory = new Map();
 
 function getSession(userId) {
@@ -23,8 +26,6 @@ function getSession(userId) {
   if (!session || Date.now() > session.expiresAt) {
     session = {
       lastEntity: null,
-      lastContext: {},
-      conversationHistory: [],
       expiresAt: Date.now() + 600000 // 10 minutes
     };
     sessionMemory.set(userId, session);
@@ -33,253 +34,8 @@ function getSession(userId) {
 }
 
 /**
- * Format context as readable text (not JSON)
- */
-function formatContextAsText(context, intent) {
-  if (intent === 'what_happening') {
-    let text = '🔥 **Hoy**\n\n';
-
-    if (context.stories?.items?.length) {
-      text += '**Historias principales:**\n';
-      context.stories.items.slice(0, 3).forEach((s, i) => {
-        text += `${i + 1}. ${s.title}\n`;
-        text += `   📰 ${s.article_count} artículos • 🔗 ${s.source_count} medios\n`;
-        text += `   ${s.coverage_status || 'monitoring'}\n\n`;
-      });
-    }
-
-    if (context.events?.items?.length) {
-      text += '**Eventos creciendo:**\n';
-      context.events.items.forEach(e => {
-        text += `• ${e.headline} (${e.coverage_status})\n`;
-      });
-      text += '\n';
-    }
-
-    if (context.opportunities?.items?.length) {
-      text += '**Oportunidades:**\n';
-      context.opportunities.items.slice(0, 3).forEach(o => {
-        text += `• ${o.title} (score: ${o.composite_score?.toFixed(0) || '—'})\n`;
-      });
-    }
-
-    return text;
-  }
-
-  if (intent === 'entity_update') {
-    const entity = context.entity || 'Entidad';
-    let text = `📊 **${entity}**\n\n`;
-
-    // Editorial: Historias + Eventos
-    if (context.stories?.length || context.events?.length) {
-      text += '**Editorial**\n';
-
-      if (context.stories?.length) {
-        text += `📰 ${context.stories.length} historia${context.stories.length > 1 ? 's' : ''}\n`;
-        context.stories.slice(0, 2).forEach(s => {
-          text += `  • ${s.title}\n`;
-          text += `    ${s.article_count} artículos • ${s.source_count} medios\n`;
-        });
-      }
-
-      if (context.events?.length) {
-        text += `📌 ${context.events.length} evento${context.events.length > 1 ? 's' : ''}\n`;
-        context.events.slice(0, 2).forEach(e => {
-          text += `  • ${e.headline}\n`;
-        });
-      }
-      text += '\n';
-    }
-
-    // Social Intelligence
-    if (context.social?.length) {
-      text += `**Redes**\n`;
-      text += `📱 ${context.social.length} cluster${context.social.length > 1 ? 's' : ''}\n`;
-      context.social.slice(0, 2).forEach(s => {
-        text += `  • ${s.title}\n`;
-        text += `    ${s.total_engagement?.toLocaleString() || '0'} engagement\n`;
-      });
-      text += '\n';
-    }
-
-    // Trend Analysis
-    if (context.trend_analysis && context.trend_analysis.trend) {
-      text += `**Tendencia**\n`;
-      text += `${context.trend_analysis.trend === 'CRECIENDO' ? '📈' : context.trend_analysis.trend === 'ESTABLE' ? '➡️' : '📉'} ${context.trend_analysis.trend}\n`;
-      text += `${context.trend_analysis.article_count_today || 0} artículos hoy • ${context.trend_analysis.source_count || 0} medios\n\n`;
-    }
-
-    // Coverage gaps
-    if (context.coverage?.length) {
-      text += `**Coverage**\n`;
-      text += `🔍 ${context.coverage.length} cambio${context.coverage.length > 1 ? 's' : ''} recientes\n`;
-      context.coverage.slice(0, 2).forEach(c => {
-        text += `  • ${c.source_name}: ${c.change_type}\n`;
-      });
-      text += '\n';
-    }
-
-    // Uncovered opportunities
-    if (context.opportunities?.length) {
-      text += `**Oportunidades sin cubrir**\n`;
-      context.opportunities.slice(0, 2).forEach(o => {
-        text += `  💡 ${o.title}\n`;
-      });
-      text += '\n';
-    }
-
-    // Knowledge graph
-    if (context.profile) {
-      text += `**Perfil**\n`;
-      text += `${context.profile.entity_type || '—'}\n`;
-    }
-
-    return text;
-  }
-
-  if (intent === 'coverage_changes') {
-    let text = '📊 **Cambios en Coverage**\n\n';
-
-    if (context.changes?.length) {
-      const bySource = {};
-      context.changes.forEach(c => {
-        if (!bySource[c.source_name]) bySource[c.source_name] = { adds: 0, changes: 0 };
-        if (c.change_type === 'link_added') bySource[c.source_name].adds++;
-        else bySource[c.source_name].changes++;
-      });
-
-      Object.entries(bySource).forEach(([source, stats]) => {
-        if (stats.adds) text += `• **${source}:** +${stats.adds} artículos\n`;
-        if (stats.changes) text += `  └─ ${stats.changes} cambios\n`;
-      });
-    }
-
-    return text;
-  }
-
-  if (intent === 'opportunities') {
-    let text = '🎯 **Oportunidades por prioridad**\n\n';
-
-    if (context.opportunities?.length) {
-      context.opportunities.slice(0, 5).forEach((o, i) => {
-        text += `${i + 1}. ${o.title}\n`;
-        text += `   Score: ${o.composite_score?.toFixed(0) || '—'}\n\n`;
-      });
-    }
-
-    return text;
-  }
-
-  // Fallback: simple text summary
-  return Object.entries(context)
-    .filter(([k, v]) => v && (Array.isArray(v) || Object.keys(v || {}).length > 0))
-    .map(([k, v]) => {
-      if (Array.isArray(v)) return `**${k}**: ${v.length} items`;
-      if (v?.items) return `**${k}**: ${v.items.length} items`;
-      return `**${k}**: found`;
-    })
-    .join('\n');
-}
-
-/**
- * DEBUG ENDPOINT: Inspect entire pipeline
- * GET /openclaw/debug?question=XXX
- */
-router.get('/debug', requireAuth, async (req, res, next) => {
-  try {
-    const { question } = req.query;
-    if (!question) return res.status(400).json({ error: 'Question required' });
-
-    const startTime = Date.now();
-    const debug = {};
-
-    // Step 1: Parse question
-    debug.step_1_parse = {
-      input: question,
-      output: parseQuestion(question)
-    };
-    const parsed = debug.step_1_parse.output;
-
-    // Step 2: Build context
-    debug.step_2_context_builder = {
-      intent: parsed.intent,
-      entity: parsed.entity
-    };
-
-    let context = {};
-    try {
-      switch (parsed.intent) {
-        case 'what_happening':
-          const whatsHappening = await ContextBuilder.buildWhatsHappening();
-          context = whatsHappening.context;
-          break;
-        case 'entity_update':
-          if (parsed.entity) {
-            const entity = await ContextBuilder.buildEntityContext(parsed.entity);
-            context = entity.context;
-          }
-          break;
-        default:
-          const def = await ContextBuilder.buildWhatsHappening();
-          context = def.context;
-      }
-    } catch (e) {
-      debug.step_2_context_builder.error = e.message;
-    }
-
-    debug.step_2_context_builder.context_keys = Object.keys(context);
-    debug.step_2_context_builder.context_sample = {
-      stories_count: context.stories?.items?.length || 0,
-      events_count: context.events?.items?.length || 0,
-      social_count: context.social?.items?.length || 0,
-      coverage_count: context.coverage?.length || 0
-    };
-
-    // Step 3: Build panorama (if what_happening)
-    debug.step_3_panorama = { skipped: parsed.intent !== 'what_happening' };
-    if (parsed.intent === 'what_happening') {
-      try {
-        const panorama = await PanoramaBuilder.buildDailyPanorama();
-        debug.step_3_panorama.success = !!panorama;
-        if (panorama) {
-          debug.step_3_panorama.global_stats = panorama.global_stats;
-          debug.step_3_panorama.top_stories_count = panorama.top_stories?.length || 0;
-        }
-      } catch (e) {
-        debug.step_3_panorama.error = e.message;
-      }
-    }
-
-    // Step 4: Prepare narrative
-    debug.step_4_narrative = { intent: parsed.intent };
-    try {
-      let narrative = 'PENDIENTE';
-      if (parsed.intent === 'what_happening') {
-        const result = await NarrativeBuilder.buildDayNarrative(context);
-        narrative = result.narrative?.substring(0, 200) + '...';
-      } else if (parsed.entity) {
-        const result = await NarrativeBuilder.buildEntityNarrative(parsed.entity, context);
-        narrative = result.narrative?.substring(0, 200) + '...';
-      }
-      debug.step_4_narrative.output_preview = narrative;
-    } catch (e) {
-      debug.step_4_narrative.error = e.message;
-    }
-
-    debug.elapsed_ms = Date.now() - startTime;
-
-    return res.json(debug);
-  } catch (error) {
-    next(error);
-  }
-});
-
-/**
  * POST /openclaw/ask
- * Input: { question: string }
- * Output: { answer, context, elapsed, sources, synthesized }
- *
- * Architecture: No HTTP internal calls, calls services directly via ContextBuilder
+ * Simple pipeline: Question → Parse → Context → Sonnet → Response
  */
 router.post('/ask', requireAuth, async (req, res, next) => {
   try {
@@ -290,165 +46,176 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       return res.status(400).json({ error: 'Question required' });
     }
 
-    console.log('\n=== OPENCLAW REQUEST ===');
+    console.log('\n=== OPENCLAW ===');
     console.log('Question:', question);
 
     const session = getSession(userId);
     const parsed = parseQuestion(question);
-    console.log('Parsed:', { intent: parsed.intent, entity: parsed.entity, requiresSynthesis: parsed.requiresSynthesis });
+    console.log('Parsed intent:', parsed.intent, 'entity:', parsed.entity);
 
-    // If no entity detected, use last entity from session
+    // Use last entity from session if available
     if (!parsed.entity && session.lastEntity) {
       parsed.entity = session.lastEntity;
+      console.log('Using session entity:', parsed.entity);
     }
 
-    let context = {};
-    const startTime = Date.now();
-
-    // Route to appropriate handler based on intent
-    try {
-      switch (parsed.intent) {
-        case 'what_happening':
-          const whatsHappening = await ContextBuilder.buildWhatsHappening();
-          context = whatsHappening.context;
-          break;
-
-        case 'trends':
-          const trends = await ContextBuilder.buildTrends();
-          context = trends.context;
-          break;
-
-        case 'opportunities':
-          const opps = await ContextBuilder.buildOpportunities();
-          context = opps.context;
-          break;
-
-        case 'coverage_changes':
-          const coverage = await ContextBuilder.buildCoverageChanges();
-          context = coverage.context;
-          break;
-
-        case 'entity_update':
-          if (parsed.entity) {
-            const entity = await ContextBuilder.buildEntityContext(parsed.entity);
-            context = entity.context;
-          }
-          break;
-
-        default:
-          // Try entity-specific if entity exists
-          if (parsed.entity) {
-            const entity = await ContextBuilder.buildEntityContext(parsed.entity);
-            context = entity.context;
-          } else {
-            const whatsHappening = await ContextBuilder.buildWhatsHappening();
-            context = whatsHappening.context;
-          }
-      }
-    } catch (error) {
-      console.error('[OpenClaw] Context Builder error:', error.message, error.stack);
-    }
-
-    console.log('Context built:', {
-      stories: context.stories?.items?.length || context.stories?.length || 0,
-      events: context.events?.items?.length || context.events?.length || 0,
-      social: context.social?.items?.length || context.social?.length || 0,
-      coverage: context.coverage?.items?.length || context.coverage?.length || 0,
-      opportunities: context.opportunities?.items?.length || context.opportunities?.length || 0,
-      keys: Object.keys(context)
-    });
-
-    // Update session
+    // Save entity to session
     if (parsed.entity) {
       session.lastEntity = parsed.entity;
     }
-    session.lastContext = context;
 
-    const elapsed = Date.now() - startTime;
+    const startTime = Date.now();
+    let context = {};
 
-    // Build complete panorama for context-rich synthesis
-    let panorama = null;
-    if (parsed.intent === 'what_happening' || !parsed.entity) {
-      try {
-        panorama = await PanoramaBuilder.buildDailyPanorama();
-      } catch (e) {
-        console.warn('PanoramaBuilder error:', e.message);
-      }
-    }
-
-    // ALWAYS synthesize with NarrativeBuilder (OpenClaw is an editor, not a data dump)
+    // Build context based on intent
     try {
-      let narrative = '';
-      let summary = null;
+      console.log('Building context for intent:', parsed.intent);
 
       switch (parsed.intent) {
         case 'what_happening':
-          // If panorama succeeded, use it; otherwise use context
-          const dayInput = panorama || context;
-          const dayResult = await NarrativeBuilder.buildDayNarrative(dayInput);
-          narrative = dayResult.narrative;
-          if (panorama) summary = PanoramaBuilder.formatExecutiveSummary(panorama);
+          const wh = await ContextBuilder.buildWhatsHappening();
+          context = wh.context;
+          break;
+
+        case 'trends':
+          const tr = await ContextBuilder.buildTrends();
+          context = tr.context;
+          break;
+
+        case 'opportunities':
+          const op = await ContextBuilder.buildOpportunities();
+          context = op.context;
+          break;
+
+        case 'coverage_changes':
+          const cc = await ContextBuilder.buildCoverageChanges();
+          context = cc.context;
           break;
 
         case 'entity_update':
           if (parsed.entity) {
-            const entityResult = await NarrativeBuilder.buildEntityNarrative(parsed.entity, context);
-            narrative = entityResult.narrative;
-          } else if (panorama) {
-            const dayResult2 = await NarrativeBuilder.buildDayNarrative(panorama);
-            narrative = dayResult2.narrative;
-            summary = PanoramaBuilder.formatExecutiveSummary(panorama);
+            const ec = await ContextBuilder.buildEntityContext(parsed.entity);
+            context = ec.context;
           }
           break;
 
-        case 'opportunities':
-          const oppResult = await NarrativeBuilder.buildOpportunityNarrative(panorama || context);
-          narrative = oppResult.narrative;
-          break;
-
-        case 'trends':
-          const trendResult = await NarrativeBuilder.buildTrendsNarrative(panorama || context);
-          narrative = trendResult.narrative;
-          break;
-
-        case 'coverage_changes':
-          const dayResult3 = await NarrativeBuilder.buildDayNarrative(panorama || context);
-          narrative = dayResult3.narrative;
-          break;
-
         default:
-          const dayResult4 = await NarrativeBuilder.buildDayNarrative(panorama || context);
-          narrative = dayResult4.narrative;
+          if (parsed.entity) {
+            const ec = await ContextBuilder.buildEntityContext(parsed.entity);
+            context = ec.context;
+          } else {
+            const wh = await ContextBuilder.buildWhatsHappening();
+            context = wh.context;
+          }
       }
-
-      const sourcesCount = Object.values(context).reduce((sum, val) => {
-        if (Array.isArray(val)) return sum + val.length;
-        if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
-        return sum;
-      }, 0);
-
-      // Two-level response: summary + full narrative
-      return res.json({
-        answer: narrative,
-        summary: summary, // Executive summary (for quick view)
-        panorama: panorama, // Full panorama data (for expandable details)
-        context,
-        elapsed: Date.now() - startTime,
-        sources: sourcesCount,
-        synthesized: true
-      });
     } catch (error) {
-      console.error('OpenClaw synthesis error:', error.message, error.stack);
-      // If synthesis fails, return error message, NOT raw data dump
-      return res.json({
-        answer: `Error procesando tu pregunta: ${error.message}. Intenta de nuevo.`,
-        context: {},
-        elapsed: Date.now() - startTime,
-        sources: 0,
-        synthesized: false,
-        error: error.message
-      });
+      console.error('Context Builder error:', error.message);
     }
+
+    // Log what context was retrieved
+    const contextKeys = Object.keys(context);
+    const contextSample = {};
+    contextKeys.forEach(key => {
+      const val = context[key];
+      if (Array.isArray(val)) contextSample[key] = `${val.length} items`;
+      else if (val?.items) contextSample[key] = `${val.items.length} items`;
+      else if (typeof val === 'object') contextSample[key] = 'object';
+      else contextSample[key] = typeof val;
+    });
+    console.log('Context retrieved:', contextSample);
+
+    // Call Sonnet with context
+    const contextStr = JSON.stringify(context, null, 2);
+    const systemPrompt = `Eres un editor jefe de noticias de Panorama. Tu trabajo es:
+1. Leer el contexto editorial completo
+2. Identificar lo importante y lo ruido
+3. Responder la pregunta del usuario de forma editorial clara
+
+Si el contexto está vacío, dilo claramente. No inventes información.
+Responde SIEMPRE en español.`;
+
+    const userPrompt = `Pregunta: "${question}"
+
+Contexto editorial:
+${contextStr}
+
+Responde de forma concisa (máx 200 palabras), como lo haría un editor jefe.`;
+
+    console.log('Calling Sonnet...');
+
+    const message = await claude.messages.create({
+      model: MODEL,
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userPrompt }]
+    });
+
+    const answer = message.content[0].type === 'text' ? message.content[0].text : '';
+    console.log('Sonnet response received, length:', answer.length);
+
+    return res.json({
+      answer,
+      context,
+      elapsed: Date.now() - startTime,
+      sources: Object.values(context).reduce((sum, val) => {
+        if (Array.isArray(val)) return sum + val.length;
+        if (val?.items) return sum + val.items.length;
+        return sum;
+      }, 0),
+      model: MODEL
+    });
+
+  } catch (error) {
+    console.error('[OpenClaw] Error:', error.message);
+    next(error);
+  }
+});
+
+/**
+ * GET /openclaw/debug
+ * Debug endpoint to inspect the pipeline step-by-step
+ */
+router.get('/debug', requireAuth, async (req, res, next) => {
+  try {
+    const { question } = req.query;
+    if (!question) return res.status(400).json({ error: 'Question required' });
+
+    const parsed = parseQuestion(question);
+    let context = {};
+
+    try {
+      switch (parsed.intent) {
+        case 'what_happening':
+          const wh = await ContextBuilder.buildWhatsHappening();
+          context = wh.context;
+          break;
+        case 'entity_update':
+          if (parsed.entity) {
+            const ec = await ContextBuilder.buildEntityContext(parsed.entity);
+            context = ec.context;
+          }
+          break;
+        default:
+          const def = await ContextBuilder.buildWhatsHappening();
+          context = def.context;
+      }
+    } catch (error) {
+      console.error('Context error:', error.message);
+    }
+
+    return res.json({
+      step_1_parse: parsed,
+      step_2_context: {
+        keys: Object.keys(context),
+        sample: Object.entries(context).reduce((acc, [k, v]) => {
+          if (Array.isArray(v)) acc[k] = `${v.length} items`;
+          else if (v?.items) acc[k] = `${v.items.length} items`;
+          else acc[k] = typeof v;
+          return acc;
+        }, {})
+      },
+      step_3_model: MODEL
+    });
   } catch (error) {
     next(error);
   }
@@ -456,13 +223,12 @@ router.post('/ask', requireAuth, async (req, res, next) => {
 
 /**
  * GET /openclaw/session
- * Get current session context (for debugging)
+ * View current session
  */
 router.get('/session', requireAuth, (req, res) => {
   const session = getSession(req.user.sub);
   return res.json({
     lastEntity: session.lastEntity,
-    contextKeys: Object.keys(session.lastContext),
     expiresIn: Math.max(0, session.expiresAt - Date.now())
   });
 });
