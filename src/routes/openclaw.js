@@ -1,34 +1,19 @@
 /**
  * OpenClaw Routes
- * Conversational interface over Panorama APIs
- * - POST /openclaw/ask — answer natural language question
- * - Read-only, optional LLM, structured responses
+ * Conversational interface to editorial intelligence
+ * - POST /openclaw/ask — answer natural language questions
+ * - Calls services directly (no HTTP, no auth issues)
+ * - Optional LLM synthesis for complex queries
  */
 
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
-import { OpenClawService } from '../services/OpenClawService.js';
+import ContextBuilder from '../services/ContextBuilder.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const router = express.Router();
 const claude = new Anthropic();
-
-// HTTP client for OpenClawService
-const apiClient = {
-  get: async (endpoint) => {
-    const url = `http://localhost:${process.env.PORT || 5000}${endpoint}`;
-    const response = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${process.env.INTERNAL_API_TOKEN || ''}` }
-    });
-    if (!response.ok) {
-      throw new Error(`API ${endpoint} returned ${response.status}`);
-    }
-    return response.json();
-  }
-};
-
-const openClaw = new OpenClawService(apiClient);
 
 // Session memory (in-memory, per-user, 10min TTL)
 const sessionMemory = new Map();
@@ -142,11 +127,10 @@ function formatContextAsText(context, intent) {
   if (intent === 'opportunities') {
     let text = '🎯 **Oportunidades por prioridad**\n\n';
 
-    if (context.opportunities?.items?.length) {
-      context.opportunities.items.slice(0, 5).forEach((o, i) => {
+    if (context.opportunities?.length) {
+      context.opportunities.slice(0, 5).forEach((o, i) => {
         text += `${i + 1}. ${o.title}\n`;
-        text += `   Score: ${o.composite_score?.toFixed(0) || '—'} `;
-        text += `| Tráfico: ${o.traffic_score || '—'} | Editorial: ${o.editorial_score || '—'}\n\n`;
+        text += `   Score: ${o.composite_score?.toFixed(0) || '—'}\n\n`;
       });
     }
 
@@ -167,7 +151,9 @@ function formatContextAsText(context, intent) {
 /**
  * POST /openclaw/ask
  * Input: { question: string }
- * Output: { context, answer?, elapsed, sources }
+ * Output: { answer, context, elapsed, sources, synthesized }
+ *
+ * Architecture: No HTTP internal calls, calls services directly via ContextBuilder
  */
 router.post('/ask', requireAuth, async (req, res, next) => {
   try {
@@ -193,28 +179,28 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     try {
       switch (parsed.intent) {
         case 'what_happening':
-          const whatsHappening = await openClaw.getWhatsHappening();
+          const whatsHappening = await ContextBuilder.buildWhatsHappening();
           context = whatsHappening.context;
           break;
 
         case 'trends':
-          const trends = await openClaw.getTrends();
+          const trends = await ContextBuilder.buildTrends();
           context = trends.context;
           break;
 
         case 'opportunities':
-          const opps = await openClaw.getOpportunities();
+          const opps = await ContextBuilder.buildOpportunities();
           context = opps.context;
           break;
 
         case 'coverage_changes':
-          const coverage = await openClaw.getCoverageChanges();
+          const coverage = await ContextBuilder.buildCoverageChanges();
           context = coverage.context;
           break;
 
         case 'entity_update':
           if (parsed.entity) {
-            const entity = await openClaw.getEntityContext(parsed.entity);
+            const entity = await ContextBuilder.buildEntityContext(parsed.entity);
             context = entity.context;
           }
           break;
@@ -222,10 +208,11 @@ router.post('/ask', requireAuth, async (req, res, next) => {
         default:
           // Try entity-specific if entity exists
           if (parsed.entity) {
-            const entity = await openClaw.getEntityContext(parsed.entity);
+            const entity = await ContextBuilder.buildEntityContext(parsed.entity);
             context = entity.context;
           } else {
-            context = (await openClaw.getWhatsHappening()).context;
+            const whatsHappening = await ContextBuilder.buildWhatsHappening();
+            context = whatsHappening.context;
           }
       }
     } catch (error) {
@@ -281,8 +268,8 @@ Sé preciso, usa datos del contexto, no inventes información.`;
       const answer = message.content[0].type === 'text' ? message.content[0].text : '';
 
       return res.json({
-        context,
         answer,
+        context,
         elapsed: Date.now() - startTime,
         sources: Object.values(context).reduce((sum, val) => {
           if (Array.isArray(val)) return sum + val.length;
@@ -295,6 +282,7 @@ Sé preciso, usa datos del contexto, no inventes información.`;
       console.warn('OpenClaw LLM error:', llmError.message);
       // Fallback: return structured context if LLM fails
       return res.json({
+        answer: formatContextAsText(context, parsed.intent),
         context,
         elapsed: Date.now() - startTime,
         sources: Object.values(context).reduce((sum, val) => {
