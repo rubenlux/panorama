@@ -278,7 +278,9 @@ router.post('/ask', requireAuth, async (req, res, next) => {
 
       switch (parsed.intent) {
         case 'what_happening':
-          const dayResult = await NarrativeBuilder.buildDayNarrative(panorama || context);
+          // If panorama succeeded, use it; otherwise use context
+          const dayInput = panorama || context;
+          const dayResult = await NarrativeBuilder.buildDayNarrative(dayInput);
           narrative = dayResult.narrative;
           if (panorama) summary = PanoramaBuilder.formatExecutiveSummary(panorama);
           break;

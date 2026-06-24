@@ -29,7 +29,7 @@ const claude = new Anthropic();
 // Use Sonnet for complex editorial reasoning, not Haiku
 // OpenClaw reads thousands of records, finds contradictions, decides importance
 // That's complex reasoning. Sonnet is much better for this.
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-sonnet-4-6';
 
 export class NarrativeBuilder {
   /**
