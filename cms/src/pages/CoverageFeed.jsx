@@ -37,6 +37,14 @@ function formatTime(dateStr) {
   return d.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatDate(dateStr) {
+  if (!dateStr) return '—';
+  return new Date(dateStr).toLocaleDateString('es-AR', {
+    day: 'numeric', month: 'long', year: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  });
+}
+
 function formatDateGroup(dateStr) {
   if (!dateStr) return '';
   const d = new Date(dateStr);
@@ -97,6 +105,13 @@ function ChangeCard({ change, onArticleClick }) {
           {url && (
             <div style={{ fontSize: 12, color: '#9ca3af', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 500 }}>
               {url}
+            </div>
+          )}
+
+          {/* Published date (for link_added changes) */}
+          {change.change_type === 'link_added' && change.published_at && (
+            <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+              Publicado: {formatDate(change.published_at)}
             </div>
           )}
         </div>

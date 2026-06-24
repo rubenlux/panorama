@@ -69,7 +69,8 @@ router.get('/feed', requireAuth, async (req, res, next) => {
         ta.url   AS article_url,
         ta.title AS article_title,
         ta.current_position,
-        ta.is_active
+        ta.is_active,
+        ta.published_at
       FROM coverage_changes cc
       JOIN tracked_sources ts ON ts.id = cc.tracked_source_id
       LEFT JOIN tracked_articles ta ON ta.id = cc.tracked_article_id
@@ -223,7 +224,7 @@ router.get('/sources/:id/articles', requireAuth, async (req, res, next) => {
 
     const { rows } = await query(`
       SELECT id, url, title, first_detected_at, last_seen_at, current_position, is_active,
-        (content_text IS NOT NULL) AS has_content
+        published_at, (content_text IS NOT NULL) AS has_content
       FROM tracked_articles
       ${where}
       ORDER BY first_detected_at DESC

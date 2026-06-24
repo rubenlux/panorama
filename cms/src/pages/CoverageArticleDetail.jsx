@@ -87,7 +87,8 @@ export default function CoverageArticleDetail() {
       {/* Metadata grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 28 }}>
         {[
-          { label: 'Primera detección', value: formatDate(article.first_detected_at) },
+          { label: 'Publicado', value: formatDate(article.published_at) },
+          { label: 'Detectado', value: formatDate(article.first_detected_at) },
           { label: 'Última vez visto', value: formatDate(article.last_seen_at) },
           { label: 'Posición actual', value: article.current_position ? `#${article.current_position}` : '—' },
           { label: 'Fuente', value: article.source_name },

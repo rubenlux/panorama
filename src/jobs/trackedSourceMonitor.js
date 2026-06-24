@@ -21,13 +21,102 @@ function normalizeUrl(href, baseUrl) {
   }
 }
 
+// ── Editorial link filter (Coverage V2.1) ────────────────────────────────────
+//
+// Three levels applied in scrapeLinks() before any link enters tracked_articles.
+//
+// Level 1 — institutional blacklist: stats, reels, authors, legal pages, mediakit
+// Level 2 — URL shape: must be a multi-segment path with a long editorial slug (≥30 chars)
+// Level 3 — section relevance: first path segment must match the monitored topic
+//
+// Design note: TyC Sports renders ~114 nav/category links server-side on every
+// section page. Without this filter, 92% of captured links are navigation noise.
+
+const BLACKLIST_FIRST_SEGMENTS = new Set([
+  'estadisticas', 'reels', 'autor', 'author', 'periodista',
+]);
+
+const BLACKLIST_PATH_PREFIXES = [
+  '/politica-de-privacidad', '/privacy', '/sitemap',
+  '/contacto', '/contact', '/terminos', '/cookies',
+];
+
+const BLACKLIST_DOMAINS = ['mediakit.'];
+
+// An editorial article slug on TyC Sports is ≥30 chars (e.g. "cavani-se-va-de-boca-rescindira-su-contrato-id736810.html" = 57 chars).
+// Subcategory pages have short last segments: "liga-mx.html"=12, "austria.html"=12, "seleccion-argentina.html"=24.
+const SLUG_MIN_LENGTH = 30;
+
+// Maps source section name → allowed first-path-segments for its articles.
+// Needed when articles live under a path different from the source page's filename.
+// Example: Los Pumas source is /los-pumas.html but its articles are under /rugby/...
+const SECTION_MAP = {
+  'los-pumas':           ['los-pumas', 'rugby'],
+  'seleccion-argentina': ['seleccion-argentina', 'mundial'],
+};
+
+function getSectionPrefixes(sourceUrl) {
+  try {
+    const segs = new URL(sourceUrl).pathname.replace(/\.html$/, '').split('/').filter(Boolean);
+    const section = segs[segs.length - 1];
+    return SECTION_MAP[section] || [section];
+  } catch {
+    return [];
+  }
+}
+
+function isEditorialLink(url, sectionPrefixes) {
+  let parsed;
+  try { parsed = new URL(url); } catch { return false; }
+
+  const hostname = parsed.hostname.toLowerCase();
+  const pathname = parsed.pathname.toLowerCase();
+  const segments = pathname.split('/').filter(Boolean);
+
+  // Level 1 — institutional blacklist
+  for (const bl of BLACKLIST_DOMAINS) {
+    if (hostname.includes(bl)) return false;
+  }
+  for (const prefix of BLACKLIST_PATH_PREFIXES) {
+    if (pathname.startsWith(prefix)) return false;
+  }
+  const firstSeg = segments[0] || '';
+  if (BLACKLIST_FIRST_SEGMENTS.has(firstSeg)) return false;
+
+  // Level 2 — must be a deep editorial slug
+  if (segments.length < 2) return false;
+  const lastSeg = segments[segments.length - 1];
+  if (lastSeg.length < SLUG_MIN_LENGTH || !lastSeg.includes('-')) return false;
+
+  // Level 3 — must belong to the source's section
+  if (sectionPrefixes.length > 0 && !sectionPrefixes.includes(firstSeg)) return false;
+
+  return true;
+}
+
+// ── Schema: published_at and modified_at columns ────────────────────────────
+
+async function ensurePublishedAtColumn() {
+  await query(`
+    ALTER TABLE tracked_articles
+      ADD COLUMN IF NOT EXISTS published_at timestamptz
+  `);
+}
+
+async function ensureModifiedAtColumn() {
+  await query(`
+    ALTER TABLE tracked_articles
+      ADD COLUMN IF NOT EXISTS modified_at timestamptz
+  `);
+}
+
 // ── Content archiver ──────────────────────────────────────────────────────────
 // Runs as a separate pass after all sources are processed.
 // Fetches up to CONTENT_BATCH articles per cycle that have no content yet.
-// All new items eventually get archived — no slice cutoff.
 
 const CONTENT_BATCH = parseInt(process.env.COVERAGE_CONTENT_BATCH || '20', 10);
 
+// Returns { text, publishedAt } or null on fetch failure.
 async function fetchArticleContent(url) {
   try {
     const res = await fetch(url, {
@@ -39,6 +128,52 @@ async function fetchArticleContent(url) {
     const html = await res.text();
     const $ = cheerio.load(html);
 
+    // Extract published and modified dates before stripping elements.
+    // TyC Sports exposes them in <meta> tags and JSON-LD.
+    let publishedAt = null;
+    let modifiedAt = null;
+
+    const metaPubDate =
+      $('meta[property="article:published_time"]').attr('content') ||
+      $('meta[name="article:published_time"]').attr('content') ||
+      $('meta[property="datePublished"]').attr('content');
+    if (metaPubDate) {
+      const d = new Date(metaPubDate);
+      if (!isNaN(d.getTime())) publishedAt = d;
+    }
+
+    const metaModDate =
+      $('meta[property="article:modified_time"]').attr('content') ||
+      $('meta[name="article:modified_time"]').attr('content') ||
+      $('meta[property="dateModified"]').attr('content');
+    if (metaModDate) {
+      const d = new Date(metaModDate);
+      if (!isNaN(d.getTime())) modifiedAt = d;
+    }
+
+    if (!publishedAt || !modifiedAt) {
+      try {
+        const jsonLd = $('script[type="application/ld+json"]').first().text();
+        if (jsonLd) {
+          const data = JSON.parse(jsonLd);
+          const dp = data.datePublished || (Array.isArray(data) && data[0]?.datePublished);
+          const dm = data.dateModified || (Array.isArray(data) && data[0]?.dateModified);
+          if (dp && !publishedAt) {
+            const d = new Date(dp);
+            if (!isNaN(d.getTime())) publishedAt = d;
+          }
+          if (dm && !modifiedAt) {
+            const d = new Date(dm);
+            if (!isNaN(d.getTime())) modifiedAt = d;
+          }
+        }
+      } catch {}
+    }
+
+    // Remove noise before text extraction.
+    // noscript must be removed first: its content is parsed as text nodes by Cheerio,
+    // so tracking pixel <img> tags inside it appear literally in body.text().
+    $('noscript').remove();
     $('script, style, nav, header, footer, aside, iframe, [class*="menu"], [class*="sidebar"], [class*="ad-"], [id*="ad-"]').remove();
 
     const candidates = [
@@ -57,7 +192,8 @@ async function fetchArticleContent(url) {
     if (text.length < 300) {
       text = $('body').text().replace(/\s+/g, ' ').trim();
     }
-    return text.slice(0, 5000) || null;
+
+    return { text: text.slice(0, 5000) || null, publishedAt, modifiedAt };
   } catch {
     return null;
   }
@@ -77,11 +213,15 @@ async function fetchPendingContent() {
 
   let archived = 0;
   for (const item of pending) {
-    const content = await fetchArticleContent(item.url);
-    if (content) {
+    const result = await fetchArticleContent(item.url);
+    if (result?.text) {
       await query(
-        `UPDATE tracked_articles SET content_text = $2 WHERE id = $1 AND content_text IS NULL`,
-        [item.id, content]
+        `UPDATE tracked_articles
+         SET content_text = $2,
+             published_at = COALESCE($3, published_at),
+             modified_at = COALESCE($4, modified_at)
+         WHERE id = $1 AND content_text IS NULL`,
+        [item.id, result.text, result.publishedAt ?? null, result.modifiedAt ?? null]
       );
       archived++;
     }
@@ -105,6 +245,7 @@ async function scrapeLinks(url) {
     const html = await res.text();
     const $ = cheerio.load(html);
     const baseDomain = new URL(url).hostname.split('.').slice(-2).join('.');
+    const sectionPrefixes = getSectionPrefixes(url);
     const seen = new Set();
     const links = [];
 
@@ -122,6 +263,10 @@ async function scrapeLinks(url) {
       } catch {
         return;
       }
+
+      // Editorial filter: drop nav links, category pages, institutional URLs,
+      // and links outside the monitored section.
+      if (!isEditorialLink(absUrl, sectionPrefixes)) return;
 
       if (seen.has(absUrl)) return;
       seen.add(absUrl);
@@ -295,6 +440,9 @@ export async function trackedSourceMonitor() {
   isRunning = true;
 
   try {
+    await ensurePublishedAtColumn();
+    await ensureModifiedAtColumn();
+
     const { rows: sources } = await query(`
       SELECT * FROM tracked_sources
       WHERE active = true
@@ -320,7 +468,6 @@ export async function trackedSourceMonitor() {
 
     // Pass 2 — content archive queue (slow: fetch article text, bounded by CONTENT_BATCH)
     // Runs regardless of whether this cycle had new detections.
-    // All articles without content eventually get archived over successive cycles.
     const archived = await fetchPendingContent();
 
     if (totalChanges > 0 || archived > 0) {
