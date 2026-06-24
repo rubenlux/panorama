@@ -345,10 +345,23 @@ export async function recalcClusterMetrics(clusterIds) {
           WHERE scp2.cluster_id = sc.id
             AND sp.title IS NOT NULL
             AND LENGTH(sp.title) >= 15
-            AND sp.title NOT SIMILAR TO '[A-Za-z0-9]{25,}%'
-            AND sp.title NOT ILIKE '%facebookfacebook%'
-            AND sp.title NOT ILIKE 'compartido con:%'
-          ORDER BY sp.likes DESC
+          ORDER BY
+            CASE
+              WHEN sp.title NOT ILIKE '%facebookfacebook%'
+                AND sp.title NOT ILIKE 'compartido con:%'
+                AND sp.title NOT ILIKE '%cuenta verificada%'
+                AND sp.title NOT ILIKE '%cuenta verificado%'
+                AND sp.title NOT ~ '^[A-Za-z0-9]{25,}'
+                THEN 0
+              WHEN sp.title NOT ILIKE '%facebookfacebook%'
+                AND LENGTH(sp.title) < 200
+                THEN 1
+              WHEN sp.title NOT ILIKE '%facebookfacebook%'
+                THEN 2
+              ELSE 3
+            END ASC,
+            sp.likes DESC,
+            LENGTH(sp.title) ASC
           LIMIT 1
         ), sc.title)
         ELSE sc.title

@@ -129,14 +129,18 @@ async function fetchArticleContent(url) {
     const $ = cheerio.load(html);
 
     // Extract published and modified dates before stripping elements.
-    // TyC Sports exposes them in <meta> tags and JSON-LD.
+    // Try multiple meta tag patterns: Open Graph, schema.org, generic datePublished
     let publishedAt = null;
     let modifiedAt = null;
 
     const metaPubDate =
       $('meta[property="article:published_time"]').attr('content') ||
       $('meta[name="article:published_time"]').attr('content') ||
-      $('meta[property="datePublished"]').attr('content');
+      $('meta[property="datePublished"]').attr('content') ||
+      $('meta[name="datePublished"]').attr('content') ||
+      $('meta[property="date"]').attr('content') ||
+      $('meta[name="date"]').attr('content') ||
+      $('meta[itemprop="datePublished"]').attr('content');
     if (metaPubDate) {
       const d = new Date(metaPubDate);
       if (!isNaN(d.getTime())) publishedAt = d;
@@ -145,7 +149,9 @@ async function fetchArticleContent(url) {
     const metaModDate =
       $('meta[property="article:modified_time"]').attr('content') ||
       $('meta[name="article:modified_time"]').attr('content') ||
-      $('meta[property="dateModified"]').attr('content');
+      $('meta[property="dateModified"]').attr('content') ||
+      $('meta[name="dateModified"]').attr('content') ||
+      $('meta[itemprop="dateModified"]').attr('content');
     if (metaModDate) {
       const d = new Date(metaModDate);
       if (!isNaN(d.getTime())) modifiedAt = d;
