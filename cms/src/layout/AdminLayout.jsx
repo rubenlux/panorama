@@ -90,6 +90,15 @@ export default function AdminLayout() {
         </div>
 
         <nav style={{ display: "grid", gap: 4, alignContent: "start" }}>
+          <NavLink to="/openclaw" style={(props) => ({
+            ...linkStyle(props),
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between"
+          })}>
+            <span>🤖 OpenClaw</span>
+            <span style={{ background: "linear-gradient(135deg, #8b5cf6, #d946ef)", color: "white", fontSize: 9, fontWeight: "bold", padding: "2px 6px", borderRadius: 4 }}>BETA</span>
+          </NavLink>
           <NavLink to="/dashboard" style={linkStyle} end>Dashboard</NavLink>
           <NavLink to="/posts" style={linkStyle}>Entradas</NavLink>
           <NavLink to="/editorial-studio" style={(props) => ({

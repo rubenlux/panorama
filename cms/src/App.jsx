@@ -45,6 +45,7 @@ import KnowledgeGraph         from "./pages/KnowledgeGraph.jsx";
 import CoverageFeed           from "./pages/CoverageFeed.jsx";
 import CoverageDetail         from "./pages/CoverageDetail.jsx";
 import CoverageArticleDetail  from "./pages/CoverageArticleDetail.jsx";
+import OpenClaw              from "./pages/OpenClaw.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -69,6 +70,7 @@ export default function App() {
         {/* HOME del admin */}
         <Route index element={<Navigate to="/dashboard" replace />} />
 
+        <Route path="openclaw" element={<OpenClaw />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="dashboard/article/:id" element={<ArticleAnalytics />} />
 
