@@ -10,10 +10,9 @@ import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
 import ContextBuilder from '../services/ContextBuilder.js';
-import Anthropic from '@anthropic-ai/sdk';
+import NarrativeBuilder from '../services/NarrativeBuilder.js';
 
 const router = express.Router();
-const claude = new Anthropic();
 
 // Session memory (in-memory, per-user, 10min TTL)
 const sessionMemory = new Map();
@@ -261,59 +260,62 @@ router.post('/ask', requireAuth, async (req, res, next) => {
 
     const elapsed = Date.now() - startTime;
 
-    // No LLM for simple queries — return formatted readable text
-    if (!parsed.requiresSynthesis) {
+    // ALWAYS synthesize with NarrativeBuilder (OpenClaw is an editor, not a data dump)
+    try {
+      let narrative = '';
+
+      switch (parsed.intent) {
+        case 'what_happening':
+          const dayResult = await NarrativeBuilder.buildDayNarrative(context);
+          narrative = dayResult.narrative;
+          break;
+
+        case 'entity_update':
+          if (parsed.entity) {
+            const entityResult = await NarrativeBuilder.buildEntityNarrative(parsed.entity, context);
+            narrative = entityResult.narrative;
+          } else {
+            const dayResult2 = await NarrativeBuilder.buildDayNarrative(context);
+            narrative = dayResult2.narrative;
+          }
+          break;
+
+        case 'opportunities':
+          const oppResult = await NarrativeBuilder.buildOpportunityNarrative(context);
+          narrative = oppResult.narrative;
+          break;
+
+        case 'trends':
+          const trendResult = await NarrativeBuilder.buildTrendsNarrative(context);
+          narrative = trendResult.narrative;
+          break;
+
+        case 'coverage_changes':
+          const dayResult3 = await NarrativeBuilder.buildDayNarrative(context);
+          narrative = dayResult3.narrative;
+          break;
+
+        default:
+          const dayResult4 = await NarrativeBuilder.buildDayNarrative(context);
+          narrative = dayResult4.narrative;
+      }
+
       const sourcesCount = Object.values(context).reduce((sum, val) => {
         if (Array.isArray(val)) return sum + val.length;
         if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
         return sum;
       }, 0);
 
-      const textResponse = formatContextAsText(context, parsed.intent);
-
       return res.json({
-        answer: textResponse,
-        context,
-        elapsed,
-        sources: sourcesCount,
-        synthesized: false
-      });
-    }
-
-    // Use Claude for synthesis if needed
-    try {
-      const prompt = `Basándote en este contexto sobre "${parsed.entity || 'la actualidad'}":
-
-${JSON.stringify(context, null, 2)}
-
-Responde esta pregunta de forma natural y concisa (máx 5 oraciones):
-"${question}"
-
-Sé preciso, usa datos del contexto, no inventes información.`;
-
-      const message = await claude.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
-        system: 'Eres un asistente de inteligencia editorial de Panorama. Responde siempre en español.',
-        messages: [{ role: 'user', content: prompt }]
-      });
-
-      const answer = message.content[0].type === 'text' ? message.content[0].text : '';
-
-      return res.json({
-        answer,
+        answer: narrative,
         context,
         elapsed: Date.now() - startTime,
-        sources: Object.values(context).reduce((sum, val) => {
-          if (Array.isArray(val)) return sum + val.length;
-          if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
-          return sum;
-        }, 0),
+        sources: sourcesCount,
         synthesized: true
       });
-    } catch (llmError) {
-      console.warn('OpenClaw LLM error:', llmError.message);
-      // Fallback: return structured context if LLM fails
+    } catch (error) {
+      console.warn('OpenClaw synthesis error:', error.message);
+      // Fallback: return best-effort narrative
       return res.json({
         answer: formatContextAsText(context, parsed.intent),
         context,
@@ -324,7 +326,7 @@ Sé preciso, usa datos del contexto, no inventes información.`;
           return sum;
         }, 0),
         synthesized: false,
-        error: 'LLM unavailable, returning structured context'
+        error: 'Synthesis unavailable, returning structured summary'
       });
     }
   } catch (error) {
