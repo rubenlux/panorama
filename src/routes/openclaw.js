@@ -70,35 +70,68 @@ function formatContextAsText(context, intent) {
     const entity = context.entity || 'Entidad';
     let text = `📊 **${entity}**\n\n`;
 
-    if (context.stories?.length) {
-      text += `**Historias:** ${context.stories.length} encontradas\n`;
-      context.stories.slice(0, 2).forEach(s => {
-        text += `• ${s.title}\n`;
-      });
+    // Editorial: Historias + Eventos
+    if (context.stories?.length || context.events?.length) {
+      text += '**Editorial**\n';
+
+      if (context.stories?.length) {
+        text += `📰 ${context.stories.length} historia${context.stories.length > 1 ? 's' : ''}\n`;
+        context.stories.slice(0, 2).forEach(s => {
+          text += `  • ${s.title}\n`;
+          text += `    ${s.article_count} artículos • ${s.source_count} medios\n`;
+        });
+      }
+
+      if (context.events?.length) {
+        text += `📌 ${context.events.length} evento${context.events.length > 1 ? 's' : ''}\n`;
+        context.events.slice(0, 2).forEach(e => {
+          text += `  • ${e.headline}\n`;
+        });
+      }
       text += '\n';
     }
 
-    if (context.events?.length) {
-      text += `**Eventos:** ${context.events.length} encontrados\n`;
-      context.events.forEach(e => {
-        text += `• ${e.headline}\n`;
-      });
-      text += '\n';
-    }
-
+    // Social Intelligence
     if (context.social?.length) {
-      text += `**Social:** ${context.social.length} clusters\n`;
+      text += `**Redes**\n`;
+      text += `📱 ${context.social.length} cluster${context.social.length > 1 ? 's' : ''}\n`;
       context.social.slice(0, 2).forEach(s => {
-        text += `• ${s.title} (${s.total_engagement?.toLocaleString() || '0'} engagement)\n`;
+        text += `  • ${s.title}\n`;
+        text += `    ${s.total_engagement?.toLocaleString() || '0'} engagement\n`;
       });
       text += '\n';
     }
 
+    // Trend Analysis
+    if (context.trend_analysis && context.trend_analysis.trend) {
+      text += `**Tendencia**\n`;
+      text += `${context.trend_analysis.trend === 'CRECIENDO' ? '📈' : context.trend_analysis.trend === 'ESTABLE' ? '➡️' : '📉'} ${context.trend_analysis.trend}\n`;
+      text += `${context.trend_analysis.article_count_today || 0} artículos hoy • ${context.trend_analysis.source_count || 0} medios\n\n`;
+    }
+
+    // Coverage gaps
     if (context.coverage?.length) {
-      text += `**Coverage:** ${context.coverage.length} cambios recientes\n`;
+      text += `**Coverage**\n`;
+      text += `🔍 ${context.coverage.length} cambio${context.coverage.length > 1 ? 's' : ''} recientes\n`;
       context.coverage.slice(0, 2).forEach(c => {
-        text += `• ${c.source_name}: ${c.change_type}\n`;
+        text += `  • ${c.source_name}: ${c.change_type}\n`;
       });
+      text += '\n';
+    }
+
+    // Uncovered opportunities
+    if (context.opportunities?.length) {
+      text += `**Oportunidades sin cubrir**\n`;
+      context.opportunities.slice(0, 2).forEach(o => {
+        text += `  💡 ${o.title}\n`;
+      });
+      text += '\n';
+    }
+
+    // Knowledge graph
+    if (context.profile) {
+      text += `**Perfil**\n`;
+      text += `${context.profile.entity_type || '—'}\n`;
     }
 
     return text;
