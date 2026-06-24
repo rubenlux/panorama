@@ -26,6 +26,11 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const claude = new Anthropic();
 
+// Use Sonnet for complex editorial reasoning, not Haiku
+// OpenClaw reads thousands of records, finds contradictions, decides importance
+// That's complex reasoning. Sonnet is much better for this.
+const MODEL = 'claude-sonnet-4-20250514';
+
 export class NarrativeBuilder {
   /**
    * Build narrative for entity query
@@ -55,7 +60,7 @@ Si no hay noticias significativas, dilo claramente.
 Si hay mucho ruido (posts de cumpleaños, etc), ignóralo.`;
 
       const message = await claude.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: MODEL,
         max_tokens: 400,
         system: 'Eres un editor jefe de un medio de noticias. Tu objetivo es explicar qué está pasando de forma clara y concisa, como lo haría alguien que entiende periodismo.',
         messages: [{ role: 'user', content: prompt }]
@@ -99,7 +104,7 @@ Responde en español. Sé un editor, no un agregador de datos.
 Máx 200 palabras.`;
 
       const message = await claude.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: MODEL,
         max_tokens: 500,
         system: 'Eres un editor jefe. Explica qué está pasando de forma clara, priorizando lo importante.',
         messages: [{ role: 'user', content: prompt }]
@@ -142,7 +147,7 @@ Responde como un editor sugeriéndole a un periodista qué escribir.
 Máx 150 palabras.`;
 
       const message = await claude.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: MODEL,
         max_tokens: 400,
         system: 'Eres un editor jefe sugiriendo tareas. Sé directo: qué escribir y por qué es importante.',
         messages: [{ role: 'user', content: prompt }]
@@ -185,7 +190,7 @@ Responde como un editor leyendo el panorama del día.
 Máx 150 palabras.`;
 
       const message = await claude.messages.create({
-        model: 'claude-haiku-4-5-20251001',
+        model: MODEL,
         max_tokens: 400,
         system: 'Eres un editor entendiendo tendencias. Explica qué está subiendo y por qué.',
         messages: [{ role: 'user', content: prompt }]
