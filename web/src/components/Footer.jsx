@@ -58,10 +58,10 @@ export default function Footer() {
           {/* Panorama */}
           <div>
             <h4 className="pn-footer__col-title">Panorama</h4>
-            <a href="#">Quiénes somos</a>
-            <a href="#">Código ético</a>
-            <a href="#">Equipo editorial</a>
-            <a href="#">Contacto</a>
+            <Link to="/quienes-somos">Quiénes somos</Link>
+            <Link to="/codigo-etico">Código ético</Link>
+            <Link to="/equipo-editorial">Equipo editorial</Link>
+            <Link to="/contacto">Contacto</Link>
           </div>
 
           {/* Servicios */}
@@ -76,10 +76,10 @@ export default function Footer() {
           {/* Legal */}
           <div>
             <h4 className="pn-footer__col-title">Legal</h4>
-            <a href="#">Términos de uso</a>
-            <a href="#">Privacidad</a>
-            <a href="#">Cookies</a>
-            <a href="#">Publicidad</a>
+            <Link to="/terminos">Términos de uso</Link>
+            <Link to="/privacidad">Privacidad</Link>
+            <Link to="/cookies">Cookies</Link>
+            <Link to="/publicidad">Publicidad</Link>
           </div>
         </div>
 

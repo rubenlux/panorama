@@ -39,6 +39,7 @@ import marketsRoutes from "./routes/markets.js";
 import editorialDossiersRoutes from "./routes/editorial-dossiers.js";
 import coverageRoutes from "./routes/coverage.js";
 import editorialGraphRoutes    from "./routes/editorial-graph.js";
+import contactRoutes from "./routes/contact.js";
 import { errorHandler, notFound } from "./middleware/error.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -93,7 +94,7 @@ export function createApp() {
   app.use("/editorial-dossiers", editorialDossiersRoutes);
   app.use("/coverage",           coverageRoutes);
   app.use("/editorial",         editorialGraphRoutes);
-
+  app.use("/contact",           contactRoutes);
 
   app.use(commentsRoutes);
 

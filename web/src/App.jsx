@@ -11,6 +11,14 @@ import Home from './pages/Home';
 import Article from './pages/Article';
 import Topic from './pages/Topic';
 import Region from './pages/Region';
+import About from './pages/About';
+import Ethics from './pages/Ethics';
+import Editorial from './pages/Editorial';
+import Contact from './pages/Contact';
+import Terms from './pages/Terms';
+import Privacy from './pages/Privacy';
+import Cookies from './pages/Cookies';
+import Advertising from './pages/Advertising';
 import './panorama.css';
 import './App.css';
 
@@ -90,6 +98,14 @@ function App() {
         <Route path="/category/:slug" element={<Home />} />
         <Route path="/topic/:slug" element={<Topic />} />
         <Route path="/region/:slug" element={<Region />} />
+        <Route path="/quienes-somos" element={<About />} />
+        <Route path="/codigo-etico" element={<Ethics />} />
+        <Route path="/equipo-editorial" element={<Editorial />} />
+        <Route path="/contacto" element={<Contact />} />
+        <Route path="/terminos" element={<Terms />} />
+        <Route path="/privacidad" element={<Privacy />} />
+        <Route path="/cookies" element={<Cookies />} />
+        <Route path="/publicidad" element={<Advertising />} />
         <Route path="*" element={
           <div style={{ display: 'grid', placeItems: 'center', height: 320, fontFamily: 'var(--sans)', color: 'var(--muted)' }}>
             404 — Página no encontrada
