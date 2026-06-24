@@ -335,16 +335,24 @@ export async function recalcClusterMetrics(clusterIds) {
   await query(`
     UPDATE social_clusters sc
     SET
-      title            = COALESCE((
-        SELECT sp.title FROM social_cluster_posts scp2
-        JOIN social_posts sp ON sp.id = scp2.post_id
-        WHERE scp2.cluster_id = sc.id
-          AND sp.title IS NOT NULL
-          AND LENGTH(sp.title) >= 15
-          AND sp.title NOT SIMILAR TO '[A-Za-z0-9]{25,}%'
-        ORDER BY sp.likes DESC
-        LIMIT 1
-      ), sc.title),
+      title            = CASE
+        WHEN sc.title ILIKE '%facebookfacebook%'
+          OR sc.title ~ '^[A-Za-z0-9]{25,}'
+          OR sc.title ILIKE 'compartido con:%'
+        THEN COALESCE((
+          SELECT sp.title FROM social_cluster_posts scp2
+          JOIN social_posts sp ON sp.id = scp2.post_id
+          WHERE scp2.cluster_id = sc.id
+            AND sp.title IS NOT NULL
+            AND LENGTH(sp.title) >= 15
+            AND sp.title NOT SIMILAR TO '[A-Za-z0-9]{25,}%'
+            AND sp.title NOT ILIKE '%facebookfacebook%'
+            AND sp.title NOT ILIKE 'compartido con:%'
+          ORDER BY sp.likes DESC
+          LIMIT 1
+        ), sc.title)
+        ELSE sc.title
+      END,
       post_count       = stats.post_count,
       source_count     = stats.source_count,
       sources_count    = stats.source_count,
