@@ -1,3 +1,7 @@
-2026/06/19-16:38:36.078 5dd0 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Session Storage/MANIFEST-000001
-2026/06/19-16:38:36.078 5dd0 Recovering log #6
-2026/06/19-16:38:36.079 5dd0 Reusing old log C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Session Storage/000006.log 
+2026/06/24-12:12:23.243 5008 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Session Storage/MANIFEST-000001
+2026/06/24-12:12:23.243 5008 Recovering log #65
+2026/06/24-12:12:23.243 5008 Level-0 table #68: started
+2026/06/24-12:12:23.246 5008 Level-0 table #68: 14241 bytes OK
+2026/06/24-12:12:23.246 5008 Recovering log #68
+2026/06/24-12:12:23.246 5008 Reusing old log C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Session Storage/000068.log 
+2026/06/24-12:12:23.247 5008 Delete type=0 #65
