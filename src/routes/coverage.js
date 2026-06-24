@@ -354,4 +354,30 @@ router.get('/sources/:id/snapshots', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /by-entity/:name — coverage changes for a specific entity (OpenClaw)
+// Read-only, max 5 results for context aggregation
+router.get('/by-entity/:name', requireAuth, async (req, res, next) => {
+  try {
+    const { name } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 5, 10);
+
+    const { rows } = await query(`
+      SELECT DISTINCT
+        cc.id, cc.change_type, cc.detected_at,
+        ts.name AS source_name, ts.url AS source_url,
+        ta.title AS article_title, ta.url AS article_url,
+        ta.published_at
+      FROM coverage_changes cc
+      LEFT JOIN tracked_sources ts ON ts.id = cc.tracked_source_id
+      LEFT JOIN tracked_articles ta ON ta.id = cc.tracked_article_id
+      WHERE LOWER(ta.title) ILIKE LOWER($1)
+         OR LOWER(ts.name) ILIKE LOWER($1)
+      ORDER BY cc.detected_at DESC
+      LIMIT $2
+    `, [name, limit]);
+
+    res.json({ items: rows, total: rows.length });
+  } catch (e) { next(e); }
+});
+
 export default router;

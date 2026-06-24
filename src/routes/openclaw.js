@@ -1,0 +1,216 @@
+/**
+ * OpenClaw Routes
+ * Conversational interface over Panorama APIs
+ * - POST /openclaw/ask — answer natural language question
+ * - Read-only, optional LLM, structured responses
+ */
+
+import express from 'express';
+import { requireAuth } from '../middleware/auth.js';
+import { parseQuestion } from '../services/OpenClawParser.js';
+import { OpenClawService } from '../services/OpenClawService.js';
+import Anthropic from '@anthropic-ai/sdk';
+
+const router = express.Router();
+const claude = new Anthropic();
+
+// HTTP client for OpenClawService
+const apiClient = {
+  get: async (endpoint) => {
+    const url = `http://localhost:${process.env.PORT || 5000}${endpoint}`;
+    const response = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${process.env.INTERNAL_API_TOKEN || ''}` }
+    });
+    if (!response.ok) {
+      throw new Error(`API ${endpoint} returned ${response.status}`);
+    }
+    return response.json();
+  }
+};
+
+const openClaw = new OpenClawService(apiClient);
+
+// Session memory (in-memory, per-user, 1h TTL)
+const sessionMemory = new Map();
+
+function getSession(userId) {
+  let session = sessionMemory.get(userId);
+  if (!session || Date.now() > session.expiresAt) {
+    session = {
+      lastEntity: null,
+      lastContext: {},
+      conversationHistory: [],
+      expiresAt: Date.now() + 3600000 // 1 hour
+    };
+    sessionMemory.set(userId, session);
+  }
+  return session;
+}
+
+/**
+ * POST /openclaw/ask
+ * Input: { question: string }
+ * Output: { context, answer?, elapsed, sources }
+ */
+router.post('/ask', requireAuth, async (req, res, next) => {
+  try {
+    const { question } = req.body;
+    const userId = req.user.sub;
+
+    if (!question || typeof question !== 'string') {
+      return res.status(400).json({ error: 'Question required' });
+    }
+
+    const session = getSession(userId);
+    const parsed = parseQuestion(question);
+
+    // If no entity detected, use last entity from session
+    if (!parsed.entity && session.lastEntity) {
+      parsed.entity = session.lastEntity;
+    }
+
+    let context = {};
+    const startTime = Date.now();
+
+    // Route to appropriate handler based on intent
+    try {
+      switch (parsed.intent) {
+        case 'what_happening':
+          const whatsHappening = await openClaw.getWhatsHappening();
+          context = whatsHappening.context;
+          break;
+
+        case 'trends':
+          const trends = await openClaw.getTrends();
+          context = trends.context;
+          break;
+
+        case 'opportunities':
+          const opps = await openClaw.getOpportunities();
+          context = opps.context;
+          break;
+
+        case 'coverage_changes':
+          const coverage = await openClaw.getCoverageChanges();
+          context = coverage.context;
+          break;
+
+        case 'entity_update':
+          if (parsed.entity) {
+            const entity = await openClaw.getEntityContext(parsed.entity);
+            context = entity.context;
+          }
+          break;
+
+        default:
+          // Try entity-specific if entity exists
+          if (parsed.entity) {
+            const entity = await openClaw.getEntityContext(parsed.entity);
+            context = entity.context;
+          } else {
+            context = (await openClaw.getWhatsHappening()).context;
+          }
+      }
+    } catch (error) {
+      console.warn('OpenClaw context error:', error.message);
+      // Graceful degradation: respond with partial context
+    }
+
+    // Update session
+    if (parsed.entity) {
+      session.lastEntity = parsed.entity;
+    }
+    session.lastContext = context;
+
+    const elapsed = Date.now() - startTime;
+
+    // No LLM for simple queries
+    if (!parsed.requiresSynthesis) {
+      const sourcesCount = Object.values(context).reduce((sum, val) => {
+        if (Array.isArray(val)) return sum + val.length;
+        if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
+        return sum;
+      }, 0);
+
+      return res.json({
+        context,
+        elapsed,
+        sources: sourcesCount,
+        synthesized: false
+      });
+    }
+
+    // Use Claude for synthesis if needed
+    try {
+      const prompt = `Basándote en este contexto sobre "${parsed.entity || 'la actualidad'}":
+
+${JSON.stringify(context, null, 2)}
+
+Responde esta pregunta de forma natural y concisa (máx 5 oraciones):
+"${question}"
+
+Sé preciso, usa datos del contexto, no inventes información.`;
+
+      const message = await claude.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        system: 'Eres un asistente de inteligencia editorial de Panorama. Responde siempre en español.',
+        messages: [{ role: 'user', content: prompt }]
+      });
+
+      const answer = message.content[0].type === 'text' ? message.content[0].text : '';
+
+      return res.json({
+        context,
+        answer,
+        elapsed: Date.now() - startTime,
+        sources: Object.values(context).reduce((sum, val) => {
+          if (Array.isArray(val)) return sum + val.length;
+          if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
+          return sum;
+        }, 0),
+        synthesized: true
+      });
+    } catch (llmError) {
+      console.warn('OpenClaw LLM error:', llmError.message);
+      // Fallback: return structured context if LLM fails
+      return res.json({
+        context,
+        elapsed: Date.now() - startTime,
+        sources: Object.values(context).reduce((sum, val) => {
+          if (Array.isArray(val)) return sum + val.length;
+          if (val?.items && Array.isArray(val.items)) return sum + val.items.length;
+          return sum;
+        }, 0),
+        synthesized: false,
+        error: 'LLM unavailable, returning structured context'
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /openclaw/session
+ * Get current session context (for debugging)
+ */
+router.get('/session', requireAuth, (req, res) => {
+  const session = getSession(req.user.sub);
+  return res.json({
+    lastEntity: session.lastEntity,
+    contextKeys: Object.keys(session.lastContext),
+    expiresIn: Math.max(0, session.expiresAt - Date.now())
+  });
+});
+
+/**
+ * DELETE /openclaw/session
+ * Clear session
+ */
+router.delete('/session', requireAuth, (req, res) => {
+  sessionMemory.delete(req.user.sub);
+  return res.json({ ok: true });
+});
+
+export default router;

@@ -494,4 +494,34 @@ router.post('/:id/generate-summary', requireAuth, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /by-entity/:name — events involving a specific entity (OpenClaw)
+// Read-only, max 5 results for context aggregation
+router.get('/by-entity/:name', requireAuth, async (req, res, next) => {
+  try {
+    const { name } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 5, 10);
+
+    const { rows } = await query(`
+      SELECT DISTINCT
+        ec.id, ec.headline, ec.summary, ec.importance_score, ec.coverage_status,
+        ec.story_count, ec.article_count, ec.source_count,
+        json_agg(DISTINCT sc.title ORDER BY sc.title) AS story_titles,
+        json_agg(DISTINCT ke.name ORDER BY ke.name) AS entities
+      FROM event_clusters ec
+      LEFT JOIN event_cluster_stories ecs ON ecs.event_id = ec.id
+      LEFT JOIN story_clusters sc ON sc.id = ecs.story_id
+      LEFT JOIN story_entities se ON se.story_id = sc.id
+      LEFT JOIN knowledge_entities ke ON ke.id = se.entity_id
+      WHERE LOWER(ke.name) ILIKE LOWER($1)
+        AND ec.status IN ('active', 'ready', 'followed')
+      GROUP BY ec.id, ec.headline, ec.summary, ec.importance_score, ec.coverage_status,
+               ec.story_count, ec.article_count, ec.source_count
+      ORDER BY ec.importance_score DESC, ec.last_updated_at DESC
+      LIMIT $2
+    `, [name, limit]);
+
+    res.json({ items: rows, total: rows.length });
+  } catch (e) { next(e); }
+});
+
 export default router;

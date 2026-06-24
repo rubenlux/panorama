@@ -1146,4 +1146,33 @@ router.get('/transcripts/by-cluster/:clusterId', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// GET /by-entity/:name — social clusters mentioning a specific entity (OpenClaw)
+// Read-only, max 5 results for context aggregation
+router.get('/by-entity/:name', async (req, res, next) => {
+  try {
+    const { name } = req.params;
+    const limit = Math.min(parseInt(req.query.limit) || 5, 10);
+
+    const { rows } = await query(`
+      SELECT DISTINCT
+        sc.id, sc.title, sc.post_count, sc.total_engagement, sc.viral_score,
+        sc.gap_score, sc.opportunity_score, sc.last_seen,
+        json_agg(DISTINCT sp.platform ORDER BY sp.platform) AS platforms,
+        json_agg(DISTINCT COALESCE(ss.name, sp.platform)) AS sources
+      FROM social_clusters sc
+      LEFT JOIN social_cluster_posts scp ON scp.cluster_id = sc.id
+      LEFT JOIN social_posts sp ON sp.id = scp.post_id
+      LEFT JOIN social_sources ss ON ss.id = sp.source_id
+      WHERE (LOWER(sc.title) ILIKE LOWER($1)
+         OR LOWER(sc.keywords::text) ILIKE LOWER($1))
+      GROUP BY sc.id, sc.title, sc.post_count, sc.total_engagement, sc.viral_score,
+               sc.gap_score, sc.opportunity_score, sc.last_seen
+      ORDER BY sc.opportunity_score DESC, sc.last_seen DESC
+      LIMIT $2
+    `, [name, limit]);
+
+    res.json({ items: rows, total: rows.length });
+  } catch (e) { next(e); }
+});
+
 export default router;
