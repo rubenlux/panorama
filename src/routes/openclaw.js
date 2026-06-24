@@ -11,6 +11,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
 import ContextBuilder from '../services/ContextBuilder.js';
 import NarrativeBuilder from '../services/NarrativeBuilder.js';
+import PanoramaBuilder from '../services/PanoramaBuilder.js';
 
 const router = express.Router();
 
@@ -260,43 +261,56 @@ router.post('/ask', requireAuth, async (req, res, next) => {
 
     const elapsed = Date.now() - startTime;
 
+    // Build complete panorama for context-rich synthesis
+    let panorama = null;
+    if (parsed.intent === 'what_happening' || !parsed.entity) {
+      try {
+        panorama = await PanoramaBuilder.buildDailyPanorama();
+      } catch (e) {
+        console.warn('PanoramaBuilder error:', e.message);
+      }
+    }
+
     // ALWAYS synthesize with NarrativeBuilder (OpenClaw is an editor, not a data dump)
     try {
       let narrative = '';
+      let summary = null;
 
       switch (parsed.intent) {
         case 'what_happening':
-          const dayResult = await NarrativeBuilder.buildDayNarrative(context);
+          const dayResult = await NarrativeBuilder.buildDayNarrative(panorama || context);
           narrative = dayResult.narrative;
+          if (panorama) summary = PanoramaBuilder.formatExecutiveSummary(panorama);
           break;
 
         case 'entity_update':
           if (parsed.entity) {
             const entityResult = await NarrativeBuilder.buildEntityNarrative(parsed.entity, context);
             narrative = entityResult.narrative;
-          } else {
-            const dayResult2 = await NarrativeBuilder.buildDayNarrative(context);
+          } else if (panorama) {
+            const dayResult2 = await NarrativeBuilder.buildDayNarrative(panorama);
             narrative = dayResult2.narrative;
+            summary = PanoramaBuilder.formatExecutiveSummary(panorama);
           }
           break;
 
         case 'opportunities':
-          const oppResult = await NarrativeBuilder.buildOpportunityNarrative(context);
+          const oppResult = await NarrativeBuilder.buildOpportunityNarrative(panorama || context);
           narrative = oppResult.narrative;
           break;
 
         case 'trends':
-          const trendResult = await NarrativeBuilder.buildTrendsNarrative(context);
+          const trendResult = await NarrativeBuilder.buildTrendsNarrative(panorama || context);
           narrative = trendResult.narrative;
           break;
 
         case 'coverage_changes':
-          const dayResult3 = await NarrativeBuilder.buildDayNarrative(context);
+          const dayResult3 = await NarrativeBuilder.buildDayNarrative(panorama || context);
           narrative = dayResult3.narrative;
           break;
 
         default:
-          const dayResult4 = await NarrativeBuilder.buildDayNarrative(context);
+          const dayResult4 = await NarrativeBuilder.buildDayNarrative(panorama || context);
           narrative = dayResult4.narrative;
       }
 
@@ -306,8 +320,11 @@ router.post('/ask', requireAuth, async (req, res, next) => {
         return sum;
       }, 0);
 
+      // Two-level response: summary + full narrative
       return res.json({
         answer: narrative,
+        summary: summary, // Executive summary (for quick view)
+        panorama: panorama, // Full panorama data (for expandable details)
         context,
         elapsed: Date.now() - startTime,
         sources: sourcesCount,
