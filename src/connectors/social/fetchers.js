@@ -249,6 +249,15 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
           let video_url = '';
           let href = '';
           let likesStr = '0';
+
+          // First pass: search within the post element itself to avoid capturing sibling post URLs
+          let postLink = [...(el.querySelectorAll?.('a[href]') || [])].find(a => {
+            const h = a.href || '';
+            return VALID_POST.test(h) && !h.includes('comment_id=');
+          });
+          if (postLink) href = postLink.href.split('?')[0];
+
+          // Second pass: walk up ancestors only if not found in the element itself
           let cur = el.parentElement;
           for (let depth = 0; depth < 25 && cur; depth++) {
             if (!thumbnail_url) {
