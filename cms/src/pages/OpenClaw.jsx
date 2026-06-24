@@ -1,14 +1,32 @@
 import React, { useState, useRef, useEffect } from "react";
 import { apiJson } from "../api.js";
-import { Send, Loader, MessageCircle } from "lucide-react";
+import { Send, Loader, MessageCircle, Trash2 } from "lucide-react";
 import "./OpenClaw.css";
 
 export default function OpenClaw() {
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState(() => {
+    // Load messages from localStorage on mount
+    try {
+      const saved = localStorage.getItem('openclaw_history');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      console.warn('Failed to load chat history:', e);
+      return [];
+    }
+  });
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
+
+  // Save messages to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem('openclaw_history', JSON.stringify(messages));
+    } catch (e) {
+      console.warn('Failed to save chat history:', e);
+    }
+  }, [messages]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -74,18 +92,55 @@ export default function OpenClaw() {
     }
   };
 
+  const clearHistory = () => {
+    if (window.confirm('¿Limpiar todo el historial de chat?')) {
+      setMessages([]);
+      localStorage.removeItem('openclaw_history');
+    }
+  };
+
   return (
     <div className="openclaw-container">
       {/* Header */}
       <div className="openclaw-header">
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ fontSize: 28 }}>🤖</div>
-          <div>
-            <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>OpenClaw</h1>
-            <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#64748b" }}>
-              Conversación sobre Panorama
-            </p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ fontSize: 28 }}>🤖</div>
+            <div>
+              <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>OpenClaw</h1>
+              <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#64748b" }}>
+                Conversación sobre Panorama
+              </p>
+            </div>
           </div>
+          {messages.length > 0 && (
+            <button
+              onClick={clearHistory}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "8px 12px",
+                background: "#f1f5f9",
+                border: "1px solid #e2e8f0",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontSize: 12,
+                color: "#64748b",
+                fontWeight: 500,
+                transition: "all 0.2s"
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.background = "#e2e8f0";
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.background = "#f1f5f9";
+              }}
+            >
+              <Trash2 size={14} />
+              Limpiar
+            </button>
+          )}
         </div>
       </div>
 
