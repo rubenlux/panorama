@@ -172,18 +172,18 @@ Sé verificable. Sé auditable.`;
     console.log(`[${requestId}] `);
     console.log(`[${requestId}] === COMPLETE AUDIT TRAIL ===`);
     console.log(`[${requestId}] Question: "${question}"`);
-    console.log(`[${requestId}] Parsed Intent: ${parsed.intent}`);
-    console.log(`[${requestId}] Parsed Entity: ${parsed.entity || '(null)'}`);
-    console.log(`[${requestId}] Final Search Type: ${parsed.entity ? `ENTITY-SPECIFIC ("${parsed.entity}")` : 'GLOBAL'}`);
+    console.log(`[${requestId}] Query Intent: ${evidence.query.intent}`);
+    console.log(`[${requestId}] Query Entity: ${evidence.query.entity || '(global)'}`);
+    console.log(`[${requestId}] Search Type: ${evidence.query.entity ? `ENTITY-SPECIFIC ("${evidence.query.entity}")` : 'GLOBAL'}`);
     console.log(`[${requestId}] Results Retrieved:`);
-    console.log(`[${requestId}]   Editorial: ${filteredStories.length} available → ${briefing.stories?.length || 0} in briefing`);
-    console.log(`[${requestId}]   Events: ${filteredEvents.length} available → ${briefing.events?.length || 0} in briefing`);
-    console.log(`[${requestId}]   Social: ${filteredSocial.length} available → ${briefing.social?.length || 0} in briefing`);
-    console.log(`[${requestId}]   Coverage: ${filteredCoverage.length} available → ${briefing.coverage?.length || 0} in briefing`);
-    console.log(`[${requestId}]   Opportunities: ${filteredOpportunities.length} available → ${briefing.opportunities?.length || 0} in briefing`);
-    console.log(`[${requestId}]   Entities: ${knowledge.length} available → ${briefing.entities?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Editorial: ${evidence.stories.length} available → ${briefing.stories?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Events: ${evidence.events.length} available → ${briefing.events?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Social: ${evidence.social.length} available → ${briefing.social?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Coverage: ${evidence.coverage.length} available → ${briefing.coverage?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Opportunities: ${evidence.opportunities.length} available → ${briefing.opportunities?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Entities: ${evidence.entities.length} available → ${briefing.entities?.length || 0} in briefing`);
     console.log(`[${requestId}] Total Time: ${Date.now() - start}ms`);
-    console.log(`[${requestId}] Briefing Status: REBUILT FROM ZERO (no cache)`);
+    console.log(`[${requestId}] Briefing Status: BUILT WITH SUMMARIES AND CONTEXT`);
 
     // Construir evidencia estructurada para respuesta
     console.log(`[${requestId}] `);
@@ -322,72 +322,79 @@ router.get('/debug-parse', requireAuth, (req, res) => {
 function buildEditorialBriefing(rawContext) {
   const briefing = {};
 
-  // STORIES: Top 5 por score, con sus artículos
+  // STORIES: Top 5 con contexto narrativo (no solo metadata)
   if (rawContext.stories && rawContext.stories.length > 0) {
     briefing.stories = rawContext.stories.slice(0, 5).map(story => ({
       title: story.title,
-      score: story.importance_score,
-      coverage_status: story.coverage_status,
-      article_count: story.article_count,
-      source_count: story.source_count,
-      articles: story.sources ? story.sources.slice(0, 5).map(source => ({
-        source: source,
-        score: story.importance_score
-      })) : [],
+      summary: story.algorithmic_summary || story.summary || '(sin resumen)',
+      type: story.story_type,
+      status: story.coverage_status,
+      importance: story.importance_score,
+      articles: story.article_count,
+      sources: story.sources ? story.sources.slice(0, 5) : [],
       internal_link: `/stories/${story.id}`
     }));
   }
 
-  // EVENTS: Top 3
+  // EVENTS: Top 3 con contexto
   if (rawContext.events && rawContext.events.length > 0) {
     briefing.events = rawContext.events.slice(0, 3).map(event => ({
       headline: event.headline,
-      score: event.editorial_score,
-      story_count: event.story_count,
-      article_count: event.article_count,
+      summary: event.summary || '(sin contexto)',
+      type: event.event_type,
+      importance: event.editorial_score,
+      stories_involved: event.story_count,
+      articles_total: event.article_count,
+      detected: event.first_detected_at,
+      last_update: event.last_updated_at,
       internal_link: `/events/${event.id}`
     }));
   }
 
-  // SOCIAL: Top 3 posts, con detalles completos
+  // SOCIAL: Top 3 con contexto de viralidad
   if (rawContext.social && rawContext.social.length > 0) {
     briefing.social = rawContext.social.slice(0, 3).map(post => ({
       title: post.title,
-      platforms: post.platforms || [],
+      platforms: (post.platforms || []).join(', '),
       engagement: post.total_engagement,
-      posts_count: post.post_count,
       viral_score: post.viral_score,
+      gap_score: post.gap_score,
+      posts_count: post.post_count,
+      context: `Trending en ${post.platforms ? post.platforms.join(', ') : 'redes'} con ${post.total_engagement} interacciones`,
       internal_link: `/social/clusters/${post.id}`
     }));
   }
 
-  // COVERAGE: Top 3 cambios, con detalles
+  // COVERAGE: Top 3 cambios con contexto temporal
   if (rawContext.coverage && rawContext.coverage.length > 0) {
     briefing.coverage = rawContext.coverage.slice(0, 3).map(change => ({
       source: change.source_name,
       change_type: change.change_type,
-      article_title: change.article_title,
-      detected_at: change.detected_at,
+      headline: change.article_title,
+      when: change.detected_at,
+      context: `${change.change_type} en ${change.source_name}: ${change.article_title}`,
       internal_link: `/coverage/${change.id}`
     }));
   }
 
-  // OPPORTUNITIES: Top 3
+  // OPPORTUNITIES: Top 3 con contexto editorial
   if (rawContext.opportunities && rawContext.opportunities.length > 0) {
     briefing.opportunities = rawContext.opportunities.slice(0, 3).map(opp => ({
       title: opp.title,
       type: opp.opportunity_type,
       score: opp.composite_score,
       trigger: opp.trigger,
+      context: `Oportunidad ${opp.opportunity_type} (${opp.trigger}): ${opp.title}`,
       internal_link: `/opportunities/${opp.id}`
     }));
   }
 
-  // ENTITIES: Top 8
+  // ENTITIES: Top 8 con contexto
   if (rawContext.entities && rawContext.entities.length > 0) {
     briefing.entities = rawContext.entities.slice(0, 8).map(entity => ({
       name: entity.name,
       type: entity.entity_type,
+      mentions: entity.mentions || 0,
       internal_link: `/knowledge-graph/entities/${entity.id}`
     }));
   }
