@@ -217,7 +217,7 @@ export default function OpenClaw() {
                                   </div>
                                   {sourceData.social.map((s, i) => (
                                     <div key={i} style={{ marginBottom: 4, paddingLeft: 8, color: "#64748b" }}>
-                                      • {s.platforms?.join(', ')}
+                                      • {s.platforms || (Array.isArray(s.platform_list) ? s.platform_list.join(', ') : 'redes sociales')}
                                       <br />
                                       {s.engagement?.toLocaleString()} interacciones
                                     </div>
