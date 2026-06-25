@@ -498,6 +498,41 @@ Each frontend reads `VITE_API_URL` from its own `.env` (Vite convention) to poin
 - 195 entidades son ruido (títulos de artículos, siglas de 1 char, concatenaciones NER de 4+ palabras).
 - Plan de corrección en memoria: [[knowledge-graph-audit]] — Opciones A (canonical_id), B (búsqueda por tokens), C (filtro de ruido inmediato).
 
+### OpenClaw (Editorial Assistant) — Session Context & Instrumentation (June 2026)
+
+`src/routes/openclaw.js` — POST /openclaw/ask endpoint. Conversational editorial assistant with request-level instrumentation.
+
+**Architecture:**
+- **RetrievalPlanner** (STEP 3) — Explicit decision tree determining `retrievalEntity` (global vs. entity-specific search)
+- **GLOBAL_INTENTS Set** — `{what_happening, trends, opportunities, coverage_changes}` — blocks session reuse absolutely
+- **Follow-up Detection** — `isFollowUpQuestion()` detects true context-dependent queries before allowing session.lastEntity reuse
+- **Request Correlation** — Every request gets unique `requestId` prefix on all log lines (STEP 1-8)
+
+**Instrumentation Levels:**
+- STEP 1: Parser output (intent, entity, timeframe)
+- STEP 2: Session state (lastEntity from prior query)
+- STEP 3: Intent Analysis (global vs. entity, decision gates, session check)
+- STEP 4: Retrieval results (counts per module before/after filtering)
+- STEP 5: Editorial Briefing (max items selected for LLM)
+- STEP 6: LLM call (context length, model)
+- STEP 7: Enrichment (themes mapped to sources)
+- STEP 8: Final summary (retrieved vs. briefing counts, total elapsed time)
+
+**Audit Log Endpoint:**
+- `GET /openclaw/audit-log` — Returns in-memory audit buffer (500 max lines, all requests with requestId correlation)
+- Allows inspection of exact flow without needing server logs
+- Useful for debugging: "¿Qué pasó con X?" → "¿Qué está pasando hoy?" sequence
+
+**Key Design Decision (June 24):**
+Replaced variable-mutation pattern (where `finalEntity` was reassigned across branches) with explicit conditional assignment. Makes decision tree obvious at glance + simplifies instrumentation proof.
+
+**Testing Sequence for Session Contamination:**
+1. Query: "¿Qué pasó con Boca?" → Check Editorial count = N
+2. Query: "¿Qué está pasando hoy?" → Check Editorial count ≠ N (should be global top-100)
+3. Inspect `GET /openclaw/audit-log` → STEP 3 logs should show:
+   - Query 1: "INTENT IS GLOBAL ('what_happening') BUT HAS ENTITY" → entity-specific search
+   - Query 2: "INTENT IS GLOBAL ('what_happening') + NO SPECIFIC ENTITY" → global search, "Session.lastEntity was: Boca (NOT USED)"
+
 ## Key Conventions
 
 - Spanish is used in documentation files and some UI strings; English is used in code identifiers and comments.
