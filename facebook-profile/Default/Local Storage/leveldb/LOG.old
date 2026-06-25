@@ -1,3 +1,5 @@
-2026/06/24-23:03:39.573 192c Reusing MANIFEST c:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Local Storage\leveldb/MANIFEST-000001
-2026/06/24-23:03:39.579 192c Recovering log #59
-2026/06/24-23:03:39.579 192c Reusing old log c:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Local Storage\leveldb/000059.log 
+2026/06/25-08:47:16.263 490 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/06/25-08:47:16.267 490 Recovering log #3
+2026/06/25-08:47:16.268 490 Level-0 table #3: started
+2026/06/25-08:47:16.270 490 Level-0 table #3: 12360 bytes OK
+2026/06/25-08:47:16.271 490 Delete type=0 #3
