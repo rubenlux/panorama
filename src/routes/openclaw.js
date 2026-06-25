@@ -1,22 +1,31 @@
 /**
  * OpenClaw Routes
- * Editorial intelligence engine
- * - Conversational interface to Panorama
- * - Uses Sonnet (NOT Haiku) for synthesis
- * - Simple, direct pipeline: Parse → Context → Sonnet → Response
+ *
+ * REGLA DE ORO:
+ * - NO crea lógica editorial
+ * - NO duplica lógica
+ * - NO implementa algoritmos
+ *
+ * Solo consulta Panorama, organiza contexto, llama Sonnet, devuelve evidencias
  */
 
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
-import ContextBuilder from '../services/ContextBuilder.js';
+import {
+  getActiveStories,
+  getActiveEvents,
+  getActiveSocialClusters,
+  getCoverageChanges,
+  getOpportunities,
+  getEntityProfile
+} from '../queries.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const router = express.Router();
 const claude = new Anthropic();
-
-// FORCE Sonnet for editorial reasoning
 const MODEL = 'claude-sonnet-4-6';
+const DEBUG = process.env.OPENCLAW_DEBUG === 'true';
 
 // Session memory (10 min TTL)
 const sessionMemory = new Map();
@@ -26,7 +35,7 @@ function getSession(userId) {
   if (!session || Date.now() > session.expiresAt) {
     session = {
       lastEntity: null,
-      expiresAt: Date.now() + 600000 // 10 minutes
+      expiresAt: Date.now() + 600000
     };
     sessionMemory.set(userId, session);
   }
@@ -35,133 +44,341 @@ function getSession(userId) {
 
 /**
  * POST /openclaw/ask
- * Simple pipeline: Question → Parse → Context → Sonnet → Response
  */
 router.post('/ask', requireAuth, async (req, res, next) => {
   try {
     const { question } = req.body;
     const userId = req.user.sub;
+    const requestId = `REQ-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
     if (!question || typeof question !== 'string') {
       return res.status(400).json({ error: 'Question required' });
     }
 
-    console.log('\n=== OPENCLAW ===');
-    console.log('Question:', question);
+    const start = Date.now();
 
-    const session = getSession(userId);
+    // ===== COMPLETE REQUEST INSTRUMENTATION =====
+    console.log('\n' + '='.repeat(70));
+    console.log(`[${requestId}] ══════════════════════════════════════════════════════════════`);
+    console.log(`[${requestId}] NEW REQUEST`);
+    console.log(`[${requestId}] ══════════════════════════════════════════════════════════════`);
+    console.log(`[${requestId}] QUESTION: "${question}"`);
+    console.log(`[${requestId}] USER: ${userId}`);
+
+    // STEP 1: Parse
     const parsed = parseQuestion(question);
-    console.log('Parsed intent:', parsed.intent, 'entity:', parsed.entity);
 
-    // Use last entity from session if available
-    if (!parsed.entity && session.lastEntity) {
-      parsed.entity = session.lastEntity;
-      console.log('Using session entity:', parsed.entity);
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 1: PARSER OUTPUT`);
+    console.log(`[${requestId}]   intent: ${parsed.intent}`);
+    console.log(`[${requestId}]   entity: ${parsed.entity || '(null)'}`);
+    console.log(`[${requestId}]   timeframe: ${parsed.timeframe}`);
+
+    // STEP 2: Session check
+    const session = getSession(userId);
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 2: SESSION STATE`);
+    console.log(`[${requestId}]   session.lastEntity: ${session.lastEntity || '(null)'}`);
+
+    // STEP 3: Determine final entity to use
+    const intentRequiresGlobal = parsed.intent === 'what_happening' || parsed.intent === 'trends' || parsed.intent === 'opportunities' || parsed.intent === 'coverage_changes';
+
+    let finalEntity = parsed.entity;
+
+    // IMPORTANT: If intent is global BUT there's a specific entity parsed,
+    // treat it as entity-specific (e.g. "qué pasó con Boca" = "tell me Boca news")
+    // Only force null if BOTH intent is global AND no specific entity was parsed
+    if (intentRequiresGlobal && !parsed.entity) {
+      console.log(`[${requestId}] `);
+      console.log(`[${requestId}] STEP 3: INTENT IS GLOBAL ("${parsed.intent}") + NO SPECIFIC ENTITY`);
+      console.log(`[${requestId}]   → Using full global search (no entity filter)`);
+      // Force null explicitly
+      finalEntity = null;
+    } else if (intentRequiresGlobal && parsed.entity) {
+      console.log(`[${requestId}] `);
+      console.log(`[${requestId}] STEP 3: INTENT IS GLOBAL ("${parsed.intent}") BUT HAS ENTITY`);
+      console.log(`[${requestId}]   → Treating as entity-specific: "${parsed.entity}"`);
+      finalEntity = parsed.entity;
+    } else if (!finalEntity && session.lastEntity) {
+      console.log(`[${requestId}] `);
+      console.log(`[${requestId}] STEP 3: USING SESSION CARRYOVER`);
+      console.log(`[${requestId}]   entity was null, using session.lastEntity: ${session.lastEntity}`);
+      finalEntity = session.lastEntity;
+    } else if (!finalEntity) {
+      console.log(`[${requestId}] `);
+      console.log(`[${requestId}] STEP 3: NO ENTITY (global search)`);
+    } else {
+      console.log(`[${requestId}] `);
+      console.log(`[${requestId}] STEP 3: ENTITY-SPECIFIC SEARCH`);
+      console.log(`[${requestId}]   entity: ${finalEntity}`);
     }
 
-    // Save entity to session
+    // Update parsed object with final entity
+    parsed.entity = finalEntity;
+
+    // Save to session ONLY if we have a specific entity
+    if (finalEntity && !intentRequiresGlobal) {
+      session.lastEntity = finalEntity;
+      console.log(`[${requestId}]   ✓ Saved to session for carryover`);
+    }
+
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] FINAL STATE BEFORE RETRIEVAL`);
+    console.log(`[${requestId}]   intent: ${parsed.intent}`);
+    console.log(`[${requestId}]   entity: ${parsed.entity || '(null)'}`);
+    console.log(`[${requestId}] ══════════════════════════════════════════════════════════════`);
+
+    // STEP 4: RETRIEVAL FROM PANORAMA
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 4: RETRIEVING FROM PANORAMA`);
+    console.log(`[${requestId}]   Search type: ${parsed.entity ? `ENTITY-SPECIFIC ("${parsed.entity}")` : 'GLOBAL (no entity)'}`);
+
+    let filteredStories = [];
+    let filteredEvents = [];
+    let filteredSocial = [];
+    let filteredCoverage = [];
+    let filteredOpportunities = [];
+    let knowledge = [];
+
+    const retrievalStart = Date.now();
+
     if (parsed.entity) {
-      session.lastEntity = parsed.entity;
+      // Búsqueda específica por entidad
+      const entity = parsed.entity.toLowerCase();
+
+      // Búsqueda paralela en todas las fuentes
+      const [storiesRes, eventsRes, socialRes, coverageRes, opportunitiesRes, knowledgeRes] = await Promise.allSettled([
+        getActiveStories({ limit: 200, hours: 24, sort: 'score' }),
+        getActiveEvents({ limit: 100, hours: 24, sort: 'score' }),
+        getActiveSocialClusters({ limit: 100, hours: 24, sort: 'score' }),
+        getCoverageChanges({ limit: 200, hours: 24 }),
+        getOpportunities({ limit: 200, status: 'pending', sort: 'score' }),
+        getEntityProfile(parsed.entity)
+      ]);
+
+      const allStories = unwrap(storiesRes, { items: [] }).items || [];
+      const allEvents = unwrap(eventsRes, { items: [] }).items || [];
+      const allSocial = unwrap(socialRes, { items: [] }).items || [];
+      const allCoverage = unwrap(coverageRes, { items: [] }).items || [];
+      const allOpportunities = unwrap(opportunitiesRes, { items: [] }).items || [];
+
+      // Filtrar por entidad en TODAS las fuentes
+      filteredStories = allStories.filter(s =>
+        s.title?.toLowerCase().includes(entity) ||
+        s.entities?.some(e => e.toLowerCase().includes(entity)) ||
+        s.summary?.toLowerCase().includes(entity)
+      ).sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0));
+
+      filteredEvents = allEvents.filter(e =>
+        e.headline?.toLowerCase().includes(entity) ||
+        e.summary?.toLowerCase().includes(entity)
+      ).sort((a, b) => (b.editorial_score || 0) - (a.editorial_score || 0));
+
+      filteredSocial = allSocial.filter(s =>
+        s.title?.toLowerCase().includes(entity)
+      ).sort((a, b) => (b.total_engagement || 0) - (a.total_engagement || 0));
+
+      filteredCoverage = allCoverage.filter(c =>
+        c.source_name?.toLowerCase().includes(entity) ||
+        c.article_title?.toLowerCase().includes(entity)
+      ).sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at));
+
+      filteredOpportunities = allOpportunities.filter(o =>
+        o.title?.toLowerCase().includes(entity) ||
+        o.story_title?.toLowerCase().includes(entity)
+      ).sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
+
+      knowledge = unwrap(knowledgeRes, []);
+
+      console.log(`[${requestId}]   ✓ Retrieval completed in ${Date.now() - retrievalStart}ms`);
+      console.log(`[${requestId}]   RESULTS FOR ENTITY "${parsed.entity}":`);
+      console.log(`[${requestId}]     stories: ${filteredStories.length}`);
+      console.log(`[${requestId}]     events: ${filteredEvents.length}`);
+      console.log(`[${requestId}]     social: ${filteredSocial.length}`);
+      console.log(`[${requestId}]     coverage: ${filteredCoverage.length}`);
+      console.log(`[${requestId}]     opportunities: ${filteredOpportunities.length}`);
+      console.log(`[${requestId}]     entities: ${knowledge.length}`);
+
+    } else {
+      // Búsqueda general (sin entidad)
+      const [storiesRes, eventsRes, socialRes, coverageRes, opportunitiesRes] = await Promise.allSettled([
+        getActiveStories({ limit: 100, hours: 24, sort: 'score' }),
+        getActiveEvents({ limit: 50, hours: 24, sort: 'score' }),
+        getActiveSocialClusters({ limit: 50, hours: 24, sort: 'score' }),
+        getCoverageChanges({ limit: 50, hours: 24 }),
+        getOpportunities({ limit: 50, status: 'pending', sort: 'score' })
+      ]);
+
+      filteredStories = unwrap(storiesRes, { items: [] }).items || [];
+      filteredEvents = unwrap(eventsRes, { items: [] }).items || [];
+      filteredSocial = unwrap(socialRes, { items: [] }).items || [];
+      filteredCoverage = unwrap(coverageRes, { items: [] }).items || [];
+      filteredOpportunities = unwrap(opportunitiesRes, { items: [] }).items || [];
+
+      console.log(`[${requestId}]   ✓ Retrieval completed in ${Date.now() - retrievalStart}ms`);
+      console.log(`[${requestId}]   RESULTS (GLOBAL SEARCH):`);
+      console.log(`[${requestId}]     stories: ${filteredStories.length}`);
+      console.log(`[${requestId}]     events: ${filteredEvents.length}`);
+      console.log(`[${requestId}]     social: ${filteredSocial.length}`);
+      console.log(`[${requestId}]     coverage: ${filteredCoverage.length}`);
+      console.log(`[${requestId}]     opportunities: ${filteredOpportunities.length}`);
     }
 
-    const startTime = Date.now();
-    let context = {};
+    // STEP 5: BUILD EDITORIAL BRIEFING
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 5: BUILDING EDITORIAL BRIEFING`);
 
-    // Build context based on intent
-    try {
-      console.log('Building context for intent:', parsed.intent);
-
-      switch (parsed.intent) {
-        case 'what_happening':
-          const wh = await ContextBuilder.buildWhatsHappening();
-          context = wh.context;
-          break;
-
-        case 'trends':
-          const tr = await ContextBuilder.buildTrends();
-          context = tr.context;
-          break;
-
-        case 'opportunities':
-          const op = await ContextBuilder.buildOpportunities();
-          context = op.context;
-          break;
-
-        case 'coverage_changes':
-          const cc = await ContextBuilder.buildCoverageChanges();
-          context = cc.context;
-          break;
-
-        case 'entity_update':
-          if (parsed.entity) {
-            const ec = await ContextBuilder.buildEntityContext(parsed.entity);
-            context = ec.context;
-          }
-          break;
-
-        default:
-          if (parsed.entity) {
-            const ec = await ContextBuilder.buildEntityContext(parsed.entity);
-            context = ec.context;
-          } else {
-            const wh = await ContextBuilder.buildWhatsHappening();
-            context = wh.context;
-          }
-      }
-    } catch (error) {
-      console.error('Context Builder error:', error.message);
-    }
-
-    // Log what context was retrieved
-    const contextKeys = Object.keys(context);
-    const contextSample = {};
-    contextKeys.forEach(key => {
-      const val = context[key];
-      if (Array.isArray(val)) contextSample[key] = `${val.length} items`;
-      else if (val?.items) contextSample[key] = `${val.items.length} items`;
-      else if (typeof val === 'object') contextSample[key] = 'object';
-      else contextSample[key] = typeof val;
+    const briefing = buildEditorialBriefing({
+      stories: filteredStories,
+      events: filteredEvents,
+      social: filteredSocial,
+      coverage: filteredCoverage,
+      opportunities: filteredOpportunities,
+      entities: knowledge,
+      entity: parsed.entity || null
     });
-    console.log('Context retrieved:', contextSample);
 
-    // Call Sonnet with context
-    const contextStr = JSON.stringify(context, null, 2);
-    const systemPrompt = `Eres un editor jefe de noticias de Panorama. Tu trabajo es:
-1. Leer el contexto editorial completo
-2. Identificar lo importante y lo ruido
-3. Responder la pregunta del usuario de forma editorial clara
+    console.log(`[${requestId}]   ✓ Briefing constructed with:`);
+    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} (from ${filteredStories.length} available)`);
+    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} (from ${filteredEvents.length} available)`);
+    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} (from ${filteredSocial.length} available)`);
+    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} (from ${filteredCoverage.length} available)`);
+    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} (from ${filteredOpportunities.length} available)`);
+    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} (from ${knowledge.length} available)`);
 
-Si el contexto está vacío, dilo claramente. No inventes información.
-Responde SIEMPRE en español.`;
+    const contextStr = JSON.stringify(briefing, null, 2);
+    const systemPrompt = `Eres un Editor Ejecutivo de Panorama.
+Tu trabajo: responder la pregunta del usuario de forma clara, editorializada.
+
+IMPORTANTE: Estructura tu respuesta en TEMAS PRINCIPALES.
+Cada tema debe ser una afirmación clara y verificable.
+Ejemplo:
+
+TEMA: Boca cerró a Lozano
+SOPORTE: 12 artículos, 7 medios, 3 redes sociales
+
+TEMA: Mercado de pases activo
+SOPORTE: Coverage de TyC, Olé, ESPN
+
+No escribas párrafos largos. Sé directo y estructurado.`;
 
     const userPrompt = `Pregunta: "${question}"
 
-Contexto editorial:
+Contexto de Panorama:
 ${contextStr}
 
-Responde de forma concisa (máx 200 palabras), como lo haría un editor jefe.`;
+Responde identificando los TEMAS PRINCIPALES.
+Para cada tema, indica qué datos lo respaldan.
+Sé verificable. Sé auditable.`;
 
-    console.log('Calling Sonnet...');
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 6: CALLING SONNET-4-6`);
+    console.log(`[${requestId}]   Context length: ${contextStr.length} chars`);
+    console.log(`[${requestId}]   Max tokens: 2000`);
 
+    const callStart = Date.now();
     const message = await claude.messages.create({
       model: MODEL,
-      max_tokens: 500,
+      max_tokens: 2000,
       system: systemPrompt,
       messages: [{ role: 'user', content: userPrompt }]
     });
 
     const answer = message.content[0].type === 'text' ? message.content[0].text : '';
-    console.log('Sonnet response received, length:', answer.length);
+
+    console.log(`[${requestId}]   ✓ Response received in ${Date.now() - callStart}ms`);
+    console.log(`[${requestId}]   Answer length: ${answer.length} chars`);
+
+    // STEP 7: ENRICH RESPONSE
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 7: ENRICHING RESPONSE WITH SOURCES`);
+
+    const enrichedResponse = enrichResponseWithSources(answer, briefing, filteredStories, filteredEvents, filteredSocial, filteredCoverage, filteredOpportunities);
+
+    console.log(`[${requestId}]   ✓ Sources mapped: ${Object.keys(enrichedResponse.sources || {}).length} themes found`);
+
+    // FINAL SUMMARY LOG
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] === COMPLETE AUDIT TRAIL ===`);
+    console.log(`[${requestId}] Question: "${question}"`);
+    console.log(`[${requestId}] Parsed Intent: ${parsed.intent}`);
+    console.log(`[${requestId}] Parsed Entity: ${parsed.entity || '(null)'}`);
+    console.log(`[${requestId}] Final Search Type: ${parsed.entity ? `ENTITY-SPECIFIC ("${parsed.entity}")` : 'GLOBAL'}`);
+    console.log(`[${requestId}] Results Retrieved:`);
+    console.log(`[${requestId}]   Editorial: ${filteredStories.length} available → ${briefing.stories?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Events: ${filteredEvents.length} available → ${briefing.events?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Social: ${filteredSocial.length} available → ${briefing.social?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Coverage: ${filteredCoverage.length} available → ${briefing.coverage?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Opportunities: ${filteredOpportunities.length} available → ${briefing.opportunities?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Entities: ${knowledge.length} available → ${briefing.entities?.length || 0} in briefing`);
+    console.log(`[${requestId}] Total Time: ${Date.now() - start}ms`);
+    console.log(`[${requestId}] Briefing Status: REBUILT FROM ZERO (no cache)`);
+
+    // Construir evidencia estructurada
+    const evidence = {
+      articles: filteredStories.map(s => ({
+        id: s.id,
+        title: s.title,
+        type: s.story_type,
+        score: s.importance_score,
+        article_count: s.article_count,
+        source_count: s.source_count,
+        coverage_status: s.coverage_status,
+        sources: s.sources || [],
+        internal_link: `/stories/${s.id}`
+      })),
+      events: filteredEvents.map(e => ({
+        id: e.id,
+        headline: e.headline,
+        score: e.editorial_score,
+        story_count: e.story_count,
+        internal_link: `/events/${e.id}`
+      })),
+      social: filteredSocial.map(s => ({
+        id: s.id,
+        title: s.title,
+        engagement: s.total_engagement,
+        posts: s.post_count,
+        platforms: s.platforms || [],
+        internal_link: `/social/clusters/${s.id}`
+      })),
+      coverage: filteredCoverage.map(c => ({
+        id: c.id,
+        source: c.source_name,
+        change_type: c.change_type,
+        title: c.article_title,
+        detected_at: c.detected_at,
+        internal_link: `/coverage/${c.id}`
+      })),
+      opportunities: filteredOpportunities.map(o => ({
+        id: o.id,
+        title: o.title,
+        type: o.opportunity_type,
+        score: o.composite_score,
+        trigger: o.trigger,
+        internal_link: `/opportunities/${o.id}`
+      })),
+      entities: knowledge.map(k => ({
+        id: k.id,
+        name: k.name,
+        type: k.entity_type,
+        internal_link: `/knowledge-graph/entities/${k.id}`
+      }))
+    };
 
     return res.json({
-      answer,
-      context,
-      elapsed: Date.now() - startTime,
-      sources: Object.values(context).reduce((sum, val) => {
-        if (Array.isArray(val)) return sum + val.length;
-        if (val?.items) return sum + val.items.length;
-        return sum;
-      }, 0),
+      answer: enrichedResponse.narrative,
+      detailed_sources: enrichedResponse.sources,
+      evidence,
+      modules_count: {
+        articles: filteredStories.length,
+        events: filteredEvents.length,
+        social: filteredSocial.length,
+        coverage: filteredCoverage.length,
+        opportunities: filteredOpportunities.length,
+        entities: knowledge.length
+      },
+      elapsed: Date.now() - start,
       model: MODEL
     });
 
@@ -172,8 +389,222 @@ Responde de forma concisa (máx 200 palabras), como lo haría un editor jefe.`;
 });
 
 /**
+ * GET /openclaw/session
+ */
+router.get('/session', requireAuth, (req, res) => {
+  const session = getSession(req.user.sub);
+  return res.json({
+    lastEntity: session.lastEntity,
+    expiresIn: Math.max(0, session.expiresAt - Date.now())
+  });
+});
+
+/**
+ * DELETE /openclaw/session
+ */
+router.delete('/session', requireAuth, (req, res) => {
+  sessionMemory.delete(req.user.sub);
+  return res.json({ ok: true });
+});
+
+/**
+ * GET /openclaw/debug-parse
+ * Test the parser with a question
+ */
+router.get('/debug-parse', requireAuth, (req, res) => {
+  const { question } = req.query;
+  if (!question) {
+    return res.status(400).json({ error: 'question param required' });
+  }
+
+  const parsed = parseQuestion(question);
+  const session = getSession(req.user.sub);
+
+  return res.json({
+    input: { question, userId: req.user.sub },
+    parsed: {
+      intent: parsed.intent,
+      entity: parsed.entity,
+      timeframe: parsed.timeframe,
+      requiresSynthesis: parsed.requiresSynthesis
+    },
+    session: {
+      lastEntity: session.lastEntity
+    },
+    analysis: {
+      intentIsGlobal: ['what_happening', 'trends', 'opportunities', 'coverage_changes'].includes(parsed.intent),
+      willUseSessionEntity: !parsed.entity && session.lastEntity && !['what_happening', 'trends', 'opportunities', 'coverage_changes'].includes(parsed.intent),
+      finalEntity: parsed.entity || (session.lastEntity && !['what_happening', 'trends', 'opportunities', 'coverage_changes'].includes(parsed.intent) ? session.lastEntity : null)
+    }
+  });
+});
+
+function unwrap(settled, fallback) {
+  return settled.status === 'fulfilled' ? settled.value : fallback;
+}
+
+/**
+ * Construir briefing editorial de alta calidad
+ * Transforma contexto crudo en evidencia periodística
+ */
+function buildEditorialBriefing(rawContext) {
+  const briefing = {};
+
+  // STORIES: Top 5 por score, con sus artículos
+  if (rawContext.stories && rawContext.stories.length > 0) {
+    briefing.stories = rawContext.stories.slice(0, 5).map(story => ({
+      title: story.title,
+      score: story.importance_score,
+      coverage_status: story.coverage_status,
+      article_count: story.article_count,
+      source_count: story.source_count,
+      articles: story.sources ? story.sources.slice(0, 5).map(source => ({
+        source: source,
+        score: story.importance_score
+      })) : [],
+      internal_link: `/stories/${story.id}`
+    }));
+  }
+
+  // EVENTS: Top 3
+  if (rawContext.events && rawContext.events.length > 0) {
+    briefing.events = rawContext.events.slice(0, 3).map(event => ({
+      headline: event.headline,
+      score: event.editorial_score,
+      story_count: event.story_count,
+      article_count: event.article_count,
+      internal_link: `/events/${event.id}`
+    }));
+  }
+
+  // SOCIAL: Top 3 posts, con detalles completos
+  if (rawContext.social && rawContext.social.length > 0) {
+    briefing.social = rawContext.social.slice(0, 3).map(post => ({
+      title: post.title,
+      platforms: post.platforms || [],
+      engagement: post.total_engagement,
+      posts_count: post.post_count,
+      viral_score: post.viral_score,
+      internal_link: `/social/clusters/${post.id}`
+    }));
+  }
+
+  // COVERAGE: Top 3 cambios, con detalles
+  if (rawContext.coverage && rawContext.coverage.length > 0) {
+    briefing.coverage = rawContext.coverage.slice(0, 3).map(change => ({
+      source: change.source_name,
+      change_type: change.change_type,
+      article_title: change.article_title,
+      detected_at: change.detected_at,
+      internal_link: `/coverage/${change.id}`
+    }));
+  }
+
+  // OPPORTUNITIES: Top 3
+  if (rawContext.opportunities && rawContext.opportunities.length > 0) {
+    briefing.opportunities = rawContext.opportunities.slice(0, 3).map(opp => ({
+      title: opp.title,
+      type: opp.opportunity_type,
+      score: opp.composite_score,
+      trigger: opp.trigger,
+      internal_link: `/opportunities/${opp.id}`
+    }));
+  }
+
+  // ENTITIES: Top 8
+  if (rawContext.entities && rawContext.entities.length > 0) {
+    briefing.entities = rawContext.entities.slice(0, 8).map(entity => ({
+      name: entity.name,
+      type: entity.entity_type,
+      internal_link: `/knowledge-graph/entities/${entity.id}`
+    }));
+  }
+
+  // SUMMARY: resumen de qué hay disponible
+  briefing.summary = {
+    total_stories: rawContext.stories?.length || 0,
+    total_events: rawContext.events?.length || 0,
+    total_social_clusters: rawContext.social?.length || 0,
+    total_coverage_changes: rawContext.coverage?.length || 0,
+    total_opportunities: rawContext.opportunities?.length || 0,
+    total_entities: rawContext.entities?.length || 0,
+    search_query: rawContext.entity || 'general'
+  };
+
+  return briefing;
+}
+
+/**
+ * Enriquecer respuesta con fuentes detalladas
+ * Mapea cada tema mencionado a sus fuentes reales
+ */
+function enrichResponseWithSources(narrative, briefing, rawStories, rawEvents, rawSocial, rawCoverage, rawOpportunities) {
+  const sources = {};
+
+  // Extraer palabras clave de la narrativa
+  const narrativeWords = narrative.toLowerCase().split(/\s+/);
+
+  // Buscar en stories del briefing
+  if (briefing.stories && Array.isArray(briefing.stories)) {
+    briefing.stories.forEach(story => {
+      const titleWords = story.title.toLowerCase().split(/\s+/);
+      const matches = titleWords.filter(w => narrativeWords.includes(w)).length;
+
+      if (matches > 1 && !sources[story.title]) {
+        sources[story.title] = {
+          articles: story.articles || [],
+          social: [],
+          coverage: [],
+          module: 'Editorial Intelligence'
+        };
+      }
+    });
+  }
+
+  // Buscar en social del briefing
+  if (briefing.social && Array.isArray(briefing.social)) {
+    briefing.social.forEach(post => {
+      const titleWords = (post.title || '').toLowerCase().split(/\s+/);
+      const matches = titleWords.filter(w => narrativeWords.includes(w)).length;
+
+      if (matches > 0) {
+        Object.keys(sources).forEach(theme => {
+          if (!sources[theme].social) sources[theme].social = [];
+          sources[theme].social.push({
+            platforms: post.platforms || [],
+            engagement: post.engagement
+          });
+        });
+      }
+    });
+  }
+
+  // Buscar en coverage del briefing
+  if (briefing.coverage && Array.isArray(briefing.coverage)) {
+    briefing.coverage.forEach(change => {
+      Object.keys(sources).forEach(theme => {
+        if (theme.toLowerCase().includes(change.source.toLowerCase())) {
+          if (!sources[theme].coverage) sources[theme].coverage = [];
+          sources[theme].coverage.push({
+            source: change.source,
+            change_type: change.change_type,
+            title: change.article_title
+          });
+        }
+      });
+    });
+  }
+
+  return {
+    narrative,
+    sources: Object.keys(sources).length > 0 ? sources : null
+  };
+}
+
+/**
  * GET /openclaw/debug
  * Debug endpoint to inspect the pipeline step-by-step
+ * Returns complete context, prompt, and model information
  */
 router.get('/debug', requireAuth, async (req, res, next) => {
   try {
@@ -203,18 +634,41 @@ router.get('/debug', requireAuth, async (req, res, next) => {
       console.error('Context error:', error.message);
     }
 
+    // Build the actual prompt that would be sent to Claude
+    const contextStr = JSON.stringify(context, null, 2);
+    const systemPrompt = `Eres un editor jefe de noticias de Panorama. Tu trabajo es:
+1. Leer el contexto editorial completo
+2. Identificar lo importante y lo ruido
+3. Responder la pregunta del usuario de forma editorial clara
+
+Si el contexto está vacío, dilo claramente. No inventes información.
+Responde SIEMPRE en español.`;
+
+    const userPrompt = `Pregunta: "${question}"
+
+Contexto editorial:
+${contextStr}
+
+Responde de forma concisa (máx 200 palabras), como lo haría un editor jefe.`;
+
     return res.json({
       step_1_parse: parsed,
-      step_2_context: {
+      step_2_context_complete: context,
+      step_3_context_summary: {
         keys: Object.keys(context),
         sample: Object.entries(context).reduce((acc, [k, v]) => {
           if (Array.isArray(v)) acc[k] = `${v.length} items`;
           else if (v?.items) acc[k] = `${v.items.length} items`;
+          else if (typeof v === 'object') acc[k] = 'object';
           else acc[k] = typeof v;
           return acc;
         }, {})
       },
-      step_3_model: MODEL
+      step_4_model: MODEL,
+      step_5_system_prompt: systemPrompt,
+      step_6_user_prompt_with_context: userPrompt,
+      step_6_user_prompt_length: userPrompt.length,
+      step_6_context_is_empty: Object.keys(context).length === 0
     });
   } catch (error) {
     next(error);

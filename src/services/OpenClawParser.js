@@ -36,23 +36,23 @@ export function parseQuestion(text) {
  * Detect the intent of the question
  */
 function detectIntent(lowerText, entity) {
-  // What's happening today
-  if (lowerText.match(/qué está pasando|qué pasa|what.s happening|breaking news|novedades|últimas noticias/)) {
+  // What's happening today - more tolerant regex for verb conjugations
+  if (lowerText.match(/qué está pasando|qué pas[ao]|what.s happening|breaking news|novedades|últimas noticias|hoy|qué hay|qué sucede|sucediendo/i)) {
     return 'what_happening';
   }
 
   // Trends
-  if (lowerText.match(/tendencias|trending|viral|qué es viral/)) {
+  if (lowerText.match(/tendencias|trending|viral|qué es viral|creciendo|subiendo|top|ranking/i)) {
     return 'trends';
   }
 
   // Opportunities
-  if (lowerText.match(/oportunidades|qué escribir|editorial|coberturas|stories/)) {
+  if (lowerText.match(/oportunidades|qué escribir|qué puedo publicar|editorial|coberturas|stories/i)) {
     return 'opportunities';
   }
 
   // Coverage changes
-  if (lowerText.match(/cambió|qué cambió|coverage|cobertura|updated|modificad/)) {
+  if (lowerText.match(/cambió|qué cambió|coverage|cobertura|updated|modificad|cambios/i)) {
     return 'coverage_changes';
   }
 
@@ -70,18 +70,37 @@ function detectIntent(lowerText, entity) {
  */
 function extractEntity(lowerText) {
   // Pattern: "qué pasó con X" or "what happened to X"
-  let match = lowerText.match(/(?:qué pasó con|what happened to|what.s up with|sobre)\s+([a-záéíóúñ\s]+?)(?:\?|$|en|y)/i);
-  if (match) return match[1].trim();
+  // Captura hasta la próxima palabra clave (hoy, ayer, esta, aquí, etc)
+  let match = lowerText.match(/(?:qué pasó con|what happened to|what's up with|sobre)\s+([a-záéíóúñ\s]+?)(?:\s+(?:hoy|ayer|esta|aquí|ahora|en\s|y\s|\?)|$)/i);
+  if (match) {
+    const entity = match[1].trim();
+    if (entity && entity.length > 1) return entity;
+  }
 
-  // Pattern: "en X" or "with X"
-  match = lowerText.match(/\b(?:en|with|sobre)\s+([a-záéíóúñ\s]+?)(?:\?|$)/i);
-  if (match) return match[1].trim();
+  // Pattern: "en X" (followed by a boundary)
+  match = lowerText.match(/\ben\s+([a-záéíóúñ\s]+?)(?:\s+(?:hoy|ayer|esta|ahora|\?)|$)/i);
+  if (match) {
+    const entity = match[1].trim();
+    if (entity && entity.length > 1) return entity;
+  }
 
-  // Common entity queries: just the name at the start or end
-  const commonEntities = ['boca', 'river', 'messi', 'milei', 'argentina', 'economía', 'política', 'deportes', 'tecnología', 'salud'];
+  // Pattern: "sobre X"
+  match = lowerText.match(/sobre\s+([a-záéíóúñ\s]+?)(?:\s+(?:hoy|ayer|esta|ahora|\?)|$)/i);
+  if (match) {
+    const entity = match[1].trim();
+    if (entity && entity.length > 1) return entity;
+  }
+
+  // Common entity queries: look for single, well-formed words
+  const commonEntities = [
+    'boca juniors', 'river plate', 'boca', 'river', 'messi', 'milei', 'argentina',
+    'formosa', 'brasil', 'economía', 'política', 'deportes', 'tecnología', 'salud', 'córdoba'
+  ];
+
   for (const entity of commonEntities) {
     if (lowerText.includes(entity)) {
-      return entity.charAt(0).toUpperCase() + entity.slice(1);
+      // Capitalize properly
+      return entity.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
     }
   }
 
