@@ -12,6 +12,7 @@
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { retrieveEditorialEvidence } from '../services/retrieval.js';
+import { rankEditorialEvidence } from '../services/ranker.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const router = express.Router();
@@ -94,28 +95,20 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     console.log(`[${requestId}]     entities: ${evidence.entities.length}`);
     auditLog(`[${requestId}] STEP 1 RESULTS: stories=${evidence.stories.length} events=${evidence.events.length} social=${evidence.social.length} coverage=${evidence.coverage.length} opps=${evidence.opportunities.length}`);
 
-    // STEP 2: BUILD EDITORIAL BRIEFING
+    // STEP 2: RANK EDITORIAL EVIDENCE
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 2: BUILDING EDITORIAL BRIEFING`);
+    console.log(`[${requestId}] STEP 2: RANKING EDITORIAL EVIDENCE`);
     console.log(`[${requestId}]   Input: ${evidence.stories.length} stories, ${evidence.events.length} events, ${evidence.social.length} social, ${evidence.coverage.length} coverage, ${evidence.opportunities.length} opportunities`);
 
-    const briefing = buildEditorialBriefing({
-      stories: evidence.stories,
-      events: evidence.events,
-      social: evidence.social,
-      coverage: evidence.coverage,
-      opportunities: evidence.opportunities,
-      entities: evidence.entities,
-      entity: evidence.query.entity || null
-    });
+    const briefing = rankEditorialEvidence(evidence);
 
-    console.log(`[${requestId}]   ✓ Briefing constructed (SELECTION RULES: max 5 stories, 3 events, 3 social, 3 coverage, 3 opportunities):`);
-    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} selected (from ${evidence.stories.length} available)`);
-    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} selected (from ${evidence.events.length} available)`);
-    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} selected (from ${evidence.social.length} available)`);
-    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} selected (from ${evidence.coverage.length} available)`);
-    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} selected (from ${evidence.opportunities.length} available)`);
-    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} selected (from ${evidence.entities.length} available)`);
+    console.log(`[${requestId}]   ✓ Ranked to executive brief (Top N by editorial criteria):`);
+    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} top (from ${evidence.stories.length} available)`);
+    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} top (from ${evidence.events.length} available)`);
+    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} top (from ${evidence.social.length} available)`);
+    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} top (from ${evidence.coverage.length} available)`);
+    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} top (from ${evidence.opportunities.length} available)`);
+    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} top (from ${evidence.entities.length} available)`);
 
     const contextStr = JSON.stringify(briefing, null, 2);
     const systemPrompt = `Eres un Editor Ejecutivo de Panorama.
@@ -315,115 +308,6 @@ router.get('/debug-parse', requireAuth, (req, res) => {
   });
 });
 
-/**
- * Construir briefing editorial de alta calidad
- * Transforma contexto crudo en evidencia periodística
- */
-function buildEditorialBriefing(rawContext) {
-  const briefing = {};
-
-  // STORIES: Filtrar por relevancia (score >= 3) + límite razonable
-  if (rawContext.stories && rawContext.stories.length > 0) {
-    briefing.stories = rawContext.stories
-      .filter(s => (s.importance_score || 0) >= 3)
-      .slice(0, 150)
-      .map(story => ({
-        title: story.title,
-        summary: story.algorithmic_summary || story.summary || '(sin resumen)',
-        type: story.story_type,
-        status: story.coverage_status,
-        importance: story.importance_score,
-        articles: story.article_count,
-        sources: story.sources ? story.sources.slice(0, 5) : [],
-        internal_link: `/stories/${story.id}`
-      }));
-  }
-
-  // EVENTS: Filtrar por relevancia (editorial_score >= 3) + límite razonable
-  if (rawContext.events && rawContext.events.length > 0) {
-    briefing.events = rawContext.events
-      .filter(e => (e.editorial_score || 0) >= 3)
-      .slice(0, 200)
-      .map(event => ({
-        headline: event.headline,
-        summary: event.summary || '(sin contexto)',
-        type: event.event_type,
-        importance: event.editorial_score,
-        stories_involved: event.story_count,
-        articles_total: event.article_count,
-        detected: event.first_detected_at,
-        last_update: event.last_updated_at,
-        internal_link: `/events/${event.id}`
-      }));
-  }
-
-  // SOCIAL: Filtrar por viral_score >= 30 (trending real) + límite razonable
-  if (rawContext.social && rawContext.social.length > 0) {
-    briefing.social = rawContext.social
-      .filter(s => (s.viral_score || 0) >= 30)
-      .slice(0, 150)
-      .map(post => ({
-        title: post.title,
-        platforms: (post.platforms || []).join(', '),
-        engagement: post.total_engagement,
-        viral_score: post.viral_score,
-        gap_score: post.gap_score,
-        posts_count: post.post_count,
-        context: `Trending en ${post.platforms ? post.platforms.join(', ') : 'redes'} con ${post.total_engagement} interacciones`,
-        internal_link: `/social/clusters/${post.id}`
-      }));
-  }
-
-  // COVERAGE: Todos (son pocos y todos relevantes)
-  if (rawContext.coverage && rawContext.coverage.length > 0) {
-    briefing.coverage = rawContext.coverage.map(change => ({
-      source: change.source_name,
-      change_type: change.change_type,
-      headline: change.article_title,
-      when: change.detected_at,
-      context: `${change.change_type} en ${change.source_name}: ${change.article_title}`,
-      internal_link: `/coverage/${change.id}`
-    }));
-  }
-
-  // OPPORTUNITIES: Filtrar por composite_score >= 40 + límite razonable
-  if (rawContext.opportunities && rawContext.opportunities.length > 0) {
-    briefing.opportunities = rawContext.opportunities
-      .filter(o => (o.composite_score || 0) >= 40)
-      .slice(0, 300)
-      .map(opp => ({
-        title: opp.title,
-        type: opp.opportunity_type,
-        score: opp.composite_score,
-        trigger: opp.trigger,
-        context: `Oportunidad ${opp.opportunity_type} (${opp.trigger}): ${opp.title}`,
-        internal_link: `/opportunities/${opp.id}`
-      }));
-  }
-
-  // ENTITIES: Todos (información sobre entidades mencionadas)
-  if (rawContext.entities && rawContext.entities.length > 0) {
-    briefing.entities = rawContext.entities.map(entity => ({
-      name: entity.name,
-      type: entity.entity_type,
-      mentions: entity.mentions || 0,
-      internal_link: `/knowledge-graph/entities/${entity.id}`
-    }));
-  }
-
-  // SUMMARY: resumen de qué hay disponible
-  briefing.summary = {
-    total_stories: rawContext.stories?.length || 0,
-    total_events: rawContext.events?.length || 0,
-    total_social_clusters: rawContext.social?.length || 0,
-    total_coverage_changes: rawContext.coverage?.length || 0,
-    total_opportunities: rawContext.opportunities?.length || 0,
-    total_entities: rawContext.entities?.length || 0,
-    search_query: rawContext.entity || 'general'
-  };
-
-  return briefing;
-}
 
 /**
  * Enriquecer respuesta con fuentes detalladas
