@@ -12,7 +12,6 @@
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
-import * as fs from 'fs';
 import {
   getActiveStories,
   getActiveEvents,
@@ -27,16 +26,6 @@ const router = express.Router();
 const claude = new Anthropic();
 const MODEL = 'claude-sonnet-4-6';
 const DEBUG = process.env.OPENCLAW_DEBUG === 'true';
-
-const AUDIT_LOG_FILE = './openclaw-audit.log';
-
-function auditLog(msg) {
-  try {
-    fs.appendFileSync(AUDIT_LOG_FILE, msg + '\n');
-  } catch (e) {
-    console.error('[AUDIT LOG ERROR]', e.message);
-  }
-}
 
 // Session memory (10 min TTL)
 const sessionMemory = new Map();
@@ -136,8 +125,8 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     } else {
       // Default: use parsed entity or global
       retrievalEntity = parsed.entity || null;
-      console.log(`[${requestId}]   → DEFAULT: Entity="${retrievalEntity || '(global)'"}"`);
-      auditLog(`[${requestId}] STEP 3 DECISION: DEFAULT - retrievalEntity set to "${retrievalEntity || '(global)'}"`);
+      console.log(`[${requestId}]   → DEFAULT: Entity="${retrievalEntity || "(global)"}"`);
+      auditLog(`[${requestId}] STEP 3 DECISION: DEFAULT - retrievalEntity set to "${retrievalEntity || "(global)"}"`);
     }
 
     // Update parsed for downstream branching
