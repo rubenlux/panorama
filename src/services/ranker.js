@@ -1,24 +1,41 @@
 /**
+ * RANKER RULES — INNEGOCIABLES
+ *
+ * ✓ PERMITIDO:
+ *   - ordenar evidencia
+ *   - agregar metadata de ranking (rank, score, reason)
+ *   - preservar TODOS los campos originales
+ *
+ * ✗ PROHIBIDO:
+ *   - resumir o simplificar campos
+ *   - interpretar o analizar datos
+ *   - llamar a IA o LLMs
+ *   - eliminar o modificar campos originales
+ *   - duplicar cálculos que ya hace Panorama
+ *
+ * RAZÓN: Si el ranker empieza a hacer inteligencia, todo el pipeline se degrada.
+ * El ranker es SOLO ordenador. Panorama es el cerebro.
+ */
+
+/**
  * rankEditorialEvidence(evidence)
  *
- * Convierte miles de resultados en un briefing ejecutivo.
- * No es una función de filtrado arbitrario.
- * Es un RANKING por criterios editoriales concretos.
+ * ARQUITECTURA DEFENSIVA: Ninguna capa destruye evidencia.
  *
- * Input: { stories: 778, events: 2213, social: 933, coverage: 84, opportunities: 10000 }
- * Output: { stories: 10, events: 10, social: 10, coverage: 20, opportunities: 5, entities: 20 }
+ * - Input: evidencia COMPLETA desde retrieval (todas las columnas de DB)
+ * - Output: MISMA evidencia + metadata de ranking (rank, editorial_score, reason)
+ * - PROHIBIDO: eliminar campos, transformar estructuras, simplificar objetos
  *
  * Criterios de ranking:
- * 1. STORIES: score + freshness + coverage + article_count
- * 2. EVENTS: editorial_score + story_count + recency
- * 3. SOCIAL: viral_score + gap_score (trending + editorial gap)
- * 4. COVERAGE: recency (más reciente = más importante)
- * 5. OPPORTUNITIES: composite_score (ya está calculado)
- * 6. ENTITIES: mentions (popularidad)
+ * 1. STORIES: importance_score (primary) → freshness, coverage
+ * 2. EVENTS: editorial_score + story_count
+ * 3. SOCIAL: viral_score × 0.6 + gap_score × 0.4
+ * 4. COVERAGE: recency
+ * 5. OPPORTUNITIES: composite_score
+ * 6. ENTITIES: mentions
  */
 
 export function rankEditorialEvidence(evidence) {
-  // Agregar metadata: fecha actual, timeframe
   const today = new Date();
   const todayStr = today.toLocaleDateString('es-AR', {
     weekday: 'long',
@@ -54,6 +71,7 @@ export function rankEditorialEvidence(evidence) {
 
 /**
  * Ranking de stories
+ * Preserva TODOS los campos, agrega SOLO: rank, editorial_score, reason
  * Top 10 por: importance_score (primary)
  */
 function rankStories(stories) {
@@ -62,22 +80,32 @@ function rankStories(stories) {
   return stories
     .sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0))
     .slice(0, 10)
-    .map(s => ({
-      title: s.title,
-      summary: s.algorithmic_summary || s.summary || '(sin resumen)',
-      type: s.story_type,
-      status: s.coverage_status,
-      importance: s.importance_score,
-      articles: s.article_count,
-      sources: (s.sources || []).slice(0, 5).join(', '),
-      source_list: (s.sources || []).slice(0, 5),
-      url: `https://panorama.local/stories/${s.id}`,
-      internal_link: `/stories/${s.id}`
+    .map((s, index) => ({
+      ...s,
+      rank: index + 1,
+      editorial_score: calculateStoryScore(s),
+      reason: generateStoryReason(s)
     }));
+}
+
+function calculateStoryScore(s) {
+  const scoreBase = (s.importance_score || 0);
+  const coverageBonus = s.coverage_status === 'breaking' ? 5 : s.coverage_status === 'growing' ? 3 : 0;
+  const recencyBonus = s.article_count >= 5 ? 2 : 0;
+  return Math.min(100, scoreBase + coverageBonus + recencyBonus);
+}
+
+function generateStoryReason(s) {
+  const parts = [];
+  if (s.source_count) parts.push(`${s.source_count} medios`);
+  if (s.article_count) parts.push(`${s.article_count} artículos`);
+  if (s.coverage_status === 'breaking') parts.push('en desarrollo');
+  return parts.join(' • ') || 'Historia editorial importante';
 }
 
 /**
  * Ranking de eventos
+ * Preserva TODOS los campos, agrega SOLO: rank, editorial_score, reason
  * Top 10 por: editorial_score (primary) + story_count (tiebreaker)
  */
 function rankEvents(events) {
@@ -90,48 +118,62 @@ function rankEvents(events) {
       return (b.story_count || 0) - (a.story_count || 0);
     })
     .slice(0, 10)
-    .map(e => ({
-      headline: e.headline,
-      summary: e.summary || '(sin contexto)',
-      type: e.event_type,
-      importance: e.editorial_score,
-      stories_involved: e.story_count,
-      articles_total: e.article_count,
-      url: `https://panorama.local/events/${e.id}`,
-      internal_link: `/events/${e.id}`
+    .map((e, index) => ({
+      ...e,
+      rank: index + 1,
+      editorial_score: e.editorial_score || 0,
+      reason: generateEventReason(e)
     }));
+}
+
+function generateEventReason(e) {
+  const parts = [];
+  if (e.story_count) parts.push(`${e.story_count} historias`);
+  if (e.source_count) parts.push(`${e.source_count} medios`);
+  if (e.coverage_status === 'breaking') parts.push('evento en desarrollo');
+  return parts.join(' • ') || 'Evento editorial importante';
 }
 
 /**
  * Ranking de social
- * Top 10 por: viral_score + gap_score (trending que no está cubierto editorialmente)
+ * Preserva TODOS los campos, agrega SOLO: rank, editorial_score, reason
+ * Top 10 por: viral_score × 0.6 + gap_score × 0.4 (trending + editorial gap)
  */
 function rankSocial(social) {
   if (!social || social.length === 0) return [];
 
   return social
     .sort((a, b) => {
-      // Priorizar viral + gap (editorial opportunity)
       const scoreA = (b.viral_score || 0) * 0.6 + (b.gap_score || 0) * 0.4;
       const scoreB = (a.viral_score || 0) * 0.6 + (a.gap_score || 0) * 0.4;
       return scoreA - scoreB;
     })
     .slice(0, 10)
-    .map(s => ({
-      title: s.title,
-      platforms: Array.isArray(s.platforms) ? s.platforms.join(', ') : '',
-      platform_list: Array.isArray(s.platforms) ? s.platforms : [],
-      engagement: s.total_engagement,
-      viral_score: s.viral_score,
-      gap_score: s.gap_score,
-      posts: s.post_count,
-      url: `https://panorama.local/social/clusters/${s.id}`,
-      internal_link: `/social/clusters/${s.id}`
+    .map((s, index) => ({
+      ...s,
+      rank: index + 1,
+      editorial_score: calculateSocialScore(s),
+      reason: generateSocialReason(s)
     }));
+}
+
+function calculateSocialScore(s) {
+  return Math.round((s.viral_score || 0) * 0.6 + (s.gap_score || 0) * 0.4);
+}
+
+function generateSocialReason(s) {
+  const parts = [];
+  if (s.post_count) parts.push(`${s.post_count} posts`);
+  if (s.total_engagement) parts.push(`${Math.round(s.total_engagement / 1000)}k interacciones`);
+  if (s.gap_score > 0.7) parts.push('sin cobertura editorial');
+  const platforms = Array.isArray(s.platforms) ? s.platforms.join(', ') : (s.platforms || 'redes');
+  parts.unshift(platforms);
+  return parts.join(' • ') || 'Tendencia social relevante';
 }
 
 /**
  * Ranking de coverage
+ * Preserva TODOS los campos, agrega SOLO: rank, editorial_score, reason
  * Top 20 por: recency (más reciente primero)
  */
 function rankCoverage(coverage) {
@@ -140,18 +182,21 @@ function rankCoverage(coverage) {
   return coverage
     .sort((a, b) => new Date(b.detected_at || 0) - new Date(a.detected_at || 0))
     .slice(0, 20)
-    .map(c => ({
-      source: c.source_name,
-      change_type: c.change_type,
-      headline: c.article_title,
-      when: c.detected_at,
-      url: c.article_url || `https://panorama.local/coverage/${c.id}`,
-      internal_link: `/coverage/${c.id}`
+    .map((c, index) => ({
+      ...c,
+      rank: index + 1,
+      editorial_score: 100 - (index * 5), // decrece por antigüedad
+      reason: generateCoverageReason(c)
     }));
+}
+
+function generateCoverageReason(c) {
+  return `${c.change_type} en ${c.source_name}`;
 }
 
 /**
  * Ranking de opportunities
+ * Preserva TODOS los campos, agrega SOLO: rank, editorial_score, reason
  * Top 5 por: composite_score (ya es un ranking completo)
  */
 function rankOpportunities(opportunities) {
@@ -160,19 +205,25 @@ function rankOpportunities(opportunities) {
   return opportunities
     .sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0))
     .slice(0, 5)
-    .map(o => ({
-      title: o.title,
-      type: o.opportunity_type,
-      score: o.composite_score,
-      trigger: o.trigger,
-      story_title: o.story_title || '(sin historia)',
-      url: `https://panorama.local/opportunities/${o.id}`,
-      internal_link: `/opportunities/${o.id}`
+    .map((o, index) => ({
+      ...o,
+      rank: index + 1,
+      editorial_score: o.composite_score || 0,
+      reason: generateOpportunityReason(o)
     }));
+}
+
+function generateOpportunityReason(o) {
+  const parts = [];
+  if (o.opportunity_type) parts.push(o.opportunity_type);
+  if (o.trigger === 'algorithmic') parts.push('algorítmica');
+  if (o.trigger === 'ai') parts.push('validada IA');
+  return parts.join(' • ') || 'Oportunidad editorial';
 }
 
 /**
  * Ranking de entities
+ * Preserva TODOS los campos, agrega SOLO: rank, editorial_score, reason
  * Top 20 por: mentions (cuántas veces mencionada)
  */
 function rankEntities(entities) {
@@ -181,11 +232,10 @@ function rankEntities(entities) {
   return entities
     .sort((a, b) => (b.mentions || 0) - (a.mentions || 0))
     .slice(0, 20)
-    .map(e => ({
-      name: e.name,
-      type: e.entity_type,
-      mentions: e.mentions || 0,
-      url: `https://panorama.local/knowledge-graph/entities/${e.id}`,
-      internal_link: `/knowledge-graph/entities/${e.id}`
+    .map((e, index) => ({
+      ...e,
+      rank: index + 1,
+      editorial_score: Math.min(100, (e.mentions || 0) * 10),
+      reason: `Mencionada ${e.mentions || 0} veces`
     }));
 }
