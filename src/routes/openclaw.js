@@ -80,52 +80,52 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     console.log(`[${requestId}] STEP 2: SESSION STATE`);
     console.log(`[${requestId}]   session.lastEntity: ${session.lastEntity || '(null)'}`);
 
-    // STEP 3: Determine final entity to use
-    const intentRequiresGlobal = parsed.intent === 'what_happening' || parsed.intent === 'trends' || parsed.intent === 'opportunities' || parsed.intent === 'coverage_changes';
+    // STEP 3: Explicit Retrieval Planning
+    // NO session contamination for global intents - this is absolute
 
-    let finalEntity = parsed.entity;
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 3: RETRIEVAL PLANNER`);
+    console.log(`[${requestId}]   Parsed: intent="${parsed.intent}", entity="${parsed.entity || '(null)'}", session="${session.lastEntity || '(none)'}"`);
 
-    // IMPORTANT: If intent is global BUT there's a specific entity parsed,
-    // treat it as entity-specific (e.g. "qué pasó con Boca" = "tell me Boca news")
-    // Only force null if BOTH intent is global AND no specific entity was parsed
-    if (intentRequiresGlobal && !parsed.entity) {
-      console.log(`[${requestId}] `);
-      console.log(`[${requestId}] STEP 3: INTENT IS GLOBAL ("${parsed.intent}") + NO SPECIFIC ENTITY`);
-      console.log(`[${requestId}]   → Using full global search (no entity filter)`);
-      // Force null explicitly
-      finalEntity = null;
-    } else if (intentRequiresGlobal && parsed.entity) {
-      console.log(`[${requestId}] `);
-      console.log(`[${requestId}] STEP 3: INTENT IS GLOBAL ("${parsed.intent}") BUT HAS ENTITY`);
-      console.log(`[${requestId}]   → Treating as entity-specific: "${parsed.entity}"`);
-      finalEntity = parsed.entity;
-    } else if (!finalEntity && session.lastEntity) {
-      console.log(`[${requestId}] `);
-      console.log(`[${requestId}] STEP 3: USING SESSION CARRYOVER`);
-      console.log(`[${requestId}]   entity was null, using session.lastEntity: ${session.lastEntity}`);
-      finalEntity = session.lastEntity;
-    } else if (!finalEntity) {
-      console.log(`[${requestId}] `);
-      console.log(`[${requestId}] STEP 3: NO ENTITY (global search)`);
+    // ABSOLUTE RULE: Global intents NEVER use session context
+    const GLOBAL_INTENTS = new Set(['what_happening', 'trends', 'opportunities', 'coverage_changes']);
+    const isGlobalIntent = GLOBAL_INTENTS.has(parsed.intent);
+
+    let retrievalEntity;
+
+    // Decision tree (no fallthrough):
+    if (isGlobalIntent) {
+      // GLOBAL INTENTS: Always search globally, NEVER use session
+      retrievalEntity = null;
+      console.log(`[${requestId}]   → GLOBAL INTENT: Ignoring session, using global search`);
+    } else if (parsed.intent === 'entity_update' && parsed.entity) {
+      // Entity-specific question
+      retrievalEntity = parsed.entity;
+      console.log(`[${requestId}]   → ENTITY UPDATE: Using "${retrievalEntity}"`);
+    } else if (isFollowUpQuestion(parsed.originalQuestion) && session.lastEntity) {
+      // Follow-up question: use session
+      retrievalEntity = session.lastEntity;
+      console.log(`[${requestId}]   → FOLLOW-UP: Using session "${retrievalEntity}"`);
     } else {
-      console.log(`[${requestId}] `);
-      console.log(`[${requestId}] STEP 3: ENTITY-SPECIFIC SEARCH`);
-      console.log(`[${requestId}]   entity: ${finalEntity}`);
+      // Default: use parsed entity or global
+      retrievalEntity = parsed.entity || null;
+      console.log(`[${requestId}]   → DEFAULT: Entity="${retrievalEntity || '(global)'"}"`);
     }
 
-    // Update parsed object with final entity
-    parsed.entity = finalEntity;
+    // Update parsed for downstream branching
+    parsed.entity = retrievalEntity;
 
-    // Save to session ONLY if we have a specific entity
-    if (finalEntity && !intentRequiresGlobal) {
-      session.lastEntity = finalEntity;
-      console.log(`[${requestId}]   ✓ Saved to session for carryover`);
+    // Persist to session: ONLY for entity_update, NOT for global intents
+    if (parsed.intent === 'entity_update' && retrievalEntity) {
+      session.lastEntity = retrievalEntity;
+      console.log(`[${requestId}]   ✓ Saved to session: "${retrievalEntity}"`);
     }
 
     console.log(`[${requestId}] `);
     console.log(`[${requestId}] FINAL STATE BEFORE RETRIEVAL`);
     console.log(`[${requestId}]   intent: ${parsed.intent}`);
-    console.log(`[${requestId}]   entity: ${parsed.entity || '(null)'}`);
+    console.log(`[${requestId}]   retrievalEntity: ${retrievalEntity || '(global)'}`);
+    console.log(`[${requestId}]   searchType: ${retrievalEntity ? `entity-specific ("${retrievalEntity}")` : 'global (no filter)'}`);
     console.log(`[${requestId}] ══════════════════════════════════════════════════════════════`);
 
     // STEP 4: RETRIEVAL FROM PANORAMA
@@ -695,5 +695,29 @@ router.delete('/session', requireAuth, (req, res) => {
   sessionMemory.delete(req.user.sub);
   return res.json({ ok: true });
 });
+
+/**
+ * isFollowUpQuestion
+ * Detect if this is a follow-up question that should use session context
+ * Examples: "¿y en redes?", "¿y coverage?", "¿y oportunidades?"
+ * NOT follow-ups: "¿qué pasó hoy?", "¿qué pasó con X?", "¿qué oportunidades tengo?"
+ */
+function isFollowUpQuestion(question) {
+  if (!question) return false;
+
+  const lowerQuestion = question.toLowerCase().trim();
+
+  // Follow-up indicators: short questions starting with "¿y", "¿que hay", etc.
+  const followUpPatterns = [
+    /^¿y\s+/i,              // ¿y en redes?
+    /^y\s+/i,               // y coverage?
+    /^¿y\s+/i,              // ¿y oportunidades?
+    /^¿qué hay\s+/i,        // ¿qué hay en...?
+    /^¿hay\s+/i,            // ¿hay en...?
+    /^¿en\s+[a-z]+\s*\?$/i  // ¿en redes? (short)
+  ];
+
+  return followUpPatterns.some(pattern => pattern.test(lowerQuestion));
+}
 
 export default router;
