@@ -8,7 +8,22 @@ import { query } from './routes/db.js';
 // ── Stories ───────────────────────────────────────────────────────────────
 
 export async function getActiveStories(options = {}) {
-  const { limit = 50, offset = 0, hours = 24, sort = 'recent', minArticles = 2 } = options;
+  const { limit = 50, offset = 0, hours = 24, sort = 'recent', minArticles = 2, entity = null } = options;
+
+  // Construcción condicional de cláusula WHERE para entity filter
+  const entityFilter = entity
+    ? `(
+        LOWER(sc.title) LIKE LOWER($4) OR
+        EXISTS (
+          SELECT 1 FROM story_entities se
+          JOIN knowledge_entities ke ON ke.id = se.entity_id
+          WHERE se.story_id = sc.id AND LOWER(ke.name) LIKE LOWER($4)
+        )
+      )`
+    : 'true';
+
+  const params = [minArticles, limit, offset];
+  if (entity) params.push(`%${entity}%`);
 
   const { rows } = await query(`
     SELECT
@@ -70,13 +85,14 @@ export async function getActiveStories(options = {}) {
       AND sc.is_recurring = false
       AND sc.article_count >= $1
       AND sc.last_seen > now() - interval '${hours} hours'
+      AND ${entityFilter}
     ORDER BY
       ${sort === 'score'
         ? 'sc.importance_score DESC, sc.source_count DESC, sc.last_seen DESC'
         : 'sc.last_seen DESC, sc.importance_score DESC, sc.source_count DESC'
       }
     LIMIT $2 OFFSET $3
-  `, [minArticles, limit, offset]);
+  `, params);
 
   const total = parseInt(rows[0]?.total_count || '0');
   return {
@@ -90,7 +106,18 @@ export async function getActiveStories(options = {}) {
 // ── Events ────────────────────────────────────────────────────────────────
 
 export async function getActiveEvents(options = {}) {
-  const { limit = 25, offset = 0, hours = 24, sort = 'recent', minStories = 1 } = options;
+  const { limit = 25, offset = 0, hours = 24, sort = 'recent', minStories = 1, entity = null } = options;
+
+  const entityFilter = entity
+    ? `(
+        LOWER(ec.headline) LIKE LOWER($4) OR
+        LOWER(ec.summary) LIKE LOWER($4) OR
+        ec.main_entities @> ARRAY[($4)::text]
+      )`
+    : 'true';
+
+  const params = [minStories, limit, offset];
+  if (entity) params.push(`%${entity}%`);
 
   const { rows } = await query(`
     SELECT
@@ -132,13 +159,14 @@ export async function getActiveEvents(options = {}) {
     WHERE ec.status IN ('active', 'followed')
       AND ec.story_count >= $1
       AND ec.last_updated_at > now() - interval '${hours} hours'
+      AND ${entityFilter}
     ORDER BY
       ${sort === 'score'
         ? 'ec.editorial_score DESC, ec.importance_score DESC, ec.last_updated_at DESC'
         : 'ec.last_updated_at DESC, ec.editorial_score DESC, ec.importance_score DESC'
       }
     LIMIT $2 OFFSET $3
-  `, [minStories, limit, offset]);
+  `, params);
 
   const total = parseInt(rows[0]?.total_count || '0');
   return {
@@ -152,7 +180,10 @@ export async function getActiveEvents(options = {}) {
 // ── Social Clusters ───────────────────────────────────────────────────────
 
 export async function getActiveSocialClusters(options = {}) {
-  const { limit = 25, offset = 0, hours = 24, sort = 'recent' } = options;
+  const { limit = 25, offset = 0, hours = 24, sort = 'recent', entity = null } = options;
+
+  const entityFilter = entity ? `AND LOWER(sc.title) LIKE LOWER($3)` : '';
+  const params = entity ? [limit, offset, `%${entity}%`] : [limit, offset];
 
   const { rows } = await query(`
     SELECT
@@ -175,13 +206,14 @@ export async function getActiveSocialClusters(options = {}) {
     FROM social_clusters sc
     WHERE sc.status = 'active'
       AND sc.last_seen > now() - interval '${hours} hours'
+      ${entityFilter}
     ORDER BY
       ${sort === 'score'
         ? 'sc.opportunity_score DESC, sc.total_engagement DESC'
         : 'sc.last_seen DESC, sc.opportunity_score DESC'
       }
     LIMIT $1 OFFSET $2
-  `, [limit, offset]);
+  `, params);
 
   const total = parseInt(rows[0]?.total_count || '0');
   return {
@@ -195,7 +227,13 @@ export async function getActiveSocialClusters(options = {}) {
 // ── Coverage Changes ──────────────────────────────────────────────────────
 
 export async function getCoverageChanges(options = {}) {
-  const { limit = 50, offset = 0, hours = 24 } = options;
+  const { limit = 50, offset = 0, hours = 24, entity = null } = options;
+
+  const entityFilter = entity
+    ? `AND (LOWER(ts.name) LIKE LOWER($3) OR LOWER(ta.title) LIKE LOWER($3))`
+    : '';
+
+  const params = entity ? [limit, offset, `%${entity}%`] : [limit, offset];
 
   const { rows } = await query(`
     SELECT
@@ -219,9 +257,10 @@ export async function getCoverageChanges(options = {}) {
     JOIN tracked_sources ts ON ts.id = cc.tracked_source_id
     LEFT JOIN tracked_articles ta ON ta.id = cc.tracked_article_id
     WHERE cc.detected_at > now() - interval '${hours} hours'
+      ${entityFilter}
     ORDER BY cc.detected_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]);
+  `, params);
 
   const total = parseInt(rows[0]?.total_count || '0');
   return {
@@ -235,13 +274,18 @@ export async function getCoverageChanges(options = {}) {
 // ── Opportunities ─────────────────────────────────────────────────────────
 
 export async function getOpportunities(options = {}) {
-  const { limit = 50, offset = 0, status = 'pending', sort = 'recent', hours = 24 } = options;
+  const { limit = 50, offset = 0, status = 'pending', sort = 'recent', hours = 24, entity = null } = options;
 
   const conditions = [`so.status = $1`, `sc.is_recurring = false`, `sc.last_seen > now() - interval '7 days'`];
   const params = [status];
 
   if (hours) {
     conditions.push(`so.created_at > now() - interval '${hours} hours'`);
+  }
+
+  if (entity) {
+    conditions.push(`(LOWER(so.title) LIKE LOWER($${params.length + 1}) OR LOWER(sc.title) LIKE LOWER($${params.length + 1}))`);
+    params.push(`%${entity}%`);
   }
 
   params.push(limit);
