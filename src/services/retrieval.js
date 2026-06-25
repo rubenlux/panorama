@@ -104,7 +104,7 @@ export async function retrieveEditorialEvidence(question, options = {}) {
       : [];
 
     // Metadata
-    retrieved.metadata.totalRetrieved = stories.length + events.length + social.length + coverage.length + opportunities.length;
+    retrieved.metadata.totalRetrieved = retrieved.stories.length + retrieved.events.length + retrieved.social.length + retrieved.coverage.length + retrieved.opportunities.length;
     retrieved.metadata.totalRelevant = retrieved.stories.length + retrieved.events.length + retrieved.social.length + retrieved.coverage.length + retrieved.opportunities.length;
 
   } catch (err) {
