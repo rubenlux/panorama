@@ -12,6 +12,7 @@
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { parseQuestion } from '../services/OpenClawParser.js';
+import * as fs from 'fs';
 import {
   getActiveStories,
   getActiveEvents,
@@ -27,8 +28,30 @@ const claude = new Anthropic();
 const MODEL = 'claude-sonnet-4-6';
 const DEBUG = process.env.OPENCLAW_DEBUG === 'true';
 
+const AUDIT_LOG_FILE = './openclaw-audit.log';
+
+function auditLog(msg) {
+  try {
+    fs.appendFileSync(AUDIT_LOG_FILE, msg + '\n');
+  } catch (e) {
+    console.error('[AUDIT LOG ERROR]', e.message);
+  }
+}
+
 // Session memory (10 min TTL)
 const sessionMemory = new Map();
+
+// Audit log buffer (in-memory for debugging)
+const auditBuffer = [];
+const MAX_AUDIT_LINES = 500;
+
+function auditLog(msg) {
+  auditBuffer.push(msg);
+  if (auditBuffer.length > MAX_AUDIT_LINES) {
+    auditBuffer.shift();
+  }
+  console.log('[AUDIT]', msg);
+}
 
 function getSession(userId) {
   let session = sessionMemory.get(userId);
@@ -86,6 +109,7 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     console.log(`[${requestId}] `);
     console.log(`[${requestId}] STEP 3: RETRIEVAL PLANNER`);
     console.log(`[${requestId}]   Parsed: intent="${parsed.intent}", entity="${parsed.entity || '(null)'}", session="${session.lastEntity || '(none)'}"`);
+    auditLog(`[${requestId}] STEP 3 INPUT: question="${question}" intent="${parsed.intent}" parsed.entity="${parsed.entity || '(null)'}" session.lastEntity="${session.lastEntity || '(none)'}"`);
 
     // ABSOLUTE RULE: Global intents NEVER use session context
     const GLOBAL_INTENTS = new Set(['what_happening', 'trends', 'opportunities', 'coverage_changes']);
@@ -98,22 +122,27 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       // GLOBAL INTENTS: Always search globally, NEVER use session
       retrievalEntity = null;
       console.log(`[${requestId}]   → GLOBAL INTENT: Ignoring session, using global search`);
+      auditLog(`[${requestId}] STEP 3 DECISION: GLOBAL INTENT - retrievalEntity set to NULL`);
     } else if (parsed.intent === 'entity_update' && parsed.entity) {
       // Entity-specific question
       retrievalEntity = parsed.entity;
       console.log(`[${requestId}]   → ENTITY UPDATE: Using "${retrievalEntity}"`);
+      auditLog(`[${requestId}] STEP 3 DECISION: ENTITY UPDATE - retrievalEntity set to "${retrievalEntity}"`);
     } else if (isFollowUpQuestion(parsed.originalQuestion) && session.lastEntity) {
       // Follow-up question: use session
       retrievalEntity = session.lastEntity;
       console.log(`[${requestId}]   → FOLLOW-UP: Using session "${retrievalEntity}"`);
+      auditLog(`[${requestId}] STEP 3 DECISION: FOLLOW-UP - retrievalEntity set to "${retrievalEntity}" from session`);
     } else {
       // Default: use parsed entity or global
       retrievalEntity = parsed.entity || null;
       console.log(`[${requestId}]   → DEFAULT: Entity="${retrievalEntity || '(global)'"}"`);
+      auditLog(`[${requestId}] STEP 3 DECISION: DEFAULT - retrievalEntity set to "${retrievalEntity || '(global)'}"`);
     }
 
     // Update parsed for downstream branching
     parsed.entity = retrievalEntity;
+    auditLog(`[${requestId}] STEP 3 OUTPUT: parsed.entity="${parsed.entity || '(null)'}"`);
 
     // Persist to session: ONLY for entity_update, NOT for global intents
     if (parsed.intent === 'entity_update' && retrievalEntity) {
@@ -126,6 +155,7 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     console.log(`[${requestId}]   intent: ${parsed.intent}`);
     console.log(`[${requestId}]   retrievalEntity: ${retrievalEntity || '(global)'}`);
     console.log(`[${requestId}]   searchType: ${retrievalEntity ? `entity-specific ("${retrievalEntity}")` : 'global (no filter)'}`);
+    console.log(`[${requestId}]   parsed.entity (will branch on this): ${parsed.entity || '(null)'}`);
     console.log(`[${requestId}] ══════════════════════════════════════════════════════════════`);
 
     // STEP 4: RETRIEVAL FROM PANORAMA
@@ -142,9 +172,14 @@ router.post('/ask', requireAuth, async (req, res, next) => {
 
     const retrievalStart = Date.now();
 
+    console.log(`[${requestId}] STEP 4 BRANCH DECISION: parsed.entity="${parsed.entity || '(null)'}", entering ${parsed.entity ? 'ENTITY-SPECIFIC branch' : 'GLOBAL branch'}`);
+    auditLog(`[${requestId}] STEP 4 BRANCH: parsed.entity="${parsed.entity || '(null)'}" → ${parsed.entity ? 'ENTITY-SPECIFIC' : 'GLOBAL'}`);
+
     if (parsed.entity) {
       // Búsqueda específica por entidad
       const entity = parsed.entity.toLowerCase();
+      console.log(`[${requestId}]   [ENTITY-SPECIFIC] Entity to filter by: "${entity}"`);
+      auditLog(`[${requestId}] STEP 4 BRANCH: Entering ENTITY-SPECIFIC with entity="${entity}"`);
 
       // Búsqueda paralela en todas las fuentes
       const [storiesRes, eventsRes, socialRes, coverageRes, opportunitiesRes, knowledgeRes] = await Promise.allSettled([
@@ -162,6 +197,8 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       const allCoverage = unwrap(coverageRes, { items: [] }).items || [];
       const allOpportunities = unwrap(opportunitiesRes, { items: [] }).items || [];
 
+      console.log(`[${requestId}]   [ENTITY-SPECIFIC] Retrieved: ${allStories.length} stories, ${allEvents.length} events, ${allSocial.length} social, ${allCoverage.length} coverage, ${allOpportunities.length} opportunities`);
+
       // Filtrar por entidad en TODAS las fuentes
       filteredStories = allStories.filter(s =>
         s.title?.toLowerCase().includes(entity) ||
@@ -169,24 +206,34 @@ router.post('/ask', requireAuth, async (req, res, next) => {
         s.summary?.toLowerCase().includes(entity)
       ).sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0));
 
+      console.log(`[${requestId}]   [ENTITY FILTER] Stories: ${allStories.length} → ${filteredStories.length} (filtered by "${entity}")`);
+
       filteredEvents = allEvents.filter(e =>
         e.headline?.toLowerCase().includes(entity) ||
         e.summary?.toLowerCase().includes(entity)
       ).sort((a, b) => (b.editorial_score || 0) - (a.editorial_score || 0));
 
+      console.log(`[${requestId}]   [ENTITY FILTER] Events: ${allEvents.length} → ${filteredEvents.length} (filtered by "${entity}")`);
+
       filteredSocial = allSocial.filter(s =>
         s.title?.toLowerCase().includes(entity)
       ).sort((a, b) => (b.total_engagement || 0) - (a.total_engagement || 0));
+
+      console.log(`[${requestId}]   [ENTITY FILTER] Social: ${allSocial.length} → ${filteredSocial.length} (filtered by "${entity}")`);
 
       filteredCoverage = allCoverage.filter(c =>
         c.source_name?.toLowerCase().includes(entity) ||
         c.article_title?.toLowerCase().includes(entity)
       ).sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at));
 
+      console.log(`[${requestId}]   [ENTITY FILTER] Coverage: ${allCoverage.length} → ${filteredCoverage.length} (filtered by "${entity}")`);
+
       filteredOpportunities = allOpportunities.filter(o =>
         o.title?.toLowerCase().includes(entity) ||
         o.story_title?.toLowerCase().includes(entity)
       ).sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
+
+      console.log(`[${requestId}]   [ENTITY FILTER] Opportunities: ${allOpportunities.length} → ${filteredOpportunities.length} (filtered by "${entity}"`);
 
       knowledge = unwrap(knowledgeRes, []);
 
@@ -198,9 +245,12 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       console.log(`[${requestId}]     coverage: ${filteredCoverage.length}`);
       console.log(`[${requestId}]     opportunities: ${filteredOpportunities.length}`);
       console.log(`[${requestId}]     entities: ${knowledge.length}`);
+      auditLog(`[${requestId}] STEP 4 ENTITY RESULTS: stories=${filteredStories.length} events=${filteredEvents.length} social=${filteredSocial.length} coverage=${filteredCoverage.length}`);
 
     } else {
       // Búsqueda general (sin entidad)
+      console.log(`[${requestId}]   [GLOBAL SEARCH] No entity filter - requesting top 100/50 stories/events`);
+      auditLog(`[${requestId}] STEP 4 BRANCH: Entering GLOBAL SEARCH (no entity filter)`);
       const [storiesRes, eventsRes, socialRes, coverageRes, opportunitiesRes] = await Promise.allSettled([
         getActiveStories({ limit: 100, hours: 24, sort: 'score' }),
         getActiveEvents({ limit: 50, hours: 24, sort: 'score' }),
@@ -215,6 +265,9 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       filteredCoverage = unwrap(coverageRes, { items: [] }).items || [];
       filteredOpportunities = unwrap(opportunitiesRes, { items: [] }).items || [];
 
+      console.log(`[${requestId}]   [GLOBAL SEARCH RESULTS] Stories: ${filteredStories.length}, Events: ${filteredEvents.length}, Social: ${filteredSocial.length}, Coverage: ${filteredCoverage.length}, Opps: ${filteredOpportunities.length}`);
+      auditLog(`[${requestId}] STEP 4 GLOBAL RESULTS: stories=${filteredStories.length} events=${filteredEvents.length} social=${filteredSocial.length} coverage=${filteredCoverage.length}`);
+
       console.log(`[${requestId}]   ✓ Retrieval completed in ${Date.now() - retrievalStart}ms`);
       console.log(`[${requestId}]   RESULTS (GLOBAL SEARCH):`);
       console.log(`[${requestId}]     stories: ${filteredStories.length}`);
@@ -227,6 +280,7 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     // STEP 5: BUILD EDITORIAL BRIEFING
     console.log(`[${requestId}] `);
     console.log(`[${requestId}] STEP 5: BUILDING EDITORIAL BRIEFING`);
+    console.log(`[${requestId}]   Input: ${filteredStories.length} stories, ${filteredEvents.length} events, ${filteredSocial.length} social, ${filteredCoverage.length} coverage, ${filteredOpportunities.length} opportunities`);
 
     const briefing = buildEditorialBriefing({
       stories: filteredStories,
@@ -238,13 +292,13 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       entity: parsed.entity || null
     });
 
-    console.log(`[${requestId}]   ✓ Briefing constructed with:`);
-    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} (from ${filteredStories.length} available)`);
-    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} (from ${filteredEvents.length} available)`);
-    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} (from ${filteredSocial.length} available)`);
-    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} (from ${filteredCoverage.length} available)`);
-    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} (from ${filteredOpportunities.length} available)`);
-    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} (from ${knowledge.length} available)`);
+    console.log(`[${requestId}]   ✓ Briefing constructed (SELECTION RULES: max 5 stories, 3 events, 3 social, 3 coverage, 3 opportunities):`);
+    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} selected (from ${filteredStories.length} available)`);
+    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} selected (from ${filteredEvents.length} available)`);
+    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} selected (from ${filteredSocial.length} available)`);
+    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} selected (from ${filteredCoverage.length} available)`);
+    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} selected (from ${filteredOpportunities.length} available)`);
+    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} selected (from ${knowledge.length} available)`);
 
     const contextStr = JSON.stringify(briefing, null, 2);
     const systemPrompt = `Eres un Editor Ejecutivo de Panorama.
@@ -315,6 +369,11 @@ Sé verificable. Sé auditable.`;
     console.log(`[${requestId}] Briefing Status: REBUILT FROM ZERO (no cache)`);
 
     // Construir evidencia estructurada
+    console.log(`[${requestId}] `);
+    console.log(`[${requestId}] STEP 8: FINAL NUMBERS FOR RESPONSE`);
+    console.log(`[${requestId}]   Will report: ${filteredStories.length} editorial, ${filteredEvents.length} events, ${filteredSocial.length} social, ${filteredCoverage.length} coverage, ${filteredOpportunities.length} opportunities`);
+    auditLog(`[${requestId}] STEP 8 FINAL: Will return Editorial=${filteredStories.length} Events=${filteredEvents.length} Social=${filteredSocial.length} Coverage=${filteredCoverage.length}`);
+
     const evidence = {
       articles: filteredStories.map(s => ({
         id: s.id,
@@ -694,6 +753,14 @@ router.get('/session', requireAuth, (req, res) => {
 router.delete('/session', requireAuth, (req, res) => {
   sessionMemory.delete(req.user.sub);
   return res.json({ ok: true });
+});
+
+/**
+ * GET /openclaw/audit-log
+ * Get recent audit logs (for debugging)
+ */
+router.get('/audit-log', requireAuth, (req, res) => {
+  return res.json({ logs: auditBuffer });
 });
 
 /**
