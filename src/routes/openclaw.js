@@ -322,9 +322,9 @@ router.get('/debug-parse', requireAuth, (req, res) => {
 function buildEditorialBriefing(rawContext) {
   const briefing = {};
 
-  // STORIES: Top 5 con contexto narrativo (no solo metadata)
+  // STORIES: ALL con contexto narrativo (sin restricciones)
   if (rawContext.stories && rawContext.stories.length > 0) {
-    briefing.stories = rawContext.stories.slice(0, 5).map(story => ({
+    briefing.stories = rawContext.stories.map(story => ({
       title: story.title,
       summary: story.algorithmic_summary || story.summary || '(sin resumen)',
       type: story.story_type,
@@ -338,7 +338,7 @@ function buildEditorialBriefing(rawContext) {
 
   // EVENTS: Top 3 con contexto
   if (rawContext.events && rawContext.events.length > 0) {
-    briefing.events = rawContext.events.slice(0, 3).map(event => ({
+    briefing.events = rawContext.events.map(event => ({
       headline: event.headline,
       summary: event.summary || '(sin contexto)',
       type: event.event_type,
@@ -353,7 +353,7 @@ function buildEditorialBriefing(rawContext) {
 
   // SOCIAL: Top 3 con contexto de viralidad
   if (rawContext.social && rawContext.social.length > 0) {
-    briefing.social = rawContext.social.slice(0, 3).map(post => ({
+    briefing.social = rawContext.social.map(post => ({
       title: post.title,
       platforms: (post.platforms || []).join(', '),
       engagement: post.total_engagement,
@@ -367,7 +367,7 @@ function buildEditorialBriefing(rawContext) {
 
   // COVERAGE: Top 3 cambios con contexto temporal
   if (rawContext.coverage && rawContext.coverage.length > 0) {
-    briefing.coverage = rawContext.coverage.slice(0, 3).map(change => ({
+    briefing.coverage = rawContext.coverage.map(change => ({
       source: change.source_name,
       change_type: change.change_type,
       headline: change.article_title,
@@ -379,7 +379,7 @@ function buildEditorialBriefing(rawContext) {
 
   // OPPORTUNITIES: Top 3 con contexto editorial
   if (rawContext.opportunities && rawContext.opportunities.length > 0) {
-    briefing.opportunities = rawContext.opportunities.slice(0, 3).map(opp => ({
+    briefing.opportunities = rawContext.opportunities.map(opp => ({
       title: opp.title,
       type: opp.opportunity_type,
       score: opp.composite_score,
@@ -391,7 +391,7 @@ function buildEditorialBriefing(rawContext) {
 
   // ENTITIES: Top 8 con contexto
   if (rawContext.entities && rawContext.entities.length > 0) {
-    briefing.entities = rawContext.entities.slice(0, 8).map(entity => ({
+    briefing.entities = rawContext.entities.map(entity => ({
       name: entity.name,
       type: entity.entity_type,
       mentions: entity.mentions || 0,

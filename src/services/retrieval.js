@@ -68,14 +68,15 @@ export async function retrieveEditorialEvidence(question, options = {}) {
     originalQuestion: question
   };
 
-  // STEP 1: Determinar limites según intención
-  // Global intents = buscar ampliamente
-  // Entity intents = buscar específico
-  const isGlobalIntent = ['what_happening', 'trends', 'opportunities', 'coverage_changes'].includes(intent);
-
-  const limits = isGlobalIntent
-    ? { stories: 100, events: 50, social: 50, coverage: 50, opportunities: 50 }
-    : { stories: 200, events: 100, social: 100, coverage: 200, opportunities: 200 };
+  // STEP 1: Sin límites - Claude recibe TODO
+  // No hay restricciones de cantidad para que Claude pueda razonar con contexto completo
+  const limits = {
+    stories: 10000,
+    events: 10000,
+    social: 10000,
+    coverage: 10000,
+    opportunities: 10000
+  };
 
   // STEP 2: Construir las queries
   // Los endpoints aceptan `entity` y filtran en SQL directamente
