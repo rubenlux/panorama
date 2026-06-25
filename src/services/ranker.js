@@ -18,8 +18,29 @@
  */
 
 export function rankEditorialEvidence(evidence) {
+  // Agregar metadata: fecha actual, timeframe
+  const today = new Date();
+  const todayStr = today.toLocaleDateString('es-AR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric'
+  });
+
   const ranked = {
-    query: evidence.query,
+    metadata: {
+      query: evidence.query,
+      report_date: todayStr,
+      report_timestamp: today.toISOString(),
+      timeframe: evidence.query.timeframe,
+      retrieved: {
+        stories: evidence.stories.length,
+        events: evidence.events.length,
+        social: evidence.social.length,
+        coverage: evidence.coverage.length,
+        opportunities: evidence.opportunities.length
+      }
+    },
     stories: rankStories(evidence.stories),
     events: rankEvents(evidence.events),
     social: rankSocial(evidence.social),
@@ -48,7 +69,9 @@ function rankStories(stories) {
       status: s.coverage_status,
       importance: s.importance_score,
       articles: s.article_count,
-      sources: (s.sources || []).slice(0, 3),
+      sources: (s.sources || []).slice(0, 5).join(', '),
+      source_list: (s.sources || []).slice(0, 5),
+      url: `https://panorama.local/stories/${s.id}`,
       internal_link: `/stories/${s.id}`
     }));
 }
@@ -72,7 +95,9 @@ function rankEvents(events) {
       summary: e.summary || '(sin contexto)',
       type: e.event_type,
       importance: e.editorial_score,
-      stories: e.story_count,
+      stories_involved: e.story_count,
+      articles_total: e.article_count,
+      url: `https://panorama.local/events/${e.id}`,
       internal_link: `/events/${e.id}`
     }));
 }
@@ -94,11 +119,13 @@ function rankSocial(social) {
     .slice(0, 10)
     .map(s => ({
       title: s.title,
-      platforms: Array.isArray(s.platforms) ? s.platforms : [],
+      platforms: Array.isArray(s.platforms) ? s.platforms.join(', ') : '',
+      platform_list: Array.isArray(s.platforms) ? s.platforms : [],
       engagement: s.total_engagement,
-      viral: s.viral_score,
-      gap: s.gap_score,
+      viral_score: s.viral_score,
+      gap_score: s.gap_score,
       posts: s.post_count,
+      url: `https://panorama.local/social/clusters/${s.id}`,
       internal_link: `/social/clusters/${s.id}`
     }));
 }
@@ -118,6 +145,7 @@ function rankCoverage(coverage) {
       change_type: c.change_type,
       headline: c.article_title,
       when: c.detected_at,
+      url: c.article_url || `https://panorama.local/coverage/${c.id}`,
       internal_link: `/coverage/${c.id}`
     }));
 }
@@ -137,6 +165,8 @@ function rankOpportunities(opportunities) {
       type: o.opportunity_type,
       score: o.composite_score,
       trigger: o.trigger,
+      story_title: o.story_title || '(sin historia)',
+      url: `https://panorama.local/opportunities/${o.id}`,
       internal_link: `/opportunities/${o.id}`
     }));
 }
@@ -155,6 +185,7 @@ function rankEntities(entities) {
       name: e.name,
       type: e.entity_type,
       mentions: e.mentions || 0,
+      url: `https://panorama.local/knowledge-graph/entities/${e.id}`,
       internal_link: `/knowledge-graph/entities/${e.id}`
     }));
 }
