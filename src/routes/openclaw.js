@@ -322,11 +322,11 @@ router.get('/debug-parse', requireAuth, (req, res) => {
 function buildEditorialBriefing(rawContext) {
   const briefing = {};
 
-  // STORIES: Filtrar por relevancia (score >= 3) pero sin límite de cantidad
-  // Si hay muchos, está bien - Claude puede procesarlos
+  // STORIES: Filtrar por relevancia (score >= 3) + límite razonable
   if (rawContext.stories && rawContext.stories.length > 0) {
     briefing.stories = rawContext.stories
       .filter(s => (s.importance_score || 0) >= 3)
+      .slice(0, 150)
       .map(story => ({
         title: story.title,
         summary: story.algorithmic_summary || story.summary || '(sin resumen)',
