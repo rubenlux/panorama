@@ -11,15 +11,7 @@
 
 import express from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { parseQuestion } from '../services/OpenClawParser.js';
-import {
-  getActiveStories,
-  getActiveEvents,
-  getActiveSocialClusters,
-  getCoverageChanges,
-  getOpportunities,
-  getEntityProfile
-} from '../queries.js';
+import { retrieveEditorialEvidence } from '../services/retrieval.js';
 import Anthropic from '@anthropic-ai/sdk';
 
 const router = express.Router();
@@ -77,217 +69,53 @@ router.post('/ask', requireAuth, async (req, res, next) => {
     console.log(`[${requestId}] QUESTION: "${question}"`);
     console.log(`[${requestId}] USER: ${userId}`);
 
-    // STEP 1: Parse
-    const parsed = parseQuestion(question);
-
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 1: PARSER OUTPUT`);
-    console.log(`[${requestId}]   intent: ${parsed.intent}`);
-    console.log(`[${requestId}]   entity: ${parsed.entity || '(null)'}`);
-    console.log(`[${requestId}]   timeframe: ${parsed.timeframe}`);
-
-    // STEP 2: Session check
-    const session = getSession(userId);
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 2: SESSION STATE`);
-    console.log(`[${requestId}]   session.lastEntity: ${session.lastEntity || '(null)'}`);
-
-    // STEP 3: Explicit Retrieval Planning
-    // NO session contamination for global intents - this is absolute
-
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 3: RETRIEVAL PLANNER`);
-    console.log(`[${requestId}]   Parsed: intent="${parsed.intent}", entity="${parsed.entity || '(null)'}", session="${session.lastEntity || '(none)'}"`);
-    auditLog(`[${requestId}] STEP 3 INPUT: question="${question}" intent="${parsed.intent}" parsed.entity="${parsed.entity || '(null)'}" session.lastEntity="${session.lastEntity || '(none)'}"`);
-
-    // ABSOLUTE RULE: Global intents NEVER use session context
-    const GLOBAL_INTENTS = new Set(['what_happening', 'trends', 'opportunities', 'coverage_changes']);
-    const isGlobalIntent = GLOBAL_INTENTS.has(parsed.intent);
-
-    let retrievalEntity;
-
-    // Decision tree (no fallthrough):
-    if (isGlobalIntent) {
-      // GLOBAL INTENTS: Always search globally, NEVER use session
-      retrievalEntity = null;
-      console.log(`[${requestId}]   → GLOBAL INTENT: Ignoring session, using global search`);
-      auditLog(`[${requestId}] STEP 3 DECISION: GLOBAL INTENT - retrievalEntity set to NULL`);
-    } else if (parsed.intent === 'entity_update' && parsed.entity) {
-      // Entity-specific question
-      retrievalEntity = parsed.entity;
-      console.log(`[${requestId}]   → ENTITY UPDATE: Using "${retrievalEntity}"`);
-      auditLog(`[${requestId}] STEP 3 DECISION: ENTITY UPDATE - retrievalEntity set to "${retrievalEntity}"`);
-    } else if (isFollowUpQuestion(parsed.originalQuestion) && session.lastEntity) {
-      // Follow-up question: use session
-      retrievalEntity = session.lastEntity;
-      console.log(`[${requestId}]   → FOLLOW-UP: Using session "${retrievalEntity}"`);
-      auditLog(`[${requestId}] STEP 3 DECISION: FOLLOW-UP - retrievalEntity set to "${retrievalEntity}" from session`);
-    } else {
-      // Default: use parsed entity or global
-      retrievalEntity = parsed.entity || null;
-      console.log(`[${requestId}]   → DEFAULT: Entity="${retrievalEntity || "(global)"}"`);
-      auditLog(`[${requestId}] STEP 3 DECISION: DEFAULT - retrievalEntity set to "${retrievalEntity || "(global)"}"`);
-    }
-
-    // Update parsed for downstream branching
-    parsed.entity = retrievalEntity;
-    auditLog(`[${requestId}] STEP 3 OUTPUT: parsed.entity="${parsed.entity || '(null)'}"`);
-
-    // Persist to session: ONLY for entity_update, NOT for global intents
-    if (parsed.intent === 'entity_update' && retrievalEntity) {
-      session.lastEntity = retrievalEntity;
-      console.log(`[${requestId}]   ✓ Saved to session: "${retrievalEntity}"`);
-    }
-
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] FINAL STATE BEFORE RETRIEVAL`);
-    console.log(`[${requestId}]   intent: ${parsed.intent}`);
-    console.log(`[${requestId}]   retrievalEntity: ${retrievalEntity || '(global)'}`);
-    console.log(`[${requestId}]   searchType: ${retrievalEntity ? `entity-specific ("${retrievalEntity}")` : 'global (no filter)'}`);
-    console.log(`[${requestId}]   parsed.entity (will branch on this): ${parsed.entity || '(null)'}`);
-    console.log(`[${requestId}] ══════════════════════════════════════════════════════════════`);
-
-    // STEP 4: RETRIEVAL FROM PANORAMA
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 4: RETRIEVING FROM PANORAMA`);
-    console.log(`[${requestId}]   Search type: ${parsed.entity ? `ENTITY-SPECIFIC ("${parsed.entity}")` : 'GLOBAL (no entity)'}`);
-
-    let filteredStories = [];
-    let filteredEvents = [];
-    let filteredSocial = [];
-    let filteredCoverage = [];
-    let filteredOpportunities = [];
-    let knowledge = [];
-
+    // STEP 1: RETRIEVAL FROM PANORAMA
+    console.log(`[${requestId}] STEP 1: RETRIEVING FROM PANORAMA`);
     const retrievalStart = Date.now();
 
-    console.log(`[${requestId}] STEP 4 BRANCH DECISION: parsed.entity="${parsed.entity || '(null)'}", entering ${parsed.entity ? 'ENTITY-SPECIFIC branch' : 'GLOBAL branch'}`);
-    auditLog(`[${requestId}] STEP 4 BRANCH: parsed.entity="${parsed.entity || '(null)'}" → ${parsed.entity ? 'ENTITY-SPECIFIC' : 'GLOBAL'}`);
+    const evidence = await retrieveEditorialEvidence(question);
 
-    if (parsed.entity) {
-      // Búsqueda específica por entidad
-      const entity = parsed.entity.toLowerCase();
-      console.log(`[${requestId}]   [ENTITY-SPECIFIC] Entity to filter by: "${entity}"`);
-      auditLog(`[${requestId}] STEP 4 BRANCH: Entering ENTITY-SPECIFIC with entity="${entity}"`);
-
-      // Búsqueda paralela en todas las fuentes
-      const [storiesRes, eventsRes, socialRes, coverageRes, opportunitiesRes, knowledgeRes] = await Promise.allSettled([
-        getActiveStories({ limit: 200, hours: 24, sort: 'score' }),
-        getActiveEvents({ limit: 100, hours: 24, sort: 'score' }),
-        getActiveSocialClusters({ limit: 100, hours: 24, sort: 'score' }),
-        getCoverageChanges({ limit: 200, hours: 24 }),
-        getOpportunities({ limit: 200, status: 'pending', sort: 'score' }),
-        getEntityProfile(parsed.entity)
-      ]);
-
-      const allStories = unwrap(storiesRes, { items: [] }).items || [];
-      const allEvents = unwrap(eventsRes, { items: [] }).items || [];
-      const allSocial = unwrap(socialRes, { items: [] }).items || [];
-      const allCoverage = unwrap(coverageRes, { items: [] }).items || [];
-      const allOpportunities = unwrap(opportunitiesRes, { items: [] }).items || [];
-
-      console.log(`[${requestId}]   [ENTITY-SPECIFIC] Retrieved: ${allStories.length} stories, ${allEvents.length} events, ${allSocial.length} social, ${allCoverage.length} coverage, ${allOpportunities.length} opportunities`);
-
-      // Filtrar por entidad en TODAS las fuentes
-      filteredStories = allStories.filter(s =>
-        s.title?.toLowerCase().includes(entity) ||
-        s.entities?.some(e => e.toLowerCase().includes(entity)) ||
-        s.summary?.toLowerCase().includes(entity)
-      ).sort((a, b) => (b.importance_score || 0) - (a.importance_score || 0));
-
-      console.log(`[${requestId}]   [ENTITY FILTER] Stories: ${allStories.length} → ${filteredStories.length} (filtered by "${entity}")`);
-
-      filteredEvents = allEvents.filter(e =>
-        e.headline?.toLowerCase().includes(entity) ||
-        e.summary?.toLowerCase().includes(entity)
-      ).sort((a, b) => (b.editorial_score || 0) - (a.editorial_score || 0));
-
-      console.log(`[${requestId}]   [ENTITY FILTER] Events: ${allEvents.length} → ${filteredEvents.length} (filtered by "${entity}")`);
-
-      filteredSocial = allSocial.filter(s =>
-        s.title?.toLowerCase().includes(entity)
-      ).sort((a, b) => (b.total_engagement || 0) - (a.total_engagement || 0));
-
-      console.log(`[${requestId}]   [ENTITY FILTER] Social: ${allSocial.length} → ${filteredSocial.length} (filtered by "${entity}")`);
-
-      filteredCoverage = allCoverage.filter(c =>
-        c.source_name?.toLowerCase().includes(entity) ||
-        c.article_title?.toLowerCase().includes(entity)
-      ).sort((a, b) => new Date(b.detected_at) - new Date(a.detected_at));
-
-      console.log(`[${requestId}]   [ENTITY FILTER] Coverage: ${allCoverage.length} → ${filteredCoverage.length} (filtered by "${entity}")`);
-
-      filteredOpportunities = allOpportunities.filter(o =>
-        o.title?.toLowerCase().includes(entity) ||
-        o.story_title?.toLowerCase().includes(entity)
-      ).sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
-
-      console.log(`[${requestId}]   [ENTITY FILTER] Opportunities: ${allOpportunities.length} → ${filteredOpportunities.length} (filtered by "${entity}"`);
-
-      knowledge = unwrap(knowledgeRes, []);
-
-      console.log(`[${requestId}]   ✓ Retrieval completed in ${Date.now() - retrievalStart}ms`);
-      console.log(`[${requestId}]   RESULTS FOR ENTITY "${parsed.entity}":`);
-      console.log(`[${requestId}]     stories: ${filteredStories.length}`);
-      console.log(`[${requestId}]     events: ${filteredEvents.length}`);
-      console.log(`[${requestId}]     social: ${filteredSocial.length}`);
-      console.log(`[${requestId}]     coverage: ${filteredCoverage.length}`);
-      console.log(`[${requestId}]     opportunities: ${filteredOpportunities.length}`);
-      console.log(`[${requestId}]     entities: ${knowledge.length}`);
-      auditLog(`[${requestId}] STEP 4 ENTITY RESULTS: stories=${filteredStories.length} events=${filteredEvents.length} social=${filteredSocial.length} coverage=${filteredCoverage.length}`);
-
-    } else {
-      // Búsqueda general (sin entidad)
-      console.log(`[${requestId}]   [GLOBAL SEARCH] No entity filter - requesting top 100/50 stories/events`);
-      auditLog(`[${requestId}] STEP 4 BRANCH: Entering GLOBAL SEARCH (no entity filter)`);
-      const [storiesRes, eventsRes, socialRes, coverageRes, opportunitiesRes] = await Promise.allSettled([
-        getActiveStories({ limit: 100, hours: 24, sort: 'score' }),
-        getActiveEvents({ limit: 50, hours: 24, sort: 'score' }),
-        getActiveSocialClusters({ limit: 50, hours: 24, sort: 'score' }),
-        getCoverageChanges({ limit: 50, hours: 24 }),
-        getOpportunities({ limit: 50, status: 'pending', sort: 'score' })
-      ]);
-
-      filteredStories = unwrap(storiesRes, { items: [] }).items || [];
-      filteredEvents = unwrap(eventsRes, { items: [] }).items || [];
-      filteredSocial = unwrap(socialRes, { items: [] }).items || [];
-      filteredCoverage = unwrap(coverageRes, { items: [] }).items || [];
-      filteredOpportunities = unwrap(opportunitiesRes, { items: [] }).items || [];
-
-      console.log(`[${requestId}]   [GLOBAL SEARCH RESULTS] Stories: ${filteredStories.length}, Events: ${filteredEvents.length}, Social: ${filteredSocial.length}, Coverage: ${filteredCoverage.length}, Opps: ${filteredOpportunities.length}`);
-      auditLog(`[${requestId}] STEP 4 GLOBAL RESULTS: stories=${filteredStories.length} events=${filteredEvents.length} social=${filteredSocial.length} coverage=${filteredCoverage.length}`);
-
-      console.log(`[${requestId}]   ✓ Retrieval completed in ${Date.now() - retrievalStart}ms`);
-      console.log(`[${requestId}]   RESULTS (GLOBAL SEARCH):`);
-      console.log(`[${requestId}]     stories: ${filteredStories.length}`);
-      console.log(`[${requestId}]     events: ${filteredEvents.length}`);
-      console.log(`[${requestId}]     social: ${filteredSocial.length}`);
-      console.log(`[${requestId}]     coverage: ${filteredCoverage.length}`);
-      console.log(`[${requestId}]     opportunities: ${filteredOpportunities.length}`);
+    const session = getSession(userId);
+    if (evidence.query.entity) {
+      session.lastEntity = evidence.query.entity;
+      console.log(`[${requestId}]   ✓ Saved to session: "${evidence.query.entity}"`);
     }
 
-    // STEP 5: BUILD EDITORIAL BRIEFING
+    console.log(`[${requestId}]   Query intent: ${evidence.query.intent}`);
+    console.log(`[${requestId}]   Query entity: ${evidence.query.entity || '(global)'}`);
+    console.log(`[${requestId}]   Query timeframe: ${evidence.query.timeframe} (${evidence.query.hours} hours)`);
+    console.log(`[${requestId}]   ✓ Retrieval completed in ${Date.now() - retrievalStart}ms`);
+    console.log(`[${requestId}]   RESULTS:`);
+    console.log(`[${requestId}]     stories: ${evidence.stories.length}`);
+    console.log(`[${requestId}]     events: ${evidence.events.length}`);
+    console.log(`[${requestId}]     social: ${evidence.social.length}`);
+    console.log(`[${requestId}]     coverage: ${evidence.coverage.length}`);
+    console.log(`[${requestId}]     opportunities: ${evidence.opportunities.length}`);
+    console.log(`[${requestId}]     entities: ${evidence.entities.length}`);
+    auditLog(`[${requestId}] STEP 1 RESULTS: stories=${evidence.stories.length} events=${evidence.events.length} social=${evidence.social.length} coverage=${evidence.coverage.length} opps=${evidence.opportunities.length}`);
+
+    // STEP 2: BUILD EDITORIAL BRIEFING
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 5: BUILDING EDITORIAL BRIEFING`);
-    console.log(`[${requestId}]   Input: ${filteredStories.length} stories, ${filteredEvents.length} events, ${filteredSocial.length} social, ${filteredCoverage.length} coverage, ${filteredOpportunities.length} opportunities`);
+    console.log(`[${requestId}] STEP 2: BUILDING EDITORIAL BRIEFING`);
+    console.log(`[${requestId}]   Input: ${evidence.stories.length} stories, ${evidence.events.length} events, ${evidence.social.length} social, ${evidence.coverage.length} coverage, ${evidence.opportunities.length} opportunities`);
 
     const briefing = buildEditorialBriefing({
-      stories: filteredStories,
-      events: filteredEvents,
-      social: filteredSocial,
-      coverage: filteredCoverage,
-      opportunities: filteredOpportunities,
-      entities: knowledge,
-      entity: parsed.entity || null
+      stories: evidence.stories,
+      events: evidence.events,
+      social: evidence.social,
+      coverage: evidence.coverage,
+      opportunities: evidence.opportunities,
+      entities: evidence.entities,
+      entity: evidence.query.entity || null
     });
 
     console.log(`[${requestId}]   ✓ Briefing constructed (SELECTION RULES: max 5 stories, 3 events, 3 social, 3 coverage, 3 opportunities):`);
-    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} selected (from ${filteredStories.length} available)`);
-    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} selected (from ${filteredEvents.length} available)`);
-    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} selected (from ${filteredSocial.length} available)`);
-    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} selected (from ${filteredCoverage.length} available)`);
-    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} selected (from ${filteredOpportunities.length} available)`);
-    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} selected (from ${knowledge.length} available)`);
+    console.log(`[${requestId}]     stories: ${briefing.stories?.length || 0} selected (from ${evidence.stories.length} available)`);
+    console.log(`[${requestId}]     events: ${briefing.events?.length || 0} selected (from ${evidence.events.length} available)`);
+    console.log(`[${requestId}]     social: ${briefing.social?.length || 0} selected (from ${evidence.social.length} available)`);
+    console.log(`[${requestId}]     coverage: ${briefing.coverage?.length || 0} selected (from ${evidence.coverage.length} available)`);
+    console.log(`[${requestId}]     opportunities: ${briefing.opportunities?.length || 0} selected (from ${evidence.opportunities.length} available)`);
+    console.log(`[${requestId}]     entities: ${briefing.entities?.length || 0} selected (from ${evidence.entities.length} available)`);
 
     const contextStr = JSON.stringify(briefing, null, 2);
     const systemPrompt = `Eres un Editor Ejecutivo de Panorama.
@@ -315,7 +143,7 @@ Para cada tema, indica qué datos lo respaldan.
 Sé verificable. Sé auditable.`;
 
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 6: CALLING SONNET-4-6`);
+    console.log(`[${requestId}] STEP 3: CALLING SONNET-4-6`);
     console.log(`[${requestId}]   Context length: ${contextStr.length} chars`);
     console.log(`[${requestId}]   Max tokens: 2000`);
 
@@ -332,11 +160,11 @@ Sé verificable. Sé auditable.`;
     console.log(`[${requestId}]   ✓ Response received in ${Date.now() - callStart}ms`);
     console.log(`[${requestId}]   Answer length: ${answer.length} chars`);
 
-    // STEP 7: ENRICH RESPONSE
+    // STEP 4: ENRICH RESPONSE
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 7: ENRICHING RESPONSE WITH SOURCES`);
+    console.log(`[${requestId}] STEP 4: ENRICHING RESPONSE WITH SOURCES`);
 
-    const enrichedResponse = enrichResponseWithSources(answer, briefing, filteredStories, filteredEvents, filteredSocial, filteredCoverage, filteredOpportunities);
+    const enrichedResponse = enrichResponseWithSources(answer, briefing, evidence.stories, evidence.events, evidence.social, evidence.coverage, evidence.opportunities);
 
     console.log(`[${requestId}]   ✓ Sources mapped: ${Object.keys(enrichedResponse.sources || {}).length} themes found`);
 
@@ -357,14 +185,14 @@ Sé verificable. Sé auditable.`;
     console.log(`[${requestId}] Total Time: ${Date.now() - start}ms`);
     console.log(`[${requestId}] Briefing Status: REBUILT FROM ZERO (no cache)`);
 
-    // Construir evidencia estructurada
+    // Construir evidencia estructurada para respuesta
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 8: FINAL NUMBERS FOR RESPONSE`);
-    console.log(`[${requestId}]   Will report: ${filteredStories.length} editorial, ${filteredEvents.length} events, ${filteredSocial.length} social, ${filteredCoverage.length} coverage, ${filteredOpportunities.length} opportunities`);
-    auditLog(`[${requestId}] STEP 8 FINAL: Will return Editorial=${filteredStories.length} Events=${filteredEvents.length} Social=${filteredSocial.length} Coverage=${filteredCoverage.length}`);
+    console.log(`[${requestId}] STEP 5: FINAL NUMBERS FOR RESPONSE`);
+    console.log(`[${requestId}]   Will report: ${evidence.stories.length} editorial, ${evidence.events.length} events, ${evidence.social.length} social, ${evidence.coverage.length} coverage, ${evidence.opportunities.length} opportunities`);
+    auditLog(`[${requestId}] STEP 5 FINAL: Will return Editorial=${evidence.stories.length} Events=${evidence.events.length} Social=${evidence.social.length} Coverage=${evidence.coverage.length}`);
 
-    const evidence = {
-      articles: filteredStories.map(s => ({
+    const evidenceForResponse = {
+      articles: evidence.stories.map(s => ({
         id: s.id,
         title: s.title,
         type: s.story_type,
@@ -375,14 +203,14 @@ Sé verificable. Sé auditable.`;
         sources: s.sources || [],
         internal_link: `/stories/${s.id}`
       })),
-      events: filteredEvents.map(e => ({
+      events: evidence.events.map(e => ({
         id: e.id,
         headline: e.headline,
         score: e.editorial_score,
         story_count: e.story_count,
         internal_link: `/events/${e.id}`
       })),
-      social: filteredSocial.map(s => ({
+      social: evidence.social.map(s => ({
         id: s.id,
         title: s.title,
         engagement: s.total_engagement,
@@ -390,7 +218,7 @@ Sé verificable. Sé auditable.`;
         platforms: s.platforms || [],
         internal_link: `/social/clusters/${s.id}`
       })),
-      coverage: filteredCoverage.map(c => ({
+      coverage: evidence.coverage.map(c => ({
         id: c.id,
         source: c.source_name,
         change_type: c.change_type,
@@ -398,7 +226,7 @@ Sé verificable. Sé auditable.`;
         detected_at: c.detected_at,
         internal_link: `/coverage/${c.id}`
       })),
-      opportunities: filteredOpportunities.map(o => ({
+      opportunities: evidence.opportunities.map(o => ({
         id: o.id,
         title: o.title,
         type: o.opportunity_type,
@@ -406,7 +234,7 @@ Sé verificable. Sé auditable.`;
         trigger: o.trigger,
         internal_link: `/opportunities/${o.id}`
       })),
-      entities: knowledge.map(k => ({
+      entities: evidence.entities.map(k => ({
         id: k.id,
         name: k.name,
         type: k.entity_type,
@@ -417,14 +245,14 @@ Sé verificable. Sé auditable.`;
     return res.json({
       answer: enrichedResponse.narrative,
       detailed_sources: enrichedResponse.sources,
-      evidence,
+      evidence: evidenceForResponse,
       modules_count: {
-        articles: filteredStories.length,
-        events: filteredEvents.length,
-        social: filteredSocial.length,
-        coverage: filteredCoverage.length,
-        opportunities: filteredOpportunities.length,
-        entities: knowledge.length
+        articles: evidence.stories.length,
+        events: evidence.events.length,
+        social: evidence.social.length,
+        coverage: evidence.coverage.length,
+        opportunities: evidence.opportunities.length,
+        entities: evidence.entities.length
       },
       elapsed: Date.now() - start,
       model: MODEL
@@ -486,10 +314,6 @@ router.get('/debug-parse', requireAuth, (req, res) => {
     }
   });
 });
-
-function unwrap(settled, fallback) {
-  return settled.status === 'fulfilled' ? settled.value : fallback;
-}
 
 /**
  * Construir briefing editorial de alta calidad
