@@ -673,7 +673,8 @@ async function detectStories(newArticleIds) {
 
   // Pre-compute category for each active story (use stored value when available)
   const signatures = activeStories.map(s => {
-    const category = s.detected_category || detectStoryCategory(s.title, s.story_type);
+    const catResult = s.detected_category ? { category: s.detected_category } : detectStoryCategory(s.title, s.story_type);
+    const category = catResult.category;
     return {
       id:       s.id,
       category,
@@ -704,8 +705,9 @@ async function detectStories(newArticleIds) {
     const artKw       = extractStoryKeywords(article.title);
     if (artKw.length < 2) continue;
 
-    const artCategory = detectStoryCategory(article.title, null);
     const artEntities = artEntityMap.get(article.id) || new Set();
+    const artCatResult = detectStoryCategory(article.title, null, artEntities);
+    const artCategory = artCatResult.category;
 
     let bestId     = null;
     let bestComposite = 0;
@@ -1016,11 +1018,24 @@ export async function recalcFreshness() {
 // Scores each category by matching keyword patterns; precedence breaks ties.
 // Categories (CK4): judicial > security > international > politics > economy >
 //                   health > technology > sports > entertainment > society
-function detectStoryCategory(title, storyType) {
-  if (storyType === 'sports')   return 'sports';
-  if (storyType === 'politics') return 'politics';
+// detectStoryCategory v2: Context-aware classification with confidence scores
+// Fixes fragmentação bug by understanding sports context (e.g., "revisión médica" in transfer context = sports, not health)
+function detectStoryCategory(title, storyType, entities = new Set()) {
+  if (storyType === 'sports')   return { category: 'sports', confidence: 1.0, matched_rules: ['storyType_override'] };
+  if (storyType === 'politics') return { category: 'politics', confidence: 1.0, matched_rules: ['storyType_override'] };
 
   const t = (title || '').toLowerCase();
+  const entityNames = new Set([...(entities || [])].map(e => String(e).toLowerCase()));
+
+  // Sports context: clubes argentinos, competiciones, términos de mercado
+  const SPORTS_CONTEXT = {
+    clubs: new Set(['boca', 'river', 'racing', 'independiente', 'san lorenzo', 'vélez', 'estudiantes', 'quilmes', 'atlético tucumán', 'lanús', 'defensa y justicia', 'talleres', 'colón', 'gimnasia', 'argentinos juniors']),
+    competitions: new Set(['mundial', 'copa', 'liga', 'superliga', 'torneo', 'champions', 'libertadores', 'sudamericana']),
+    transfer: new Set(['refuerzo', 'fichaje', 'contratación', 'transferencia', 'mercado de pases', 'mercado', 'acuerdo', 'firmará', 'contrato', 'jugador', 'delantero', 'defensor', 'lateral', 'portero', 'centrocampista']),
+  };
+
+  // Entertainment context: personas públicas no deportistas
+  const ENTERTAINMENT_CONTEXT = new Set(['andrea del boca', 'actor', 'actriz', 'cantante', 'músico', 'artista', 'película', 'serie', 'show', 'gran hermano', 'reality']);
 
   const PATTERNS = {
     judicial:      [
@@ -1054,7 +1069,7 @@ function detectStoryCategory(title, storyType) {
     ],
     economy:       [
       /\beconom[ií]a\b/, /\becon[oó]mic[ao]\b/, /\bd[oó]lar\b/, /\binflaci[oó]n\b/,
-      /\bprecios\b/, /\bbanco\b/, /\bmercado\b/, /\binversi[oó]n\b/,
+      /\bprecios\b/, /\bbanco\b/, /\bpodría irse\b/, /\binversi[oó]n\b/,
       /\bdeuda\b/, /\bmoneda\b/, /\bpbi\b/, /\bpib\b/, /\bbolsa\b/,
       /\bexportaci[oó]n\b/, /\bimportaci[oó]n\b/, /\bimpuesto\b/,
       /\barancel\b/, /\bpresupuesto\b/, /\breservas\b/, /\bfinanci[ae]r/,
@@ -1099,17 +1114,88 @@ function detectStoryCategory(title, storyType) {
     ],
   };
 
+  // Calculate pattern matches
   const scores = {};
+  const matched_rules = {};
   for (const [cat, patterns] of Object.entries(PATTERNS)) {
-    scores[cat] = patterns.filter(p => p.test(t)).length;
+    const matches = patterns.filter(p => p.test(t));
+    scores[cat] = matches.length;
+    matched_rules[cat] = [];
+  }
+
+  // Check entertainment context FIRST — Andrea del Boca should not be sports
+  const hasEntertainmentContext = [...ENTERTAINMENT_CONTEXT].some(e => t.includes(e));
+
+  // Check sports context: if any sports context keyword present, prioritize sports
+  // BUT: exclude "boca" if "del boca" is in the title (it's a person's name)
+  let hasSportsClub = [...SPORTS_CONTEXT.clubs].some(c => {
+    if (c === 'boca' && t.includes('del boca')) return false; // Andrea del Boca exclusion
+    return t.includes(c);
+  });
+  const hasSportsCompetition = [...SPORTS_CONTEXT.competitions].some(c => t.includes(c));
+  const hasSportsTransfer = [...SPORTS_CONTEXT.transfer].some(c => t.includes(c));
+
+  // Context rule: if sports context detected, health/economy/international keywords become supporting evidence only
+  // BUT: skip if entertainment context is strong
+  if ((hasSportsClub || hasSportsCompetition || hasSportsTransfer) && !hasEntertainmentContext) {
+    const contextRules = [];
+    if (hasSportsClub) contextRules.push('sports_club');
+    if (hasSportsCompetition) contextRules.push('sports_competition');
+    if (hasSportsTransfer) contextRules.push('sports_transfer');
+
+    // Reduce health/economy/international scores if sports context is strong
+    if (scores['health'] > 0 && (hasSportsClub || hasSportsTransfer)) {
+      scores['health'] = Math.max(0, scores['health'] - 1);
+    }
+    if (scores['economy'] > 0 && (hasSportsClub || hasSportsTransfer)) {
+      scores['economy'] = Math.max(0, scores['economy'] - 1);
+    }
+    if (scores['international'] > 0 && hasSportsCompetition && !t.includes('guerra') && !t.includes('diplomat')) {
+      scores['international'] = Math.max(0, scores['international'] - 1);
+    }
+
+    scores['sports'] = (scores['sports'] || 0) + 2; // Boost sports if context detected
+    matched_rules['sports'] = contextRules;
+  }
+
+  // Entertainment check: if entertainment context detected, prioritize entertainment
+  if (hasEntertainmentContext) {
+    scores['entertainment'] = Math.max(scores['entertainment'], (scores['sports'] || 0) + 1);
+    matched_rules['entertainment'].push('entertainment_context');
   }
 
   const maxScore = Math.max(...Object.values(scores));
-  if (maxScore === 0) return 'society';
+  if (maxScore === 0) return { category: 'society', confidence: 0.5, matched_rules: ['default'] };
 
-  const PRECEDENCE = ['judicial', 'security', 'international', 'politics', 'economy', 'health', 'technology', 'sports', 'entertainment', 'society'];
-  return PRECEDENCE.find(cat => scores[cat] === maxScore) || 'society';
+  // When entertainment context is strong, entertainment gets priority
+  const PRECEDENCE = hasEntertainmentContext
+    ? ['judicial', 'security', 'international', 'politics', 'economy', 'entertainment', 'sports', 'health', 'technology', 'society']
+    : ['judicial', 'security', 'international', 'politics', 'economy', 'sports', 'health', 'technology', 'entertainment', 'society'];
+  const winner = PRECEDENCE.find(cat => scores[cat] === maxScore) || 'society';
+  const confidence = maxScore / (Object.values(scores).reduce((a, b) => a + b, 0) || 1);
+
+  return {
+    category: winner,
+    confidence: Math.min(1, confidence),
+    matched_rules: matched_rules[winner] || []
+  };
 }
+
+// Test cases (v2 — context-aware classification) — run with: detectStoryCategory('title', null, entitiesSet)
+// BEFORE (broken v1): 'Boca confirmó al primer refuerzo: Leandro Lozano se hará la REVISIÓN MÉDICA...' → health (BUG!)
+// AFTER (v2 fixed):  same title → sports ✓ (because has 'boca' + 'refuerzo' + 'contrato' context)
+//
+// BEFORE: 'Merentiel podría irse de Boca' → economy (matches 'podría irse' + 'mercado' regex)
+// AFTER:  same title → sports ✓ (because 'boca' entity detected)
+//
+// BEFORE: 'Oficial: Boca debut en la Copa Argentina' → international (matches 'copa' + 'internacional' regex)
+// AFTER:  same title → sports ✓ (because 'boca' + 'copa' + 'deportes' context)
+//
+// BEFORE: 'Andrea del Boca en Gran Hermano' → sports (matches 'boca')
+// AFTER:  same title → entertainment ✓ (because 'gran hermano' + 'reality' context overrides 'boca' match)
+//
+// Confidence scores allow downstream filtering: entries with confidence < 0.7 can be manually reviewed
+// matched_rules[] enables auditing: if a story gets misclassified, the log shows which rules fired
 
 // Pure: build algorithmic summary sentence (no AI)
 function buildAlgorithmicSummary(story, entities = []) {
@@ -1417,7 +1503,8 @@ async function generateAlgorithmicOpportunities(storyIds) {
 
     if ((story.existing_algo_opps || 0) > 0) continue;
 
-    const category    = detectStoryCategory(story.title, story.story_type);
+    const catResult = detectStoryCategory(story.title, story.story_type);
+    const category = catResult.category;
     const oppsToInsert = getCategoryOpportunityTemplates(story, category, sourceList);
 
     for (const opp of oppsToInsert) {

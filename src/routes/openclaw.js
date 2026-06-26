@@ -22,6 +22,133 @@ const claude = new Anthropic();
 const MODEL = 'claude-sonnet-4-6';
 const DEBUG = process.env.OPENCLAW_DEBUG === 'true';
 
+/**
+ * parseThemesFromAnswer(answer)
+ * Parsea la respuesta de Sonnet en temas con narrativa + URLs
+ *
+ * Formato esperado:
+ * ## Tema 1
+ * [narrativa]
+ * FUENTES USADAS:
+ * - Medio1 — https://url1
+ * - Medio2 — https://url2
+ *
+ * ---
+ *
+ * ## Tema 2
+ * [narrativa]
+ * FUENTES USADAS:
+ * - Medio3 — https://url3
+ */
+function parseThemesFromAnswer(answer) {
+  const themes = [];
+
+  // Dividir por "---" o por "## " (temas)
+  const themeBlocks = answer.split(/^---$/m);
+
+  themeBlocks.forEach(block => {
+    // Buscar encabezado "## Nombre del tema"
+    const titleMatch = block.match(/^##\s+(.+?)$/m);
+    if (!titleMatch) return;
+
+    const title = titleMatch[1].trim();
+
+    // Extraer narrativa (todo antes de "FUENTES USADAS")
+    const narrativeMatch = block.match(/^## .+?$([\s\S]*?)(?:FUENTES USADAS:|$)/m);
+    const narrative = narrativeMatch ? narrativeMatch[1].trim() : '';
+
+    // Extraer FUENTES USADAS
+    const sourcesMatch = block.match(/FUENTES USADAS:\s*([\s\S]*?)(?:^##|$)/m);
+    const sourcesText = sourcesMatch ? sourcesMatch[1] : '';
+
+    // Parsear cada línea "- Medio — URL"
+    const sources = [];
+    const sourceLines = sourcesText.split('\n').filter(l => l.trim().startsWith('-'));
+
+    sourceLines.forEach(line => {
+      // Formato: "- Medio — https://..."
+      const sourceMatch = line.match(/^-\s*(.+?)\s*—\s*(https?:\/\/.+?)(?:\s|$)/);
+      if (sourceMatch) {
+        sources.push({
+          medium: sourceMatch[1].trim(),
+          url: sourceMatch[2].trim()
+        });
+      }
+    });
+
+    if (title) {
+      themes.push({
+        title,
+        narrative,
+        sources
+      });
+    }
+  });
+
+  return themes;
+}
+
+/**
+ * formatBriefingForSonnet(briefing)
+ * Convierte el briefing JSON en texto legible para que Sonnet
+ * vea claramente las URLs y timestamps de las fuentes
+ */
+function formatBriefingForSonnet(briefing) {
+  let text = '';
+
+  // EDITORIAL
+  if (briefing.stories && briefing.stories.length > 0) {
+    text += '📰 EDITORIAL\n';
+    briefing.stories.slice(0, 10).forEach((story, i) => {
+      const timestamp = story.detected_at ? new Date(story.detected_at).toLocaleTimeString('es-AR') : 'sin hora';
+      text += `  ${i + 1}. ${story.source_name || 'Desconocido'} (${timestamp})\n`;
+      text += `     Título: ${story.title || 'Sin título'}\n`;
+      if (story.url) text += `     URL: ${story.url}\n`;
+      text += '\n';
+    });
+    text += '\n';
+  }
+
+  // SOCIAL
+  if (briefing.social && briefing.social.length > 0) {
+    text += '📱 REDES SOCIALES\n';
+    briefing.social.slice(0, 5).forEach((post, i) => {
+      text += `  ${i + 1}. ${post.platform || 'Red social'}\n`;
+      text += `     Post: ${post.title || 'Sin título'}\n`;
+      if (post.url) text += `     URL: ${post.url}\n`;
+      text += `     Engagement: ${post.total_engagement || 0}\n`;
+      text += '\n';
+    });
+    text += '\n';
+  }
+
+  // COVERAGE
+  if (briefing.coverage && briefing.coverage.length > 0) {
+    text += '📊 CAMBIOS DETECTADOS\n';
+    briefing.coverage.slice(0, 5).forEach((change, i) => {
+      const timestamp = change.detected_at ? new Date(change.detected_at).toLocaleTimeString('es-AR') : 'sin hora';
+      text += `  ${i + 1}. ${change.source_name || 'Desconocido'} (${timestamp})\n`;
+      text += `     Tipo: ${change.change_type || 'cambio'}\n`;
+      if (change.article_url) text += `     URL: ${change.article_url}\n`;
+      text += '\n';
+    });
+    text += '\n';
+  }
+
+  // EVENTS
+  if (briefing.events && briefing.events.length > 0) {
+    text += '🔔 EVENTOS\n';
+    briefing.events.slice(0, 5).forEach((event, i) => {
+      text += `  ${i + 1}. ${event.headline || 'Evento'}\n`;
+      text += `     Historias: ${event.story_count || 0}, Medios: ${event.source_count || 0}\n`;
+      text += '\n';
+    });
+    text += '\n';
+  }
+
+  return text || 'No hay contexto disponible';
+}
+
 // Session memory (10 min TTL)
 const sessionMemory = new Map();
 
@@ -140,14 +267,11 @@ router.post('/ask', requireAuth, async (req, res, next) => {
       const basePrompt = `Eres un Director Editorial de Panorama.
 
 INSTRUCCIÓN CRÍTICA:
-La inteligencia de priorización YA está hecha por Panorama.
-importance_score, editorial_score, viral_score, coverage_status = YA calculados.
-
-TU TRABAJO:
-- Explicar (no re-decidir) por qué los temas ordenados importan
-- Detectar RELACIONES entre temas
-- Contextualizar cambios
-- NUNCA vuelvas a rankear. Solo narrativiza lo que ya está rankeado.`;
+- La inteligencia de priorización YA está hecha por Panorama
+- Tú SOLO explicas (no re-decides)
+- Devuelves TEXTO NARRATIVO PURO (no JSON)
+- Incluyes URLs directamente en el texto
+- Formato: párrafos naturales, no estructurado`;
 
       switch(mode) {
         case 'agenda':
@@ -155,98 +279,69 @@ TU TRABAJO:
 
 MODO: AGENDA EDITORIAL
 
-Contexto ya contiene:
-- dominant_theme (primer item, el que importa más)
-- evidence.editorial (ordenado por importance_score)
-- evidence.social (ordenado por viral_score × gap_score)
-- evidence.coverage (ordenado por recency)
-- correlations (patrones detectados)
+El contexto te da:
+- Tema dominante
+- Fuentes ordenadas (editorial, social, coverage)
+- Correlaciones detectadas
 
 TU TAREA:
-1. Explicar POR QUÉ el tema dominante importa
-2. Detectar relaciones (entities comunes, gaps editoriales)
-3. Explicar el cambio respecto a hace horas
-4. Dar recomendaciones editoriales
+1. Escribir 2-3 párrafos explicando POR QUÉ estos temas importan
+2. Explicar qué cambió respecto a hace horas
+3. Detectar relaciones entre temas
+4. Dar 3-4 recomendaciones editoriales concretas
 
-ESTRUCTURA:
-{
-  "editorial_narrative": "2-3 párrafos explicativos. Conecta temas.",
-  "dominant_theme": {
-    "title": "[el que ya detectamos]",
-    "why_matters": "Explicación editorial"
-  },
-  "relationships": [
-    { "theme_a": "X", "theme_b": "Y", "connection": "Cómo se relacionan" }
-  ],
-  "recommendations": [
-    "1. Cobertura en vivo de X (dominante, creciendo)",
-    "2. Análisis X-Y (relación que otros no ven)"
-  ]
-}`;
+IMPORTANTE:
+- Párrafos narrativos, NO listas
+- Cuando menciones un medio, incluye la URL: "Infobea publicó [TÍTULO] (https://...)"
+- Siempre cita la fuente
+- Nunca enumeres "1. 2. 3." — fluye natural`;
 
         case 'entity':
           return `${basePrompt}
 
-Tu trabajo: SUMARIO COMPLETO sobre una entidad específica.
+MODO: ENTIDAD ESPECÍFICA
 
-ESTRUCTURA:
-- POSICIÓN ACTUAL — ¿Dónde está X en la agenda?
-- COBERTURA — ¿Cuántos medios? ¿Qué tono?
-- TEMAS RELACIONADOS — ¿Qué otros temas la mencionan?
-- OPORTUNIDADES — ¿Qué se puede cubrir mejor?
-- RECOMENDACIÓN — ¿Qué debería hacer Panorama?
+Escribe un resumen editorial natural sobre quién es esta entidad y por qué está en la agenda.
 
-Estructura:
-{
-  "entity_summary": "Quién es [entity] y por qué está en la agenda hoy",
-  "current_position": "Ranking/importancia actual",
-  "coverage_analysis": "Cobertura por medios",
-  "related_topics": ["Tema 1", "Tema 2"],
-  "opportunities": "Espacios editoriales sin cubrir",
-  "recommendation": "Qué debería hacer Panorama",
-  "references": {...}
-}`;
+Incluye:
+- Quién es (posición actual)
+- Cuántos medios la cubren y dónde
+- Temas relacionados
+- Oportunidades editoriales
+
+Siempre con URLs cuando menciones fuentes.`;
 
         case 'comparison':
           return `${basePrompt}
 
-Tu trabajo: COMPARAR cómo diferentes actores (medios, entidades, plataformas) cubren un tema.
+MODO: COMPARACIÓN
 
-ESTRUCTURA:
-- TEMA — ¿De qué se trata?
-- ACTORES — ¿Quiénes lo cubren? (medios, redes, plataformas)
-- DIFERENCIAS — ¿Cómo difieren los enfoques?
-- GAPS — ¿Quién no lo cubre? ¿Por qué?
-- RECOMENDACIÓN — ¿Cómo diferenciarse?
+Explica cómo diferentes actores cubren el mismo tema.
 
-Estructura:
-{
-  "comparison_topic": "Tema siendo comparado",
-  "actors": [{"name": "Actor", "approach": "Descripción"}],
-  "coverage_gaps": "Espacios no cubiertos",
-  "differentiation": "Cómo podría diferenciarse Panorama",
-  "references": {...}
-}`;
+Escribe naturalmente:
+- Cuál es el tema
+- Quiénes lo cubren (medios, redes, plataformas)
+- Cómo difieren sus enfoques
+- Dónde hay gaps
+- Cómo diferenciarse
+
+Con URLs de fuentes.`;
 
         case 'analysis':
           return `${basePrompt}
 
-Tu trabajo: EXPLICAR POR QUÉ un tema explotó. Busca causas, no síntomas.
+MODO: ANÁLISIS
 
-ESTRUCTURA:
-- SÍNTOMA — ¿Qué creció/explotó?
-- CAUSAS — ¿Por qué ahora?
-- ACTORES — ¿Quiénes lo impulsan?
-- TENDENCIA — ¿Esto va a crecer más?
-- EDITORIAL — ¿Cómo cubrirlo mejor?
+Explica POR QUÉ un tema explotó hoy.
 
-Estructura:
-{
-  "symptom": "Qué explotó",
-  "root_causes": "Por qué sucedió",
-  "actors": ["Quién lo impulsa"],
-  "trajectory": "Hacia dónde va",
-  "editorial_angle": "Ángulos no explorados",
+Estructura natural:
+- Qué explotó (síntoma)
+- Por qué ahora (causas)
+- Quién lo impulsa
+- Hacia dónde va
+- Cómo cubrirlo mejor
+
+Siempre cita fuentes con URLs.
   "references": {...}
 }`;
 
@@ -273,14 +368,54 @@ Estructura:
       return 'agenda';
     }
 
+    // Format briefing for Sonnet (readable, with URLs visible)
+    const formattedBriefing = formatBriefingForSonnet(briefing);
+
     const userPrompt = `Pregunta: "${question}"
 Modo: ${mode}
 
-Contexto de Panorama (INDEXADO):
-${contextStr}
+═════════════════════════════════════════════════════════════
+CONTEXTO DE PANORAMA
+═════════════════════════════════════════════════════════════
 
-Responde en JSON según el modo. Solo devuelve referencias (índices), no datos crudos.
-Sé verificable. Sé auditable.`;
+${formattedBriefing}
+
+═════════════════════════════════════════════════════════════
+FORMATO REQUERIDO
+═════════════════════════════════════════════════════════════
+
+ESTRUCTURA OBLIGATORIA (por cada tema):
+
+## [NOMBRE DEL TEMA]
+
+[Narrativa: 2-3 párrafos explicativos]
+
+FUENTES USADAS:
+- [Medio] — [URL exacta]
+- [Medio] — [URL exacta]
+- [Medio] — [URL exacta]
+
+---
+
+## [SIGUIENTE TEMA]
+
+[Narrativa]
+
+FUENTES USADAS:
+- [Medio] — [URL exacta]
+[etc]
+
+═════════════════════════════════════════════════════════════
+REGLAS
+═════════════════════════════════════════════════════════════
+
+1. Cada tema DEBE tener su sección con ## [NOMBRE]
+2. Después de la narrativa SIEMPRE va "FUENTES USADAS:"
+3. Las URLs deben ser exactas y completas (empiezan con https://)
+4. Narrativa natural, NO JSON, NO estructuras
+5. Si un medio aparece múltiples veces, lista cada URL
+6. Máximo 5 temas principales (ordena por importancia)
+`;
 
     console.log(`[${requestId}] `);
     console.log(`[${requestId}] STEP 3: CALLING SONNET-4-6`);
@@ -295,56 +430,38 @@ Sé verificable. Sé auditable.`;
       messages: [{ role: 'user', content: userPrompt }]
     });
 
-    const rawAnswer = message.content[0].type === 'text' ? message.content[0].text : '';
+    const answer = message.content[0].type === 'text' ? message.content[0].text : '';
 
     console.log(`[${requestId}]   ✓ Response received in ${Date.now() - callStart}ms`);
-    console.log(`[${requestId}]   Raw answer length: ${rawAnswer.length} chars`);
+    console.log(`[${requestId}]   Answer length: ${answer.length} chars`);
 
-    // STEP 4: PARSE SONNET RESPONSE (mode-aware)
+    // STEP 4: PARSE STRUCTURED ANSWER (themes with sources)
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 4: PARSING SONNET RESPONSE (${mode} mode)`);
+    console.log(`[${requestId}] STEP 4: PARSING STRUCTURED ANSWER`);
 
-    let sonnetResponse;
-    let answer = rawAnswer;
-    try {
-      // Parsear JSON de Sonnet
-      const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        sonnetResponse = JSON.parse(jsonMatch[0]);
+    const themes = parseThemesFromAnswer(answer);
+    const totalUrls = themes.reduce((sum, t) => sum + (t.sources?.length || 0), 0);
 
-        // Extraer narrative según el modo
-        switch(mode) {
-          case 'agenda':
-            answer = sonnetResponse.editorial_narrative ||
-                     `${sonnetResponse.dominant_theme || 'Agenda del día'}\n\n${JSON.stringify(sonnetResponse.priorities || [])}`;
-            break;
-          case 'entity':
-            answer = `${sonnetResponse.entity_summary}\n\n${sonnetResponse.recommendation || ''}`;
-            break;
-          case 'comparison':
-            answer = `${sonnetResponse.comparison_topic}\n\n${sonnetResponse.differentiation || ''}`;
-            break;
-          case 'analysis':
-            answer = `${sonnetResponse.symptom}\n\nCausas: ${sonnetResponse.root_causes}\n\n${sonnetResponse.editorial_angle || ''}`;
-            break;
-          default:
-            answer = sonnetResponse.editorial_narrative || rawAnswer;
-        }
-      }
-    } catch (e) {
-      console.log(`[${requestId}]   ⚠ Could not parse JSON, using raw text`);
-    }
+    console.log(`[${requestId}]   Found ${themes.length} themes`);
+    console.log(`[${requestId}]   Found ${totalUrls} URLs across themes`);
+    themes.forEach((t, i) => {
+      console.log(`[${requestId}]     Theme ${i + 1}: "${t.title}" (${t.sources?.length || 0} sources)`);
+    });
 
-    // STEP 5: RESOLVE REFERENCES TO FULL EVIDENCE
+    // STEP 5: VERIFY ANSWER INTEGRITY
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 5: RESOLVING REFERENCES TO FULL EVIDENCE`);
+    console.log(`[${requestId}] STEP 5: ANSWER INTEGRITY CHECK`);
 
-    const resolvedEvidence = sonnetResponse
-      ? resolveReferencesToEvidence(sonnetResponse, briefing, evidence)
-      : null;
+    const hasThemes = themes.length > 0;
+    const hasSources = totalUrls > 0;
 
-    if (resolvedEvidence) {
-      console.log(`[${requestId}]   ✓ Resolved ${Object.keys(resolvedEvidence).length} evidence types`);
+    console.log(`[${requestId}]   ✓ Has themes: ${hasThemes} (${themes.length})`);
+    console.log(`[${requestId}]   ✓ Has sources: ${hasSources} (${totalUrls} URLs)`);
+    console.log(`[${requestId}]   ✓ Answer is structured with sources`);
+
+    // Validate structure
+    if (!hasThemes) {
+      console.log(`[${requestId}]   ⚠ WARNING: No themes detected, using raw answer`);
     }
 
     // FINAL SUMMARY LOG
@@ -366,88 +483,25 @@ Sé verificable. Sé auditable.`;
 
     // FINAL RESPONSE
     console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 6: BUILDING FINAL RESPONSE`);
-    console.log(`[${requestId}]   Retrieved: ${evidence.stories.length} editorial, ${evidence.events.length} events, ${evidence.social.length} social, ${evidence.coverage.length} coverage, ${evidence.opportunities.length} opportunities`);
-    console.log(`[${requestId}]   Ranked to briefing: ${briefing.stories?.length || 0}, ${briefing.events?.length || 0}, ${briefing.social?.length || 0}, ${briefing.coverage?.length || 0}, ${briefing.opportunities?.length || 0}`);
-    if (resolvedEvidence) {
-      console.log(`[${requestId}]   Referenced in answer: editorial=${resolvedEvidence.editorial_evidence?.length || 0}, events=${resolvedEvidence.event_evidence?.length || 0}, social=${resolvedEvidence.social_evidence?.length || 0}`);
-    }
-    auditLog(`[${requestId}] STEP 6 FINAL: Retrieved=${evidence.stories.length}/${evidence.events.length}/${evidence.social.length} Ranked=${briefing.stories?.length || 0}/${briefing.events?.length || 0}/${briefing.social?.length || 0} Referenced=${resolvedEvidence?.editorial_evidence?.length || 0}/${resolvedEvidence?.event_evidence?.length || 0}/${resolvedEvidence?.social_evidence?.length || 0}`);
+    console.log(`[${requestId}] STEP 6: FINAL RESPONSE`);
+    console.log(`[${requestId}]   ✓ Themes: ${themes.length}`);
+    console.log(`[${requestId}]   ✓ Total sources: ${totalUrls}`);
+    console.log(`[${requestId}]   ✓ Retrieved: ${evidence.stories.length} editorial`);
+    console.log(`[${requestId}]   ✓ Ranked: ${briefing.stories?.length || 0} in briefing`);
+    console.log(`[${requestId}]   Total time: ${Date.now() - start}ms`);
 
-    // STEP 7: BUILD ACTIONS (agnóstic UI component)
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 7: BUILDING ACTIONS (UI-agnostic)`);
+    auditLog(`[${requestId}] COMPLETE: themes=${themes.length} sources=${totalUrls} retrieved=${evidence.stories.length} ranked=${briefing.stories?.length || 0} time=${Date.now() - start}ms`);
 
-    const actions = buildActions(editorialContext);
-    console.log(`[${requestId}]   Generated ${actions.length} actions`);
-
-    // STEP 8: COMPLETE REASONING PIPELINE (para que el editor VEA cómo se construyó)
-    console.log(`[${requestId}] `);
-    console.log(`[${requestId}] STEP 8: BUILDING REASONING PIPELINE`);
-
-    const reasoningPipeline = {
-      stage_1: {
-        label: '🔍 RETRIEVAL',
-        description: 'Búsqueda en Panorama',
-        results: {
-          editorial: evidence.stories.length,
-          events: evidence.events.length,
-          social: evidence.social.length,
-          coverage: evidence.coverage.length,
-          opportunities: evidence.opportunities.length
-        }
-      },
-      stage_2: {
-        label: '⭐ RANKING',
-        description: 'Ordenamiento por métricas de Panorama',
-        results: {
-          editorial: briefing.stories?.length || 0,
-          events: briefing.events?.length || 0,
-          social: briefing.social?.length || 0,
-          coverage: briefing.coverage?.length || 0,
-          opportunities: briefing.opportunities?.length || 0
-        }
-      },
-      stage_3: {
-        label: '🔗 CORRELATION',
-        description: 'Detección de patrones',
-        findings: editorialContext.reasoning.stage_3_correlation.findings.length,
-        summary: editorialContext.agenda.correlation_summary
-      },
-      stage_4: {
-        label: '✍️ NARRATIVE',
-        description: 'Generación de narrativa editorial (Sonnet)',
-        status: 'complete'
-      }
-    };
-
-    console.log(`[${requestId}]   Reasoning pipeline complete`);
-    auditLog(`[${requestId}] COMPLETE: answer=${answer.slice(0, 50)}... actions=${actions.length} reasoning_stages=4`);
-
-    // Calcular datos que podrían ser útiles (funciones pequeñas, no "sistema")
-    const confidence = editorialContext.agenda.dominant_theme
-      ? calculateConfidence(editorialContext.agenda.dominant_theme)
-      : null;
-
-    const gaps = detectEditorialGaps(
-      editorialContext.evidence.editorial,
-      editorialContext.evidence.social
-    );
-
+    // RETURN STRUCTURED THEMES WITH SOURCES
     return res.json({
-      answer,
-      mode,
-      confidence,
-      gaps,
-      editorial_snapshot: editorialContext,
-      reasoning_pipeline: reasoningPipeline,
-      modules_count: {
-        articles: evidence.stories.length,
+      themes,  // Array of {title, narrative, sources: [{medium, url}]}
+      rawAnswer: answer,  // Raw text from Sonnet (for fallback/debugging)
+      panorama: {
+        editorial: evidence.stories.length,
         events: evidence.events.length,
         social: evidence.social.length,
         coverage: evidence.coverage.length,
-        opportunities: evidence.opportunities.length,
-        entities: evidence.entities.length
+        opportunities: evidence.opportunities.length
       },
       elapsed: Date.now() - start,
       model: MODEL
