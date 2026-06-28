@@ -3,23 +3,32 @@
     grid-template-columns: 260px 1fr;
     min-height: 100vh;
     font-family: "Inter", system-ui, sans-serif;
+    background: #f1f0eb;
 }
 
 .admin-sidebar {
-    background: #151a23;
+    background: #0d1117;
     color: white;
     padding: 14px;
     display: flex;
     flex-direction: column;
     z-index: 1200;
-    overflow-y: auto;
+    overflow: hidden;
+    position: fixed;
+    width: 260px;
+    height: 100vh;
+    top: 0;
+    left: 0;
 }
 
 .admin-main {
     padding: 24px;
-    background: #f8fafc;
+    background: #f1f0eb;
+    overflow-y: auto;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+    display: flex;
+    flex-direction: column;
 }
 
 .mobile-header {
@@ -49,6 +58,47 @@
 .horizontal-scroll {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+}
+
+/* Sidebar Navigation Styling */
+.admin-sidebar nav {
+    scrollbar-width: thin;
+    scrollbar-color: #d4d2cc transparent;
+}
+
+.admin-sidebar nav::-webkit-scrollbar {
+    width: 5px;
+}
+
+.admin-sidebar nav::-webkit-scrollbar-thumb {
+    background: #d4d2cc;
+    border-radius: 3px;
+}
+
+.admin-sidebar nav::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+/* Collapsed Sidebar */
+.admin-container.sidebar-collapsed {
+    grid-template-columns: 70px 1fr;
+}
+
+.admin-sidebar.collapsed {
+    width: 70px;
+}
+
+.admin-sidebar.collapsed nav {
+    align-items: center;
+}
+
+.admin-sidebar.collapsed nav > * span:not(:first-child) {
+    display: none;
+}
+
+/* Smooth transition */
+.admin-sidebar {
+    transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 @media (max-width: 1024px) {

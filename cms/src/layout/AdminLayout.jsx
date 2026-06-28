@@ -19,6 +19,7 @@ export default function AdminLayout() {
   const location = useLocation();
   const token = getToken();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   let role = "reader";
   let userId = null;
 
@@ -75,21 +76,46 @@ export default function AdminLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="admin-container">
+    <div className={`admin-container ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       {/* Mobile Header */}
       <header className="mobile-header">
-        <div style={{ fontWeight: 800, fontSize: "1.1rem" }}>CMS Noticias</div>
+        <div style={{ fontWeight: 800, fontSize: "1.1rem" }}>Panorama</div>
         <button className="menu-toggle" onClick={() => setSidebarOpen(!sidebarOpen)}>
           {sidebarOpen ? <X size={24} /> : <Menu size={24} />}
         </button>
       </header>
 
-      <aside className={`admin-sidebar ${sidebarOpen ? 'open' : ''}`}>
-        <div style={{ fontWeight: 800, padding: "10px 12px", fontSize: "1.2rem", letterSpacing: "-0.02em", marginBottom: 20 }}>
-          CMS Noticias
+      <aside className={`admin-sidebar ${sidebarOpen ? 'open' : ''} ${sidebarCollapsed ? 'collapsed' : ''}`}>
+        <div style={{ fontWeight: 800, padding: "18px 16px 14px", fontSize: "1.2rem", letterSpacing: "-0.02em", marginBottom: 20, display: "flex", alignItems: "center", gap: 10, justifyContent: "space-between", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+            <div style={{ width: 30, height: 30, background: "#1d4ed8", borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 0 0 3px rgba(29,78,216,0.25)", flexShrink: 0 }}>
+              <span style={{ color: "white", fontSize: 15, fontWeight: 800, letterSpacing: "-1px" }}>P</span>
+            </div>
+            {!sidebarCollapsed && <span style={{ fontSize: "14.5px", letterSpacing: "-0.3px" }}>Panorama</span>}
+          </div>
+          {typeof window !== 'undefined' && window.innerWidth > 1024 && (
+            <button
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#5e6a7a",
+                cursor: "pointer",
+                padding: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 14,
+                flexShrink: 0
+              }}
+              title={sidebarCollapsed ? "Expandir" : "Colapsar"}
+            >
+              {sidebarCollapsed ? "◀" : "▶"}
+            </button>
+          )}
         </div>
 
-        <nav style={{ display: "grid", gap: 4, alignContent: "start" }}>
+        <nav style={{ display: "grid", gap: 4, alignContent: "start", flex: 1, overflowY: "auto", overflowX: "hidden", paddingRight: 4, marginRight: -4 }}>
           <NavLink to="/openclaw" style={(props) => ({
             ...linkStyle(props),
             display: "flex",
@@ -190,6 +216,11 @@ export default function AdminLayout() {
               <NavLink to="/subscribers" style={linkStyle}>Suscriptores</NavLink>
               <NavLink to="/users" style={linkStyle}>Usuarios</NavLink>
               <NavLink to="/settings" style={linkStyle}>Configuración</NavLink>
+              <NavLink to="/brand" style={(props) => ({
+                ...linkStyle(props),
+                paddingLeft: 24,
+                fontSize: 13,
+              })}>🎨 Brand</NavLink>
             </>
           )}
         </nav>

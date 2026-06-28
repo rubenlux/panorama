@@ -439,47 +439,72 @@ export default function PostEditor({ mode }) {
   }
 
   const header = useMemo(() => (
-    <div className="responsive-stack" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-      <h2 style={{ margin: 0 }}>{mode === "create" ? "Nueva noticia" : `Editar: ${slug}`}</h2>
-      <button className="full-width-mobile" onClick={() => navigate("/posts")} style={{ padding: "8px 16px", borderRadius: 20, border: "1px solid #ddd", background: "white", cursor: "pointer" }}>Volver</button>
+    <div style={{ height: 52, background: "#ffffff", borderBottom: "1px solid #e8e6e0", padding: "0 22px", display: "flex", alignItems: "center", justifyContent: "space-between", flexShrink: 0, marginBottom: 18 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ color: "#a0a09a", fontSize: 13, fontWeight: 400 }}>Entradas</span>
+        <span style={{ color: "#d4d1cc", fontSize: 13 }}>/</span>
+        <span style={{ color: "#1a1a1a", fontSize: 14, fontWeight: 600, letterSpacing: "-0.2px" }}>{mode === "create" ? "Nueva noticia" : `Editar: ${slug}`}</span>
+        <span style={{ background: "#fef3c7", color: "#92400e", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 20, letterSpacing: "0.4px", textTransform: "uppercase" }}>{status}</span>
+      </div>
+      <button onClick={() => navigate("/posts")} style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 13px", border: "1px solid #e4e2dc", borderRadius: 7, background: "white", color: "#3f3f3a", fontSize: 13, fontFamily: "'DM Sans', sans-serif", fontWeight: 500, cursor: "pointer" }}>
+        <span style={{ fontSize: 12 }}>←</span> Volver
+      </button>
     </div>
-  ), [mode, slug, navigate]);
+  ), [mode, slug, navigate, status]);
 
   return (
-    <div className="responsive-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16, alignItems: "start" }}>
-      <div>
-        {header}
+    <div style={{ display: "flex", flexDirection: "column", background: "#f1f0eb", fontFamily: "'DM Sans', sans-serif" }}>
+      {header}
 
-        <div style={{ marginTop: 12, display: "grid", gap: 10 }}>
-          <input value={kicker} onChange={(e) => setKicker(e.target.value)} placeholder="Volanta" style={{ padding: 12, borderRadius: 20, border: "1px solid #ddd", width: "100%", boxSizing: "border-box" }} />
-          <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Título" style={{ padding: 12, fontSize: 18, fontWeight: 800, borderRadius: 20, border: "1px solid #ddd", width: "100%", boxSizing: "border-box" }} />
-          <textarea value={deck} onChange={(e) => setDeck(e.target.value)} placeholder="Copete / bajada" rows={3} style={{ padding: 12, borderRadius: 20, border: "1px solid #ddd", resize: "vertical", width: "100%", boxSizing: "border-box" }} />
-        </div>
+      <div style={{ flex: 1, overflowY: "auto", display: "flex", gap: 14, padding: "18px 22px", alignItems: "flex-start" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ background: "#ffffff", borderRadius: 12, border: "1px solid #e8e6e0", overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+            {/* Volanta */}
+            <div style={{ padding: "13px 20px", borderBottom: "1px solid #f4f3ef" }}>
+              <input value={kicker} onChange={(e) => setKicker(e.target.value)} placeholder="VOLANTA" style={{ width: "100%", border: "none", outline: "none", fontSize: "10.5px", fontWeight: 700, color: "#3f3f3a", fontFamily: "'DM Sans', sans-serif", letterSpacing: "2px", textTransform: "uppercase", background: "transparent" }} />
+            </div>
 
-        <div style={{ marginTop: 12, position: "sticky", top: 10, zIndex: 100, background: "white", paddingBottom: 10 }}>
-          <Toolbar
-            editor={editor}
-            onInsertImage={insertImageBody}
-            onInsertYoutube={insertYoutubeUrl}
-            onInsertVideo={insertLocalVideo}
-            onInsertIframe={insertIframeCode}
-            onInsertHtml={insertHtmlBlock}
-          />
-          <button
-            type="button"
-            onClick={() => openPexels("body")}
-            style={{
-              marginTop: 5, padding: "6px 12px", borderRadius: 6, border: "1px solid #cbd5e1",
-              background: "white", fontSize: 13, fontWeight: 600, color: "#475569", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6
-            }}
-          >
-            📸 Insertar foto de Pexels
-          </button>
-        </div>
+            {/* Título */}
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid #f4f3ef" }}>
+              <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Título de la noticia" style={{ width: "100%", border: "none", outline: "none", fontSize: "26px", fontWeight: 700, color: "#111111", fontFamily: "'DM Serif Display', serif", letterSpacing: "-0.4px", background: "transparent", lineHeight: "1.25" }} />
+            </div>
 
-        <div style={{ marginTop: 12, background: "#f8f9fa", borderRadius: 20, padding: 20, border: "1px solid #e2e8f0" }}>
-          <EditorContent editor={editor} style={{ minHeight: 300 }} />
-        </div>
+            {/* Copete */}
+            <div style={{ padding: "13px 20px", borderBottom: "1px solid #f4f3ef" }}>
+              <textarea value={deck} onChange={(e) => setDeck(e.target.value)} placeholder="Copete / bajada" rows={2} style={{ width: "100%", border: "none", outline: "none", fontSize: "15px", color: "#3f3f3a", fontFamily: "'DM Sans', sans-serif", lineHeight: "1.6", background: "transparent", resize: "none" }} />
+            </div>
+
+            {/* Toolbar */}
+            <div style={{ padding: "7px 14px", borderBottom: "1px solid #f4f3ef", background: "#faf9f5", display: "flex", alignItems: "center", gap: "2px", flexWrap: "wrap" }}>
+
+            {/* Toolbar dentro del card */}
+            <Toolbar
+              editor={editor}
+              onInsertImage={insertImageBody}
+              onInsertYoutube={insertYoutubeUrl}
+              onInsertVideo={insertLocalVideo}
+              onInsertIframe={insertIframeCode}
+              onInsertHtml={insertHtmlBlock}
+            />
+
+            {/* Pexels button */}
+            <div style={{ padding: "9px 16px", borderBottom: "1px solid #f4f3ef", background: "#faf9f5" }}>
+              <button
+                type="button"
+                onClick={() => openPexels("body")}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "1px solid #e4e2dc", borderRadius: 7, background: "white", color: "#3f3f3a", fontSize: "12.5px", fontFamily: "'DM Sans', sans-serif", fontWeight: 500, cursor: "pointer"
+                }}
+              >
+                <span style={{ fontSize: "13px" }}>⬚</span> Insertar foto de Pexels
+              </button>
+            </div>
+
+            {/* Content body */}
+            <div style={{ minHeight: 360, padding: "22px 20px" }}>
+              <EditorContent editor={editor} style={{ minHeight: 360 }} />
+            </div>
+          </div>
 
         {err ? <div style={{ marginTop: 10, color: "crimson" }}>{err}</div> : null}
         {info ? <div style={{ marginTop: 10, color: "green" }}>{info}</div> : null}
@@ -513,7 +538,9 @@ export default function PostEditor({ mode }) {
         )}
       </div>
 
-      <aside style={{ display: "grid", gap: 12, position: "sticky", top: 16 }}>
+        <div style={{ width: 264, flexShrink: 0, display: "flex", flexDirection: "column", gap: 10, position: "sticky", top: 18 }}>
+
+      <aside style={{ display: "contents" }}>
         <div style={{ background: "white", borderRadius: 12, padding: 12 }}>
           <div style={{ fontWeight: 800, marginBottom: 8 }}>Publicación</div>
           <div style={{ marginBottom: 10 }}>Estado actual: <b>{status}</b></div>
