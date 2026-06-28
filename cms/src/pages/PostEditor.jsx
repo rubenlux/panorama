@@ -475,17 +475,16 @@ export default function PostEditor({ mode }) {
             </div>
 
             {/* Toolbar */}
-            <div style={{ padding: "7px 14px", borderBottom: "1px solid #f4f3ef", background: "#faf9f5", display: "flex", alignItems: "center", gap: "2px", flexWrap: "wrap" }}>
-
-            {/* Toolbar dentro del card */}
-            <Toolbar
-              editor={editor}
-              onInsertImage={insertImageBody}
-              onInsertYoutube={insertYoutubeUrl}
-              onInsertVideo={insertLocalVideo}
-              onInsertIframe={insertIframeCode}
-              onInsertHtml={insertHtmlBlock}
-            />
+            <div style={{ padding: "7px 14px", borderBottom: "1px solid #f4f3ef", background: "#faf9f5" }}>
+              <Toolbar
+                editor={editor}
+                onInsertImage={insertImageBody}
+                onInsertYoutube={insertYoutubeUrl}
+                onInsertVideo={insertLocalVideo}
+                onInsertIframe={insertIframeCode}
+                onInsertHtml={insertHtmlBlock}
+              />
+            </div>
 
             {/* Pexels button */}
             <div style={{ padding: "9px 16px", borderBottom: "1px solid #f4f3ef", background: "#faf9f5" }}>
@@ -506,44 +505,43 @@ export default function PostEditor({ mode }) {
             </div>
           </div>
 
-        {err ? <div style={{ marginTop: 10, color: "crimson" }}>{err}</div> : null}
-        {info ? <div style={{ marginTop: 10, color: "green" }}>{info}</div> : null}
+          {err ? <div style={{ marginTop: 10, color: "crimson" }}>{err}</div> : null}
+          {info ? <div style={{ marginTop: 10, color: "green" }}>{info}</div> : null}
 
-        {/* Render AI Panel if active */}
-        {showAiPanel && (
-          <AiAnalysisPanel
-            article={{
-              title,
-              volanta: kicker,
-              slug,
-              excerpt: deck,
-              body: editor?.getHTML(),
-              categorySlugs: selectedCats,
-              image_url: featuredUrl,
-              epigraph: featuredCaption,
-              keywords: seo.keywords,
-              editor: editor
-            }}
-            onClose={() => setShowAiPanel(false)}
-            onRewrite={(newData) => {
-              if (newData.title) setTitle(newData.title);
-              if (newData.volanta) setKicker(newData.volanta);
-              if (newData.excerpt) setDeck(newData.excerpt);
-              if (newData.body && editor) {
-                editor.commands.setContent(newData.body);
-              }
-              alert("¡Noticia reescrita por AI con éxito! ✨");
-            }}
-          />
-        )}
-      </div>
+          {/* Render AI Panel if active */}
+          {showAiPanel && (
+            <AiAnalysisPanel
+              article={{
+                title,
+                volanta: kicker,
+                slug,
+                excerpt: deck,
+                body: editor?.getHTML(),
+                categorySlugs: selectedCats,
+                image_url: featuredUrl,
+                epigraph: featuredCaption,
+                keywords: seo.keywords,
+                editor: editor
+              }}
+              onClose={() => setShowAiPanel(false)}
+              onRewrite={(newData) => {
+                if (newData.title) setTitle(newData.title);
+                if (newData.volanta) setKicker(newData.volanta);
+                if (newData.excerpt) setDeck(newData.excerpt);
+                if (newData.body && editor) {
+                  editor.commands.setContent(newData.body);
+                }
+                alert("¡Noticia reescrita por AI con éxito! ✨");
+              }}
+            />
+          )}
+        </div>
 
         <div style={{ width: 264, flexShrink: 0, display: "flex", flexDirection: "column", gap: 10, position: "sticky", top: 18 }}>
-
-      <aside style={{ display: "contents" }}>
-        <div style={{ background: "white", borderRadius: 12, padding: 12 }}>
-          <div style={{ fontWeight: 800, marginBottom: 8 }}>Publicación</div>
-          <div style={{ marginBottom: 10 }}>Estado actual: <b>{status}</b></div>
+          {/* Right Panel - Publicación */}
+          <div style={{ background: "white", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Publicación</div>
+            <div style={{ marginBottom: 10 }}>Estado actual: <b>{status}</b></div>
 
           {/* AI Button */}
           <button
@@ -674,11 +672,10 @@ export default function PostEditor({ mode }) {
             <input value={seo.canonical_url} onChange={e => setSeo({ ...seo, canonical_url: e.target.value })} placeholder="Canonical URL" style={{ padding: 8, borderRadius: 15, border: "1px solid #ddd" }} />
             <input value={seo.keywords || ""} onChange={e => setSeo({ ...seo, keywords: e.target.value })} placeholder="Keywords (separadas por coma)" style={{ padding: 8, borderRadius: 15, border: "1px solid #ddd", marginTop: 6 }} />
           </div>
-        </div>
-      </aside>
+          </div>
 
-      {/* SEO Score Card */}
-      <div style={{ background: "white", borderRadius: 12, padding: 12, border: seoReport.score < 50 ? "2px solid red" : seoReport.score < 90 ? "2px solid orange" : "2px solid green" }}>
+          {/* SEO Score Card */}
+          <div style={{ background: "white", borderRadius: 12, padding: 12, border: seoReport.score < 50 ? "2px solid red" : seoReport.score < 90 ? "2px solid orange" : "2px solid green" }}>
         <div style={{ fontWeight: 800, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
           <span>SEO Score</span>
           <span style={{ fontSize: 18 }}>{Math.round(seoReport.score)}/100</span>
@@ -818,15 +815,17 @@ export default function PostEditor({ mode }) {
         </div>
       )}
 
-      {showPexels && (
-        <PexelsModal
-          onClose={() => setShowPexels(false)}
-          onSelect={(url, mime, filename) => {
-            setShowPexels(false);
-            onSelectMediaItem(url, mime, filename);
-          }}
-        />
-      )}
+          {showPexels && (
+            <PexelsModal
+              onClose={() => setShowPexels(false)}
+              onSelect={(url, mime, filename) => {
+                setShowPexels(false);
+                onSelectMediaItem(url, mime, filename);
+              }}
+            />
+          )}
+        </div>
+      </div>
     </div>
   );
 }
