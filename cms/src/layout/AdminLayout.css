@@ -1,6 +1,5 @@
 .admin-container {
-    display: grid;
-    grid-template-columns: 260px 1fr;
+    display: flex;
     min-height: 100vh;
     font-family: "Inter", system-ui, sans-serif;
     background: #f1f0eb;
@@ -22,6 +21,7 @@
 }
 
 .admin-main {
+    margin-left: 260px;
     padding: 24px;
     background: #f1f0eb;
     overflow-y: auto;
@@ -29,6 +29,7 @@
     -webkit-overflow-scrolling: touch;
     display: flex;
     flex-direction: column;
+    flex: 1;
 }
 
 .mobile-header {
@@ -80,8 +81,8 @@
 }
 
 /* Collapsed Sidebar */
-.admin-container.sidebar-collapsed {
-    grid-template-columns: 70px 1fr;
+.admin-container.sidebar-collapsed .admin-main {
+    margin-left: 70px;
 }
 
 .admin-sidebar.collapsed {
