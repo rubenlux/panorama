@@ -6,6 +6,7 @@ import { runSocialMonitor }   from "./jobs/socialMonitor.js";
 import { trackedSourceMonitor } from "./jobs/trackedSourceMonitor.js";
 import { pool } from "./routes/db.js";
 import { ensureObservabilitySchema, logEvent } from "./jobs/workerUtils.js";
+import { closeBrowser } from "./connectors/playwright.js";
 
 console.log("Starting Panorama Worker...");
 
@@ -70,6 +71,7 @@ console.log("📅 Revenue Job Scheduled: Daily at 00:05 AM");
 process.on('SIGINT', async () => {
     console.log("🛑 Worker stopping...");
     await logEvent('worker_stopped', 'system', { pid: process.pid }).catch(() => {});
+    await closeBrowser().catch(() => {});
     pool.end();
     process.exit();
 });

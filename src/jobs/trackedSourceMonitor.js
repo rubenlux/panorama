@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio';
 import crypto from 'crypto';
 import { query } from '../routes/db.js';
 import { logEvent } from './workerUtils.js';
+import { scrapeWithPlaywright } from '../connectors/playwright.js';
 
 let isRunning = false;
 
@@ -237,18 +238,40 @@ async function fetchPendingContent() {
 
 // ── Page scraper ──────────────────────────────────────────────────────────────
 
-async function scrapeLinks(url) {
+async function scrapeLinks(url, usePlaywright = false) {
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      },
-      timeout: 30000,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let html;
+    let method = 'HTTP';
 
-    const html = await res.text();
+    if (!usePlaywright) {
+      // Attempt 1: HTTP fetch (fast, common case)
+      try {
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          },
+          timeout: 30000,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        html = await res.text();
+      } catch (httpError) {
+        // Attempt 2: Fallback to Playwright (for Cloudflare, rate-limits, etc)
+        console.warn(`[Coverage] HTTP failed for ${url} (${httpError.message}) — trying Playwright`);
+        const playwrightHtml = await scrapeWithPlaywright(url);
+        if (!playwrightHtml) {
+          throw new Error(`Both HTTP and Playwright failed: ${httpError.message}`);
+        }
+        html = playwrightHtml;
+        method = 'Playwright';
+      }
+    } else {
+      // Direct Playwright attempt
+      html = await scrapeWithPlaywright(url);
+      if (!html) throw new Error('Playwright returned no HTML');
+      method = 'Playwright';
+    }
+
     const $ = cheerio.load(html);
     const baseDomain = new URL(url).hostname.split('.').slice(-2).join('.');
     const sectionPrefixes = getSectionPrefixes(url);
@@ -283,7 +306,11 @@ async function scrapeLinks(url) {
     const fingerprint = links.map(l => `${l.url}::${l.title}`).join('\n');
     const hash = crypto.createHash('sha256').update(fingerprint).digest('hex');
 
-    return { links, hash };
+    if (method === 'Playwright') {
+      console.info(`[Coverage] Successfully scraped ${url} via Playwright`);
+    }
+
+    return { links, hash, method };
   } catch (e) {
     console.error(`[Coverage] Scrape failed for ${url}: ${e.message}`);
     return null;
