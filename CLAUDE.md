@@ -644,6 +644,63 @@ Content-Type: application/json
 }
 ```
 
+### Editorial Auto-Review Flow (June 29, 2026)
+
+**Principle:** After drafting an article, Claude automatically reviews and corrects it against professional editorial standards. No human intervention required in normal cases.
+
+**When to trigger:**
+- After article draft is complete
+- Before calling `posts_create()`
+- As part of editorial research → draft → review → publish pipeline
+
+**Process (automatic):**
+
+1. **Editorial Review** (8 checks)
+   - Narrative style (no opinion, emotional language, blog voice)
+   - Lead structure (5Ws implicit: who, what, when, where, why)
+   - Inverted pyramid (structure)
+   - Neutrality (no interpretation, evaluative verbs)
+   - Evidence (attribution, sourcing)
+   - Chronology (events in sequence)
+   - Coherence (no contradictions, consistent voice)
+   - Quality (professional journalist tone, not AI)
+
+2. **Auto-Correct** (if any check fails)
+   - Identify failures
+   - Rewrite only affected sections
+   - Re-run checks
+   - Repeat max 3 times
+   - Flag if 3 attempts still fail (blocking error → human review)
+
+3. **SEO Review** (if Editorial passes)
+   - Title (50-60 chars, includes keyword)
+   - Meta description (120-160 chars)
+   - Slug (lowercase, hyphenated)
+   - Auto-correct if needed
+
+4. **Publication Review** (if SEO passes)
+   - Title, content, slug, category, image (if required)
+   - Auto-fill missing metadata
+   - Then: `posts_create()` → `posts_update()` → `posts_publish()`
+
+**What NOT to do:**
+- ❌ Ask user if draft is ready
+- ❌ Show detailed check results (only show final article)
+- ❌ Wait for approval between review cycles
+- ❌ Publish if any check fails without auto-correction
+
+**What to do:**
+- ✅ Correct issues silently
+- ✅ Re-evaluate automatically
+- ✅ Proceed to publication once all checks pass
+- ✅ Only escalate if blocking error (no auto-fix possible)
+
+**Implementation:**
+See `memory/editorial_review_checklist.md` for all 8 checks and correction criteria.
+See `memory/editorial_auto_correction_loop.md` for auto-correction workflow.
+
+---
+
 ## Key Conventions
 
 - Spanish is used in documentation files and some UI strings; English is used in code identifiers and comments.
