@@ -4,6 +4,7 @@ import { calculateAdRevenue } from "./jobs/calculateAdRevenue.js";
 import { runNewsMonitor, recalcFreshness } from "./jobs/newsMonitor.js";
 import { runSocialMonitor }   from "./jobs/socialMonitor.js";
 import { trackedSourceMonitor } from "./jobs/trackedSourceMonitor.js";
+import { runCrawlerScheduler } from "./jobs/crawlerScheduler.js";
 import { pool } from "./routes/db.js";
 import { ensureObservabilitySchema, logEvent } from "./jobs/workerUtils.js";
 import { closeBrowser } from "./connectors/playwright.js";
@@ -24,6 +25,13 @@ pool.query("SELECT NOW()").then(async () => {
         runNewsMonitor().catch(e => console.error("❌ News Monitor error:", e.message));
     });
     console.log("📡 News Intelligence Monitor: running every 60s");
+
+    // P1: Crawler Scheduler — process PENDING/RETRY articles every 30 seconds
+    runCrawlerScheduler().catch(e => console.error("❌ Crawler Scheduler initial run failed:", e.message));
+    cron.schedule("*/30 * * * * *", () => {
+        runCrawlerScheduler().catch(e => console.error("❌ Crawler Scheduler error:", e.message));
+    });
+    console.log("🔄 P1 Crawler Scheduler: running every 30s");
 
     // Run social monitor immediately on start, then every 5 minutes
     runSocialMonitor().catch(e => console.error("❌ Social Monitor initial run failed:", e.message));
