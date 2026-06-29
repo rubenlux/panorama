@@ -545,6 +545,7 @@ Replaced variable-mutation pattern (where `finalEntity` was reassigned across br
 - `memory/mcp_architecture_approved.md` — Locked specification (5 tool categories, 6 immutable rules)
 - `memory/social_intelligence_mcp_tools.md` — Social Intelligence domain implementation (5 new tools, June 27)
 - `memory/editorial_reasoning_guide.md` — How Claude interprets Panorama (principles, rigor, comparison structure)
+- `memory/mcp_posts_domain_production_ready.md` — Posts domain complete (8 tools, all tested, June 29)
 
 ### MCP Tool Naming (STRICT)
 
@@ -603,6 +604,45 @@ const r = await query(
 **PostgreSQL Type Casting Note:**
 Do NOT use `id=$1::uuid` because PostgreSQL fails when $1 is a slug. Instead, use:
 - `id::text = $1 OR slug = $1` — let PostgreSQL choose the path based on column types
+
+### Posts Publishing Validation (June 29, 2026)
+
+**Principle:** Minimal validation. Only essential structural requirements.
+
+**Required for publication:**
+- `title` — must exist and be non-empty
+- `slug` — must exist and be unique (generated at creation)
+
+**NOT required:**
+- `image_url` — featured image optional
+- `category_id` — articles can publish without category
+- `excerpt` — optional, no length minimum
+- `word_count` — no minimum, any length accepted
+
+**Validation response (on error):**
+```json
+{
+  "error": "VALIDATION_FAILED",
+  "message": "Article must have title and slug",
+  "details": {
+    "title": true/false,
+    "slug": true/false
+  }
+}
+```
+
+**Force publish:**
+MCP role (service account) can use `force_publish: true` to bypass any validation. Admin role same.
+
+```javascript
+POST /articles/article-slug/publish
+Authorization: Bearer MCP_SERVICE_TOKEN
+Content-Type: application/json
+
+{
+  "force_publish": true
+}
+```
 
 ## Key Conventions
 
