@@ -2095,7 +2095,7 @@ async function fetchPendingArticleContent() {
 
   for (const article of pending) {
     try {
-      const result = await fetchArticleContentForMonitor(article.url);
+      const result = await fetchArticleContentForMonitor(article.url, article.id);
 
       if (result?.method === 'paywall') {
         await query(

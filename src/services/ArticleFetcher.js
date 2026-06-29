@@ -21,6 +21,7 @@ import { chromium } from 'playwright';
 import fetch from 'node-fetch';
 import { query } from '../routes/db.js';
 import { browserAudit } from './browserLifecycleLogger.js';
+import { recordCrawlSession, recordCrawlAttempt, updateDomainProfile, updateDomainFailures } from '../jobs/workerUtils.js';
 
 const CACHE_TTL_HOURS    = 72;
 const FETCH_TIMEOUT_MS   = 10_000;
@@ -207,15 +208,121 @@ export async function fetchArticleContent(url) {
 // ── fetchArticleContentForMonitor — News Intelligence pipeline (Sprint 5.8) ───
 // Returns { content, word_count, method } or null on complete failure.
 // method: 'fetch' | 'playwright' | 'paywall'
+// Records observability data (crawl_session, crawl_attempts, domain_profiles) if articleId provided
 
-export async function fetchArticleContentForMonitor(url) {
+export async function fetchArticleContentForMonitor(url, articleId = null) {
+  let domain = 'unknown';
+  try {
+    domain = new URL(url).hostname.replace(/^www\./, '');
+  } catch {}
+
+  const startTime = Date.now();
+  let sessionId = null;
+
+  // Create session if we have articleId (groups all attempts)
+  if (articleId) {
+    sessionId = await recordCrawlSession({ articleId, domain, strategy: 'HTTP_THEN_PLAYWRIGHT' }).catch(() => null);
+  }
+
   // Level 2: node-fetch
   let html = null;
-  try { html = await fetchHtml(url); } catch { /* timeout/dns */ }
+  let fetchStatus = 'FAILED';
+  let fetchReason = 'unknown';
+  let httpStatus = null;
+  let fetchDuration = 0;
+  let bytesDownloaded = 0;
 
-  if (html) {
+  try {
+    const start = Date.now();
+    const resp = await fetch(url, {
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; PanoramaResearch/1.0)',
+        'Accept': 'text/html,application/xhtml+xml,*/*',
+        'Accept-Language': 'es-AR,es;q=0.9,en;q=0.8',
+        'Cache-Control': 'no-cache',
+      },
+    });
+    fetchDuration = Date.now() - start;
+    httpStatus = resp.status;
+
+    if (!resp.ok) {
+      if (resp.status === 403) fetchReason = 'cloudflare';
+      else if (resp.status === 404) fetchReason = '404';
+      else if (resp.status === 429) fetchReason = '429';
+      else fetchReason = `http_${resp.status}`;
+    } else {
+      const ct = resp.headers.get('content-type') || '';
+      if (!ct.includes('html')) {
+        fetchReason = 'not_html';
+      } else {
+        html = await resp.text();
+        bytesDownloaded = Buffer.byteLength(html, 'utf8');
+        if (!html || html.trim().length === 0) {
+          fetchReason = 'empty_html';
+        } else {
+          fetchStatus = 'SUCCESS';
+          fetchReason = null;
+        }
+      }
+    }
+  } catch (e) {
+    fetchDuration = Date.now() - startTime;
+    if (e.message.includes('Timeout') || e.message.includes('timeout')) {
+      fetchReason = 'timeout';
+    } else if (e.message.includes('ECONNREFUSED')) {
+      fetchReason = 'connection_refused';
+    } else if (e.message.includes('ETIMEDOUT')) {
+      fetchReason = 'connection_timeout';
+    } else if (e.message.includes('ENOTFOUND')) {
+      fetchReason = 'dns_fail';
+    } else {
+      fetchReason = 'fetch_error';
+    }
+  }
+
+  // Record HTTP attempt if we have sessionId
+  if (sessionId) {
+    await recordCrawlAttempt({
+      sessionId,
+      articleId,
+      domain,
+      attemptNumber: 1,
+      stage: 'HTTP',
+      status: fetchStatus,
+      reason: fetchReason,
+      httpStatus,
+      durationMs: fetchDuration,
+      bytesDownloaded,
+      contentLength: html?.length,
+    }).catch(() => {});
+
+    if (fetchStatus === 'SUCCESS') {
+      await updateDomainProfile(domain, { stage: 'HTTP', status: 'SUCCESS', durationMs: fetchDuration }).catch(() => {});
+    } else {
+      await updateDomainProfile(domain, { stage: 'HTTP', status: 'FAILED', durationMs: fetchDuration, failureReason: fetchReason }).catch(() => {});
+      await updateDomainFailures(domain, fetchReason).catch(() => {});
+    }
+  }
+
+  if (fetchStatus === 'SUCCESS' && html) {
     const result = extractFromHtml(html);
-    if (result?.paywall) return { content: null, word_count: 0, method: 'paywall' };
+    if (result?.paywall) {
+      if (sessionId) {
+        await recordCrawlAttempt({
+          sessionId,
+          articleId,
+          domain,
+          attemptNumber: 1,
+          stage: 'VALIDATION',
+          status: 'FAILED',
+          reason: 'paywall_detected',
+          durationMs: Date.now() - startTime,
+        }).catch(() => {});
+      }
+      return { content: null, word_count: 0, method: 'paywall' };
+    }
 
     if (result && result.word_count >= MIN_WORDS_FETCH) {
       return { content: result.content, word_count: result.word_count, method: 'fetch' };
@@ -223,11 +330,61 @@ export async function fetchArticleContentForMonitor(url) {
   }
 
   // Level 3: Playwright (only if fetch was insufficient)
-  const pwResult = await fetchWithPlaywright(url);
+  let pwStartTime = Date.now();
+  let pwStatus = 'FAILED';
+  let pwReason = 'unknown';
+  let pwDuration = 0;
+  let pwResult = null;
+
+  try {
+    pwResult = await fetchWithPlaywright(url);
+    if (pwResult) {
+      pwStatus = 'SUCCESS';
+      pwReason = null;
+    }
+  } catch (e) {
+    pwReason = e.message.includes('Timeout') ? 'timeout' : 'playwright_error';
+  }
+
+  pwDuration = Date.now() - pwStartTime;
+
+  if (sessionId) {
+    await recordCrawlAttempt({
+      sessionId,
+      articleId,
+      domain,
+      attemptNumber: 2,
+      stage: 'PLAYWRIGHT',
+      status: pwStatus,
+      reason: pwReason,
+      durationMs: pwDuration,
+      contentLength: pwResult?.content?.length,
+    }).catch(() => {});
+
+    if (pwStatus === 'SUCCESS') {
+      await updateDomainProfile(domain, { stage: 'PLAYWRIGHT', status: 'SUCCESS', durationMs: pwDuration }).catch(() => {});
+    } else {
+      await updateDomainProfile(domain, { stage: 'PLAYWRIGHT', status: 'FAILED', durationMs: pwDuration, failureReason: pwReason }).catch(() => {});
+      await updateDomainFailures(domain, pwReason).catch(() => {});
+    }
+  }
+
   if (pwResult && !pwResult.paywall && pwResult.word_count >= MIN_WORDS_FETCH) {
     return { content: pwResult.content, word_count: pwResult.word_count, method: 'playwright' };
   }
   if (pwResult?.paywall) {
+    if (sessionId) {
+      await recordCrawlAttempt({
+        sessionId,
+        articleId,
+        domain,
+        attemptNumber: 2,
+        stage: 'VALIDATION',
+        status: 'FAILED',
+        reason: 'paywall_detected',
+        durationMs: Date.now() - pwStartTime,
+      }).catch(() => {});
+    }
     return { content: null, word_count: 0, method: 'paywall' };
   }
 

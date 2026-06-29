@@ -76,3 +76,138 @@ export async function logEvent(eventType, actor = 'system', metadata = {}) {
     console.warn(`[workerUtils] logEvent failed: ${e.message}`);
   }
 }
+
+// ============================================================================
+// OBSERVABILITY LAYER (P0 Instrumentation)
+// NOTE: Tables are created by scripts/migrate_observability_layer.sql (runs once, manually)
+// This section contains ONLY recording functions, no schema creation code
+// ============================================================================
+
+export async function recordCrawlSession({
+  articleId,
+  domain,
+  strategy = 'HTTP_ONLY',
+}) {
+  try {
+    const { rows } = await query(
+      `INSERT INTO crawl_session (article_id, domain, strategy)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [articleId, domain, strategy]
+    );
+    return rows[0]?.id;
+  } catch (e) {
+    console.warn(`[recordCrawlSession] Failed: ${e.message}`);
+    return null;
+  }
+}
+
+export async function recordCrawlAttempt({
+  sessionId,
+  articleId,
+  domain,
+  attemptNumber = 1,
+  stage,
+  status,
+  reason = null,
+  httpStatus = null,
+  durationMs = 0,
+  bytesDownloaded = 0,
+  contentLength = null,
+  contentHash = null,
+  retryable = null,
+  details = {},
+}) {
+  try {
+    await query(
+      `INSERT INTO crawl_attempts
+       (session_id, article_id, domain, attempt_number, stage, status, reason, http_status, duration_ms, bytes_downloaded, content_length, content_hash, retryable, details)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [sessionId, articleId, domain, attemptNumber, stage, status, reason, httpStatus, durationMs, bytesDownloaded, contentLength, contentHash, retryable, JSON.stringify(details)]
+    );
+  } catch (e) {
+    console.warn(`[recordCrawlAttempt] Failed: ${e.message}`);
+  }
+}
+
+export async function recordPipelineDecision({
+  module,
+  pipeline = 'v1',
+  entityId = null,
+  entityType = null,
+  decision,
+  accepted,
+  reason = null,
+  score = null,
+  threshold = null,
+  metadata = {},
+}) {
+  try {
+    await query(
+      `INSERT INTO pipeline_decisions
+       (module, pipeline, entity_id, entity_type, decision, accepted, reason, score, threshold, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [module, pipeline, entityId, entityType, decision, accepted, reason, score, threshold, JSON.stringify(metadata)]
+    );
+  } catch (e) {
+    console.warn(`[recordPipelineDecision] Failed: ${e.message}`);
+  }
+}
+
+export async function updateDomainProfile(domain, {
+  stage,
+  status,
+  durationMs = 0,
+  failureReason = null,
+}) {
+  try {
+    const stageName = stage.toUpperCase();
+    const statusName = status.toUpperCase();
+    const successCol = `success_${stageName.toLowerCase()}`;
+    const failedCol = `failed_${stageName.toLowerCase()}`;
+
+    // Upsert domain profile
+    await query(
+      `INSERT INTO domain_profiles (domain) VALUES ($1)
+       ON CONFLICT (domain) DO UPDATE SET updated_at = NOW()`,
+      [domain]
+    );
+
+    // Update counters and timings
+    await query(
+      `UPDATE domain_profiles
+       SET total_attempts = total_attempts + 1,
+           ${statusName === 'SUCCESS' ? `${successCol} = ${successCol} + 1` : `${failedCol} = ${failedCol} + 1`},
+           last_attempt_at = NOW(),
+           last_failure_reason = CASE WHEN $3 IS NOT NULL THEN $3 ELSE last_failure_reason END,
+           last_failure_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE last_failure_at END,
+           consecutive_failures = CASE WHEN $2 = 'SUCCESS' THEN 0 ELSE consecutive_failures + 1 END
+       WHERE domain = $1`,
+      [domain, statusName, failureReason]
+    );
+  } catch (e) {
+    console.warn(`[updateDomainProfile] Failed for ${domain}: ${e.message}`);
+  }
+}
+
+export async function updateDomainFailures(domain, failureReason) {
+  try {
+    // Increment count and recalculate percentage
+    await query(
+      `INSERT INTO domain_failures (domain, reason, count)
+       VALUES ($1, $2, 1)
+       ON CONFLICT (domain, reason) DO UPDATE
+       SET count = count + 1, updated_at = NOW()`,
+      [domain, failureReason]
+    );
+
+    // Recalculate percentages for this domain
+    await query(
+      `UPDATE domain_failures SET
+         percentage = ROUND(100.0 * count / (SELECT SUM(count) FROM domain_failures WHERE domain = $1), 1)
+       WHERE domain = $1`,
+      [domain]
+    );
+  } catch (e) {
+    console.warn(`[updateDomainFailures] Failed for ${domain}/${failureReason}: ${e.message}`);
+  }
+}
