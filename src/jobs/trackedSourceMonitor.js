@@ -238,7 +238,7 @@ async function fetchPendingContent() {
 
 // ── Page scraper ──────────────────────────────────────────────────────────────
 
-async function scrapeLinks(url, usePlaywright = false) {
+async function scrapeLinks(url, usePlaywright = false, isXmlIndex = false) {
   try {
     let html;
     let method = 'HTTP';
@@ -253,14 +253,30 @@ async function scrapeLinks(url, usePlaywright = false) {
           },
           timeout: 30000,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (url.includes('sitemap')) {
+          console.debug(`[scrapeLinks] HTTP ${res.status} for ${url}`);
+        }
+        // Accept 2xx status codes, not just res.ok (which doesn't include 202)
+        if (res.status < 200 || res.status >= 300) {
+          throw new Error(`HTTP ${res.status}`);
+        }
         html = await res.text();
+        if (url.includes('sitemap') && html.length === 0) {
+          console.warn(`[scrapeLinks] Got empty response for ${url} (HTTP ${res.status}) — trying Playwright`);
+          throw new Error('Empty response from ' + url);
+        }
       } catch (httpError) {
         // Attempt 2: Fallback to Playwright (for Cloudflare, rate-limits, etc)
-        console.warn(`[Coverage] HTTP failed for ${url} (${httpError.message}) — trying Playwright`);
+        const errorMsg = httpError?.message || String(httpError);
+        console.warn(`[Coverage] HTTP failed for ${url}: ${errorMsg} — trying Playwright`);
+
+        if (url.includes('sitemap')) {
+          console.debug(`[scrapeLinks] Error details: ${errorMsg}`);
+        }
+
         const playwrightHtml = await scrapeWithPlaywright(url);
         if (!playwrightHtml) {
-          throw new Error(`Both HTTP and Playwright failed: ${httpError.message}`);
+          throw new Error(`Both HTTP and Playwright failed: ${errorMsg}`);
         }
         html = playwrightHtml;
         method = 'Playwright';
@@ -272,35 +288,69 @@ async function scrapeLinks(url, usePlaywright = false) {
       method = 'Playwright';
     }
 
+    // Check if this is XML (sitemap)
+    const isXml = html.trim().startsWith('<?xml');
+
+    // Debug log for first 100 chars and isXml status
+    if (url.includes('sitemap')) {
+      console.debug(`[scrapeLinks] ${url}: html_len=${html.length}, isXml=${isXml}, first100="${html.trim().substring(0, 100)}"`);
+    }
+
     const $ = cheerio.load(html);
     const baseDomain = new URL(url).hostname.split('.').slice(-2).join('.');
     const sectionPrefixes = getSectionPrefixes(url);
     const seen = new Set();
     const links = [];
 
-    $('a').each((i, el) => {
-      const href = $(el).attr('href');
-      const title = $(el).text().trim();
-      if (!href || title.length < 5) return;
+    if (isXml) {
+      // Handle XML sitemaps (including CDATA content) using regex to avoid cheerio parsing issues
+      const locPattern = /<loc>(?:<!\[CDATA\[)?([^\]<]+)(?:\]\]>)?<\/loc>/gi;
+      let match;
 
-      const absUrl = normalizeUrl(href, url);
-      if (!absUrl) return;
+      while ((match = locPattern.exec(html)) !== null) {
+        const href = match[1].trim();
+        if (!href) continue;
 
-      try {
-        const linkDomain = new URL(absUrl).hostname.split('.').slice(-2).join('.');
-        if (linkDomain !== baseDomain) return;
-      } catch {
-        return;
+        try {
+          const linkDomain = new URL(href).hostname.split('.').slice(-2).join('.');
+          if (linkDomain !== baseDomain) continue;
+        } catch {
+          continue;
+        }
+
+        if (seen.has(href)) continue;
+        seen.add(href);
+
+        // If this is a sitemap index (contains /sitemap in URL or is itself an index)
+        const isSitemapUrl = href.includes('sitemap');
+        links.push({ url: href, title: '', position: links.length + 1, isSitemapUrl });
       }
+    } else {
+      // Handle HTML pages
+      $('a').each((i, el) => {
+        const href = $(el).attr('href');
+        const title = $(el).text().trim();
+        if (!href || title.length < 5) return;
 
-      // Editorial filter: drop nav links, category pages, institutional URLs,
-      // and links outside the monitored section.
-      if (!isEditorialLink(absUrl, sectionPrefixes)) return;
+        const absUrl = normalizeUrl(href, url);
+        if (!absUrl) return;
 
-      if (seen.has(absUrl)) return;
-      seen.add(absUrl);
-      links.push({ url: absUrl, title, position: links.length + 1 });
-    });
+        try {
+          const linkDomain = new URL(absUrl).hostname.split('.').slice(-2).join('.');
+          if (linkDomain !== baseDomain) return;
+        } catch {
+          return;
+        }
+
+        // Editorial filter: drop nav links, category pages, institutional URLs,
+        // and links outside the monitored section.
+        if (!isEditorialLink(absUrl, sectionPrefixes)) return;
+
+        if (seen.has(absUrl)) return;
+        seen.add(absUrl);
+        links.push({ url: absUrl, title, position: links.length + 1 });
+      });
+    }
 
     // Hash includes titles so any title change triggers the comparison pass
     const fingerprint = links.map(l => `${l.url}::${l.title}`).join('\n');
@@ -310,20 +360,81 @@ async function scrapeLinks(url, usePlaywright = false) {
       console.info(`[Coverage] Successfully scraped ${url} via Playwright`);
     }
 
-    return { links, hash, method };
+    return { links, hash, method, isXml };
   } catch (e) {
     console.error(`[Coverage] Scrape failed for ${url}: ${e.message}`);
     return null;
   }
 }
 
+// ── Handle sitemap indexes recursively ───────────────────────────────────────
+
+async function resolveSitemapLinks(url, maxDepth = 2, currentDepth = 0) {
+  if (currentDepth >= maxDepth) return [];
+
+  const result = await scrapeLinks(url);
+  if (!result) {
+    console.warn(`[Coverage] resolveSitemapLinks: ${url} returned null`);
+    return [];
+  }
+
+  if (!result.isXml) {
+    console.warn(`[Coverage] resolveSitemapLinks: ${url} is not XML (isXml=${result.isXml}), got ${result.links.length} links`);
+    return [];
+  }
+
+  const { links } = result;
+  const allLinks = [];
+
+  // Separate sitemap URLs from article URLs
+  const sitemapLinks = links.filter(l => l.isSitemapUrl);
+  const articleLinks = links.filter(l => !l.isSitemapUrl);
+
+  // Add article links
+  allLinks.push(...articleLinks);
+
+  // Recursively follow sitemap links
+  for (const sitemapLink of sitemapLinks) {
+    const nestedLinks = await resolveSitemapLinks(sitemapLink.url, maxDepth, currentDepth + 1);
+    allLinks.push(...nestedLinks);
+  }
+
+  return allLinks;
+}
+
 // ── Core: detect changes for one source ──────────────────────────────────────
 
 export async function processTrackedSource(source) {
   const result = await scrapeLinks(source.url);
-  if (!result) return { changes: 0, newItems: 0 };
+  if (!result) {
+    console.warn(`[Coverage] "${source.name}" returned no result`);
+    return { changes: 0, newItems: 0 };
+  }
 
-  const { links, hash } = result;
+  const { links: initialLinks, hash, isXml } = result;
+  let links = initialLinks;
+
+  console.info(`[Coverage] "${source.name}": got ${initialLinks.length} initial link(s), isXml=${isXml}`);
+
+  // If this is an XML sitemap, resolve indexes recursively
+  if (isXml) {
+    console.info(`[Coverage] "${source.name}" is XML sitemap, resolving indexes...`);
+    const sitemapLinks = initialLinks.filter(l => l.isSitemapUrl);
+    const articleLinks = initialLinks.filter(l => !l.isSitemapUrl);
+
+    console.info(`[Coverage] Found ${sitemapLinks.length} sitemap link(s) and ${articleLinks.length} article link(s) at root`);
+
+    // Follow sitemap links to get actual articles
+    for (const sitemapLink of sitemapLinks) {
+      console.info(`[Coverage] Following sitemap: ${sitemapLink.url}`);
+      const nested = await resolveSitemapLinks(sitemapLink.url, 3);
+      console.info(`[Coverage] Got ${nested.length} article(s) from ${sitemapLink.url}`);
+      articleLinks.push(...nested);
+    }
+
+    links = articleLinks.length > 0 ? articleLinks : initialLinks;
+    console.info(`[Coverage] "${source.name}" resolved to ${links.length} article link(s)`);
+  }
 
   // Fast path: nothing changed
   if (hash === source.last_hash) {
