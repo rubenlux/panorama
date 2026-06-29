@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import "dotenv/config";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -20,6 +21,16 @@ const pool = new Pool({
 
 log("Initializing server...");
 const server = new McpServer({ name: "panorama-mcp-server", version: "1.0.0" });
+
+// MCP authentication helper — adds Authorization header with service token
+function makeAuthHeaders() {
+  const token = process.env.MCP_SERVICE_TOKEN || 'APmvBNv4yO82c0Q+t4XOcdnWMgQDaQhJEiQX1WI+dHI=';
+
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  };
+}
 
 const agendaSchema = z.object({
   limit: z.number().default(10),
@@ -122,11 +133,11 @@ const postsCreateSchema = z.object({
 });
 
 const postsUpdateSchema = z.object({
-  id: z.string().describe("Post ID"),
-  title: z.string().optional(),
-  content: z.string().optional(),
-  excerpt: z.string().optional(),
-  slug: z.string().optional(),
+  id: z.string().describe("Post ID (backend determines status via posts.publish/schedule/unpublish)"),
+  title: z.string().optional().describe("Post title"),
+  content: z.string().optional().describe("Post body HTML"),
+  excerpt: z.string().optional().describe("Post excerpt"),
+  slug: z.string().optional().describe("URL slug"),
   seo: z.object({
     meta_title: z.string().optional(),
     meta_description: z.string().optional(),
@@ -134,14 +145,13 @@ const postsUpdateSchema = z.object({
     og_title: z.string().optional(),
     og_description: z.string().optional(),
     keywords: z.string().optional()
-  }).optional(),
+  }).optional().describe("SEO metadata"),
   featured_image: z.object({
     url: z.string(),
     caption: z.string().optional(),
     alt: z.string().optional()
-  }).optional(),
-  categories: z.array(z.string()).optional().describe("Category slugs"),
-  status: z.enum(['draft', 'published', 'scheduled']).optional()
+  }).optional().describe("Featured image"),
+  categories: z.array(z.string()).optional().describe("Category slugs (not permissions)")
 });
 
 const postsPublishSchema = z.object({
@@ -1703,127 +1713,197 @@ server.registerTool("social_opportunities", { description: "List editorial oppor
 });
 
 // POSTS DOMAIN TOOLS (Editorial Workflow)
-server.registerTool("posts.dashboard", { description: "Posts operational dashboard", inputSchema: z.object({}) }, async () => {
-  const tool = "posts.dashboard";
-  const start = Date.now();
-  try {
-    const [total, drafts, published, scheduled] = await Promise.all([
-      pool.query(`SELECT count(*) as total FROM articles`),
-      pool.query(`SELECT count(*) as total FROM articles WHERE status='draft'`),
-      pool.query(`SELECT count(*) as total FROM articles WHERE status='published'`),
-      pool.query(`SELECT count(*) as total FROM articles WHERE scheduled_at > now()`)
-    ]);
-    const response = { generated_at: new Date().toISOString(), metrics: { total_posts: parseInt(total.rows[0]?.total ?? 0), drafts_count: parseInt(drafts.rows[0]?.total ?? 0), published_count: parseInt(published.rows[0]?.total ?? 0), scheduled_count: parseInt(scheduled.rows[0]?.total ?? 0) } };
-    logTool(tool, `ok ${Date.now() - start}ms`);
-    return { content: [{ type: "text", text: JSON.stringify(response) }] };
-  } catch (error) {
-    logTool(tool, `ERROR ${Date.now() - start}ms: ${error.message}`);
-    return { content: [{ type: "text", text: JSON.stringify({ error: "ERROR", message: error.message }) }], isError: true };
-  }
-});
+// Note: posts_dashboard removed (belongs to Analytics/Pixel domain, not Posts)
+// Posts domain handles content CRUD only: list, open, create, update, publish, schedule, unpublish, delete
 
-server.registerTool("posts.list", { description: "List posts with filters", inputSchema: postsListSchema }, async (params) => {
-  const tool = "posts.list";
+server.registerTool("posts_list", { description: "List posts with filters", inputSchema: postsListSchema }, async (params) => {
+  const tool = "posts_list";
   const start = Date.now();
+  logTool(tool, `CALLED with limit=${params.limit}, offset=${params.offset}, status=${params.status}, sort=${params.sort}`);
   try {
-    const { limit, offset, status, author, category, search, sort } = params;
-    const qp = [];
-    let w = "WHERE 1=1";
-    if (status) w += ` AND a.status = $${qp.push(status)}`;
-    if (author) w += ` AND u.email = $${qp.push(author)}`;
-    if (search) w += ` AND a.search_tsv @@ plainto_tsquery('simple', $${qp.push(search)})`;
-    let ob = "a.created_at DESC";
-    if (sort === 'oldest') ob = "a.created_at ASC";
-    if (sort === 'title') ob = "a.title ASC";
-    const cnt = await pool.query(`SELECT count(*) FROM articles a JOIN users u ON u.id = a.author_id ${w}`, qp);
-    const res = await pool.query(`SELECT a.id, a.slug, a.title, a.excerpt, a.status, a.published_at, a.image_url, u.email, a.word_count, json_agg(json_build_object('slug', c.slug, 'name', c.name)) AS categories FROM articles a JOIN users u ON u.id = a.author_id LEFT JOIN article_categories ac ON ac.article_id = a.id LEFT JOIN categories c ON c.id = ac.category_id ${w} GROUP BY a.id, u.id ORDER BY ${ob} LIMIT $${qp.push(limit)} OFFSET $${qp.push(offset)}`, qp);
-    const items = res.rows.map(r => ({ id: r.id, slug: r.slug, title: r.title, excerpt: r.excerpt, status: r.status, author_email: r.email, published_at: r.published_at, featured_image_url: r.image_url, word_count: r.word_count, categories: r.categories }));
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const queryParams = new URLSearchParams();
+    if (params.limit) queryParams.append('limit', params.limit);
+    if (params.offset) queryParams.append('offset', params.offset);
+    if (params.status) queryParams.append('status', params.status);
+    if (params.author) queryParams.append('author', params.author);
+    if (params.category) queryParams.append('category', params.category);
+    if (params.search) queryParams.append('search', params.search);
+    if (params.sort) queryParams.append('sort', params.sort);
+
+    const response = await fetch(`${backendUrl}/articles?${queryParams.toString()}`, {
+      method: 'GET',
+      headers: makeAuthHeaders()
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
     logTool(tool, `ok ${Date.now() - start}ms`);
-    return { content: [{ type: "text", text: JSON.stringify({ items, total: parseInt(cnt.rows[0]?.count ?? 0), offset, limit }) }] };
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
     logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.open", { description: "Get complete post resource", inputSchema: postsOpenSchema }, async (params) => {
-  const tool = "posts.open";
+server.registerTool("posts_open", { description: "Get complete post resource", inputSchema: postsOpenSchema }, async (params) => {
+  const tool = "posts_open";
   const start = Date.now();
+  logTool(tool, `CALLED with id=${params.id}`);
   try {
-    const res = await pool.query(`SELECT a.*, u.email, u.name, s.meta_title, s.meta_description, s.canonical_url, s.og_title, s.og_description, s.keywords, json_agg(json_build_object('slug', c.slug, 'name', c.name)) AS categories FROM articles a JOIN users u ON u.id = a.author_id LEFT JOIN article_seo s ON s.article_id = a.id LEFT JOIN article_categories ac ON ac.article_id = a.id LEFT JOIN categories c ON c.id = ac.category_id WHERE a.id = $1 OR a.slug = $1 GROUP BY a.id, u.id, s.id LIMIT 1`, [params.id]);
-    if (!res.rows[0]) return { content: [{ type: "text", text: JSON.stringify({ error: "NOT_FOUND" }) }], isError: true };
-    const a = res.rows[0];
-    const resp = { schema_version: "1.0", metadata: { id: a.id, slug: a.slug, author: { email: a.email, name: a.name }, created_at: a.created_at, updated_at: a.updated_at, status: a.status }, content: { title: a.title, excerpt: a.excerpt, body: a.body, word_count: a.word_count }, seo: { meta_title: a.meta_title, meta_description: a.meta_description, canonical_url: a.canonical_url, og_title: a.og_title, og_description: a.og_description, keywords: a.keywords ? a.keywords.split(',').map(k => k.trim()) : [] }, featured_image: { url: a.image_url, caption: a.epigraph }, categories: a.categories, publication: { status: a.status, published_at: a.published_at, scheduled_at: a.scheduled_at }, provenance: { generated_at: new Date().toISOString(), pipeline_version: "posts.open/1.0" } };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const response = await fetch(`${backendUrl}/articles/${params.id}`, {
+      method: 'GET',
+      headers: makeAuthHeaders()
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
     logTool(tool, `ok ${Date.now() - start}ms`);
-    return { content: [{ type: "text", text: JSON.stringify(resp) }] };
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
     logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.create", { description: "Create new post draft", inputSchema: postsCreateSchema }, async (params) => {
-  const tool = "posts.create";
+server.registerTool("posts_create", { description: "Create new post draft - backend auto-sets author", inputSchema: postsCreateSchema }, async (params) => {
+  const tool = "posts_create";
+  const start = Date.now();
+  logTool(tool, `CALLED`);
   try {
-    const uid = 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
-    const res = await pool.query(`INSERT INTO articles (author_id, title, slug, body, excerpt, status, word_count, origin) VALUES ($1, $2, $3, $4, $5, 'draft', $6, 'manual') RETURNING id, slug, status`, [uid, params.title, params.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'), params.content, params.excerpt || '', Math.ceil((params.content.split(/\s+/).length))]);
-    return { content: [{ type: "text", text: JSON.stringify(res.rows[0]) }] };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const response = await fetch(`${backendUrl}/articles`, {
+      method: 'POST',
+      headers: makeAuthHeaders(),
+      body: JSON.stringify({
+        title: params.title,
+        body: params.content,
+        excerpt: params.excerpt,
+        status: 'draft',
+        origin: 'manual',
+        created_by: process.env.PANORAMA_USER_ID,
+        created_via: 'claude_desktop',
+        workflow: 'editorial_ai'
+      })
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
+    logTool(tool, `ok ${Date.now() - start}ms`);
+    return { content: [{ type: "text", text: JSON.stringify({ id: data.id || data.article?.id, slug: data.slug || data.article?.slug, status: 'draft' }) }] };
   } catch (e) {
+    logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.update", { description: "Update post fields", inputSchema: postsUpdateSchema }, async (params) => {
-  const tool = "posts.update";
+server.registerTool("posts_update", { description: "Update post fields - status only via publish/schedule/unpublish", inputSchema: postsUpdateSchema }, async (params) => {
+  const tool = "posts_update";
+  const start = Date.now();
+  logTool(tool, `CALLED with id=${params.id}`);
   try {
-    const qp = [];
-    const sf = [];
-    if (params.title) sf.push(`title = $${qp.push(params.title)}`);
-    if (params.content) { sf.push(`body = $${qp.push(params.content)}`); sf.push(`word_count = $${qp.push(Math.ceil((params.content.split(/\s+/).length))}`); }
-    if (params.excerpt !== undefined) sf.push(`excerpt = $${qp.push(params.excerpt)}`);
-    if (params.status) sf.push(`status = $${qp.push(params.status)}`);
-    sf.push(`updated_at = $${qp.push(new Date())}`);
-    qp.push(params.id);
-    const res = await pool.query(`UPDATE articles SET ${sf.join(', ')} WHERE id = $${qp.length} RETURNING id, status, updated_at`, qp);
-    if (params.seo) await pool.query(`INSERT INTO article_seo (article_id, meta_title, meta_description, canonical_url, og_title, og_description, keywords) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (article_id) DO UPDATE SET meta_title = COALESCE($2, article_seo.meta_title), meta_description = COALESCE($3, article_seo.meta_description)`, [params.id, params.seo.meta_title, params.seo.meta_description, params.seo.canonical_url, params.seo.og_title, params.seo.og_description, params.seo.keywords]);
-    return { content: [{ type: "text", text: JSON.stringify(res.rows[0]) }] };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const body = {};
+    if (params.title) body.title = params.title;
+    if (params.content) body.body = params.content;
+    if (params.excerpt !== undefined) body.excerpt = params.excerpt;
+    if (params.slug) body.slug = params.slug;
+    if (params.seo) body.seo = params.seo;
+    if (params.featured_image) body.image_url = params.featured_image.url;
+    if (params.categories) body.categorySlugs = params.categories;
+
+    const response = await fetch(`${backendUrl}/articles/${params.id}`, {
+      method: 'PATCH',
+      headers: makeAuthHeaders(),
+      body: JSON.stringify(body)
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
+    logTool(tool, `ok ${Date.now() - start}ms`);
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
+    logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.publish", { description: "Publish post", inputSchema: postsPublishSchema }, async (params) => {
+server.registerTool("posts_publish", { description: "Publish post immediately", inputSchema: postsPublishSchema }, async (params) => {
+  const tool = "posts_publish";
+  const start = Date.now();
+  logTool(tool, `CALLED with id=${params.id}`);
   try {
-    const res = await pool.query(`UPDATE articles SET status = 'published', published_at = now() WHERE id = $1 RETURNING id, status, published_at`, [params.id]);
-    return res.rows[0] ? { content: [{ type: "text", text: JSON.stringify(res.rows[0]) }] } : { content: [{ type: "text", text: JSON.stringify({ error: "NOT_FOUND" }) }], isError: true };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const response = await fetch(`${backendUrl}/articles/${params.id}/publish`, {
+      method: 'POST',
+      headers: makeAuthHeaders(),
+      body: JSON.stringify({})
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
+    logTool(tool, `ok ${Date.now() - start}ms`);
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
+    logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.schedule", { description: "Schedule post", inputSchema: postsScheduleSchema }, async (params) => {
+server.registerTool("posts_schedule", { description: "Schedule post for future publication", inputSchema: postsScheduleSchema }, async (params) => {
+  const tool = "posts_schedule";
+  const start = Date.now();
+  logTool(tool, `CALLED with id=${params.id}, scheduled_at=${params.scheduled_at}`);
   try {
-    const res = await pool.query(`UPDATE articles SET status = 'scheduled', scheduled_at = $1 WHERE id = $2 RETURNING id, status, scheduled_at`, [params.scheduled_at, params.id]);
-    return res.rows[0] ? { content: [{ type: "text", text: JSON.stringify(res.rows[0]) }] } : { content: [{ type: "text", text: JSON.stringify({ error: "NOT_FOUND" }) }], isError: true };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const response = await fetch(`${backendUrl}/articles/${params.id}/schedule`, {
+      method: 'POST',
+      headers: makeAuthHeaders(),
+      body: JSON.stringify({ scheduled_at: params.scheduled_at })
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
+    logTool(tool, `ok ${Date.now() - start}ms`);
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
+    logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.unpublish", { description: "Unpublish post", inputSchema: postsPublishSchema }, async (params) => {
+server.registerTool("posts_unpublish", { description: "Revert published post to draft", inputSchema: postsPublishSchema }, async (params) => {
+  const tool = "posts_unpublish";
+  const start = Date.now();
+  logTool(tool, `CALLED with id=${params.id}`);
   try {
-    const res = await pool.query(`UPDATE articles SET status = 'draft', published_at = null WHERE id = $1 RETURNING id, status`, [params.id]);
-    return res.rows[0] ? { content: [{ type: "text", text: JSON.stringify(res.rows[0]) }] } : { content: [{ type: "text", text: JSON.stringify({ error: "NOT_FOUND" }) }], isError: true };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const response = await fetch(`${backendUrl}/articles/${params.id}/unpublish`, {
+      method: 'POST',
+      headers: makeAuthHeaders(),
+      body: JSON.stringify({})
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
+    logTool(tool, `ok ${Date.now() - start}ms`);
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
+    logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
 
-server.registerTool("posts.delete", { description: "Delete post", inputSchema: postsDeleteSchema }, async (params) => {
+server.registerTool("posts_delete", { description: "Delete post permanently", inputSchema: postsDeleteSchema }, async (params) => {
+  const tool = "posts_delete";
+  const start = Date.now();
+  logTool(tool, `CALLED with id=${params.id}`);
   try {
-    const res = await pool.query(`DELETE FROM articles WHERE id = $1 RETURNING id`, [params.id]);
-    return res.rows[0] ? { content: [{ type: "text", text: JSON.stringify({ deleted: true, id: res.rows[0].id }) }] } : { content: [{ type: "text", text: JSON.stringify({ error: "NOT_FOUND" }) }], isError: true };
+    const backendUrl = process.env.BACKEND_URL || 'http://localhost:5000';
+    const response = await fetch(`${backendUrl}/articles/${params.id}`, {
+      method: 'DELETE',
+      headers: makeAuthHeaders()
+    });
+    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    const data = await response.json();
+    logTool(tool, `ok ${Date.now() - start}ms`);
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   } catch (e) {
+    logTool(tool, `ERROR: ${e.message}`);
     return { content: [{ type: "text", text: JSON.stringify({ error: e.message }) }], isError: true };
   }
 });
@@ -1855,15 +1935,14 @@ console.error([
   "social_open",
   "social_content_open",
   "social_opportunities",
-  "posts.dashboard",
-  "posts.list",
-  "posts.open",
-  "posts.create",
-  "posts.update",
-  "posts.publish",
-  "posts.schedule",
-  "posts.unpublish",
-  "posts.delete"
+  "posts_list",
+  "posts_open",
+  "posts_create",
+  "posts_update",
+  "posts_publish",
+  "posts_schedule",
+  "posts_unpublish",
+  "posts_delete"
 ].join("\n"));
 
 async function main() {

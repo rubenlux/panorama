@@ -46,6 +46,7 @@ import CoverageFeed           from "./pages/CoverageFeed.jsx";
 import CoverageDetail         from "./pages/CoverageDetail.jsx";
 import CoverageArticleDetail  from "./pages/CoverageArticleDetail.jsx";
 import OpenClaw              from "./pages/OpenClaw.jsx";
+import Brand                 from "./pages/Brand.jsx";
 
 function RequireAuth({ children }) {
   const token = getToken();
@@ -130,6 +131,7 @@ export default function App() {
         <Route path="users/:id" element={<UserEditor mode="edit" />} />
         <Route path="users/:id/performance" element={<UserPerformance />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="brand" element={<Brand />} />
       </Route>
 
       {/* fallback */}

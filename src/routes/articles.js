@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { query, logActivity } from "./db.js";
-import { requireAuth } from "../middleware/auth.js";
+import { requireAuth, requireAuthOrMcp } from "../middleware/auth.js";
 import { requireRole } from "../middleware/roles.js";
 import { slugify } from "./_util.js";
 import fs from "fs";
@@ -27,6 +27,40 @@ function logError(context, err) {
 }
 
 const ALLOWED_STATUS = new Set(["draft", "published"]);
+
+// ============================================================================
+// ADMIN/MCP: Dashboard stats (must be BEFORE public :slug route)
+// GET /articles/dashboard
+// ============================================================================
+router.get(
+  "/dashboard",
+  requireAuthOrMcp,
+  requireRole("admin", "editor"),
+  async (req, res, next) => {
+    try {
+      const [total, drafts, published, scheduled] = await Promise.all([
+        query(`SELECT COUNT(*)::int as count FROM articles`),
+        query(`SELECT COUNT(*)::int as count FROM articles WHERE status='draft'`),
+        query(`SELECT COUNT(*)::int as count FROM articles WHERE status='published'`),
+        query(`SELECT COUNT(*)::int as count FROM articles WHERE scheduled_at > now()`)
+      ]);
+
+      const response = {
+        generated_at: new Date().toISOString(),
+        metrics: {
+          total_posts: total.rows[0]?.count ?? 0,
+          drafts_count: drafts.rows[0]?.count ?? 0,
+          published_count: published.rows[0]?.count ?? 0,
+          scheduled_count: scheduled.rows[0]?.count ?? 0
+        }
+      };
+
+      res.json(response);
+    } catch (e) {
+      next(e);
+    }
+  }
+);
 
 /**
  * PUBLIC: List published only
@@ -92,7 +126,7 @@ router.get("/", async (req, res, next) => {
  */
 router.get(
   "/admin/list",
-  requireAuth,
+  requireAuthOrMcp,
   requireRole("admin", "editor"),
   async (req, res, next) => {
     try {
@@ -176,7 +210,7 @@ router.get(
  */
 router.get(
   "/admin/:slug",
-  requireAuth,
+  requireAuthOrMcp,
   requireRole("admin", "editor"),
   async (req, res, next) => {
     try {
@@ -236,6 +270,9 @@ const createSchema = z.object({
   body: z.string().min(20),
   status: z.enum(["draft", "published"]).default("draft"),
   categorySlugs: z.array(z.string().min(1)).default([]),
+  created_by: z.string().uuid().optional(), // Real user who initiated (for AI workflows)
+  created_via: z.enum(['claude_desktop', 'cms_ui', 'cli', 'api']).default('cms_ui'),
+  workflow: z.enum(['editorial_ai', 'manual', 'optimized', 'translated', 'curated']).default('manual'),
   seo: z.object({
     meta_title: z.string().optional(),
     meta_description: z.string().optional(),
@@ -254,7 +291,7 @@ const createSchema = z.object({
  */
 router.post(
   "/",
-  requireAuth,
+  requireAuthOrMcp,
   requireRole("admin", "editor"),
   async (req, res, next) => {
     try {
@@ -274,10 +311,13 @@ router.post(
 
       const published_at = data.status === "published" ? new Date() : null;
 
+      // If created_by is specified (e.g., from Claude), use it; otherwise use current user
+      const createdBy = data.created_by || req.user.sub;
+
       const r = await query(
-        `INSERT INTO articles(author_id, title, slug, volanta, image_url, excerpt, body, status, published_at, epigraph, word_count, origin, dossier_id)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       RETURNING id, title, slug, status, published_at, word_count, origin, dossier_id`,
+        `INSERT INTO articles(author_id, title, slug, volanta, image_url, excerpt, body, status, published_at, epigraph, word_count, origin, dossier_id, created_by, created_via, workflow)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       RETURNING id, title, slug, status, published_at, word_count, origin, dossier_id, created_by, created_via, workflow`,
         [
           req.user.sub,
           data.title,
@@ -292,6 +332,9 @@ router.post(
           getWordCount(data.body),
           data.origin ?? 'manual',
           data.dossier_id ?? null,
+          createdBy,
+          data.created_via ?? 'cms_ui',
+          data.workflow ?? 'manual',
         ]
       );
 
@@ -368,7 +411,7 @@ const putSchema = z.object({
  */
 router.put(
   "/:slug",
-  requireAuth,
+  requireAuthOrMcp,
   requireRole("admin", "editor"),
   async (req, res, next) => {
     try {
@@ -484,7 +527,7 @@ const patchSchema = z.object({
  */
 router.patch(
   "/:slug",
-  requireAuth,
+  requireAuthOrMcp,
   requireRole("admin", "editor"),
   async (req, res, next) => {
     try {
@@ -655,7 +698,7 @@ router.patch(
  */
 router.delete(
   "/:slug",
-  requireAuth,
+  requireAuthOrMcp,
   requireRole("admin"),
   async (req, res, next) => {
     try {
@@ -665,6 +708,334 @@ router.delete(
       ]);
       if (!r.rows[0]) return res.status(404).json({ error: "Not found" });
       res.json({ ok: true });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+// ============================================================================
+// MCP-SPECIFIC ENDPOINTS (ID-based, action-specific)
+// ============================================================================
+
+/**
+ * STAFF: Get article by ID (UUID or slug)
+ * GET /articles/:id
+ */
+router.get(
+  "/:id",
+  requireAuthOrMcp,
+  requireRole("admin", "editor"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+
+      // Try as UUID first, then as slug
+      let sql = `SELECT a.id, a.title, a.slug, a.excerpt, a.body, a.status, a.published_at,
+                        a.scheduled_at, a.created_at, a.updated_at, a.image_url, a.word_count,
+                        u.email as author_email, u.name as author_name,
+                        s.meta_title, s.meta_description, s.canonical_url, s.og_title, s.og_description, s.keywords,
+                        json_agg(json_build_object('slug', c.slug, 'name', c.name)) as categories
+                 FROM articles a
+                 JOIN users u ON u.id = a.author_id
+                 LEFT JOIN article_seo s ON s.article_id = a.id
+                 LEFT JOIN article_categories ac ON ac.article_id = a.id
+                 LEFT JOIN categories c ON c.id = ac.category_id
+                 WHERE a.id = $1 OR a.slug = $1
+                 GROUP BY a.id, u.id, s.id
+                 LIMIT 1`;
+
+      const r = await query(sql, [id]);
+      if (!r.rows[0]) return res.status(404).json({ error: "NOT_FOUND" });
+
+      const a = r.rows[0];
+      const resp = {
+        schema_version: "1.0",
+        metadata: {
+          id: a.id,
+          slug: a.slug,
+          author: { email: a.author_email, name: a.author_name },
+          created_at: a.created_at,
+          updated_at: a.updated_at,
+          status: a.status
+        },
+        content: {
+          title: a.title,
+          excerpt: a.excerpt,
+          body: a.body,
+          word_count: a.word_count
+        },
+        seo: {
+          meta_title: a.meta_title,
+          meta_description: a.meta_description,
+          canonical_url: a.canonical_url,
+          og_title: a.og_title,
+          og_description: a.og_description,
+          keywords: a.keywords ? a.keywords.split(',').map(k => k.trim()) : []
+        },
+        featured_image: {
+          url: a.image_url,
+          caption: null
+        },
+        categories: a.categories || [],
+        publication: {
+          status: a.status,
+          published_at: a.published_at,
+          scheduled_at: a.scheduled_at
+        },
+        provenance: {
+          generated_at: new Date().toISOString(),
+          pipeline_version: "posts.open/1.0"
+        }
+      };
+
+      res.json(resp);
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+/**
+ * STAFF: Pre-flight validation before publishing
+ * GET /articles/:id/publish-check
+ * Returns validation status and errors that would block publishing
+ */
+router.get(
+  "/:id/publish-check",
+  requireAuthOrMcp,
+  requireRole("admin", "editor"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+
+      const r = await query(
+        `SELECT a.id, a.title, a.body, a.excerpt, a.image_url, a.word_count,
+                s.meta_title, s.meta_description, s.keywords,
+                (SELECT COUNT(*) FROM article_categories WHERE article_id = a.id) as category_count
+         FROM articles a
+         LEFT JOIN article_seo s ON s.article_id = a.id
+         WHERE a.id = $1 OR a.slug = $1
+         LIMIT 1`,
+        [id]
+      );
+
+      if (!r.rows[0]) return res.status(404).json({ error: "NOT_FOUND" });
+
+      const article = r.rows[0];
+      const errors = [];
+      const warnings = [];
+
+      // ERRORS (block publishing)
+      if (!article.image_url) errors.push("featured_image missing");
+      if (article.category_count === 0) errors.push("category not assigned");
+      if (!article.excerpt || article.excerpt.length < 50) {
+        errors.push(`excerpt too short or missing (current: ${article.excerpt?.length || 0} chars, min: 50)`);
+      }
+      if (article.word_count < 300) {
+        errors.push(`article too short (current: ${article.word_count} words, min: 300)`);
+      }
+      if (!article.title || article.title.length < 10 || article.title.length > 200) {
+        errors.push(`title invalid (current: ${article.title?.length || 0} chars, range: 10-200)`);
+      }
+
+      // WARNINGS (allow publishing but notify)
+      if (!article.meta_title || article.meta_title.length < 30) {
+        warnings.push("meta_title missing or too short (recommend: 30-60 chars)");
+      }
+      if (!article.meta_description || article.meta_description.length < 120) {
+        warnings.push(`meta_description too short (current: ${article.meta_description?.length || 0} chars, recommend: 120-160)`);
+      }
+      if (article.word_count < 500) {
+        warnings.push(`article is short (current: ${article.word_count} words, recommend: 500+)`);
+      }
+      if (!article.keywords || article.keywords.split(',').length < 3) {
+        const keywordCount = article.keywords ? article.keywords.split(',').length : 0;
+        warnings.push(`keywords missing or incomplete (current: ${keywordCount}, recommend: 3-5)`);
+      }
+
+      res.json({
+        can_publish: errors.length === 0,
+        errors,
+        warnings,
+        article: {
+          id: article.id,
+          title: article.title,
+          word_count: article.word_count,
+          has_image: !!article.image_url,
+          has_category: article.category_count > 0,
+          has_excerpt: !!article.excerpt,
+          excerpt_length: article.excerpt?.length || 0
+        }
+      });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+/**
+ * STAFF: Publish article immediately
+ * POST /articles/:id/publish
+ */
+router.post(
+  "/:id/publish",
+  requireAuthOrMcp,
+  requireRole("admin", "editor"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params; // Can be either UUID or slug
+      const { force_publish } = req.body; // Optional: bypass validation for admins
+
+      const current = await query(
+        `SELECT id, status, author_id FROM articles
+         WHERE id::text = $1 OR slug = $1`,
+        [id]
+      );
+      if (!current.rows[0]) return res.status(404).json({ error: "NOT_FOUND" });
+
+      const articleId = current.rows[0].id; // Get the real UUID
+
+      // Ownership check
+      if (req.user.role === 'editor' && current.rows[0].author_id !== req.user.sub) {
+        return res.status(403).json({ error: "No permission" });
+      }
+
+      // If not forcing and not admin, run validation check
+      if (!force_publish && req.user.role !== 'admin') {
+        const checkRes = await query(
+          `SELECT a.id, a.title, a.body, a.excerpt, a.image_url, a.word_count,
+                  s.meta_title, s.meta_description,
+                  (SELECT COUNT(*) FROM article_categories WHERE article_id = a.id) as category_count
+           FROM articles a
+           LEFT JOIN article_seo s ON s.article_id = a.id
+           WHERE a.id = $1`,
+          [articleId]
+        );
+
+        const article = checkRes.rows[0];
+        const errors = [];
+
+        if (!article.image_url) errors.push("featured_image missing");
+        if (article.category_count === 0) errors.push("category not assigned");
+        if (!article.excerpt || article.excerpt.length < 50) errors.push("excerpt too short");
+        if (article.word_count < 300) errors.push("article too short (min 300 words)");
+
+        if (errors.length > 0) {
+          return res.status(400).json({
+            error: "VALIDATION_FAILED",
+            can_publish: false,
+            errors,
+            message: "Run GET /articles/:id/publish-check to see all issues"
+          });
+        }
+      }
+
+      const r = await query(
+        `UPDATE articles SET status='published', published_at=COALESCE(published_at, now()), updated_at=now()
+         WHERE id=$1
+         RETURNING id, status, published_at`,
+        [articleId]
+      );
+
+      await logActivity(req.user.sub, 'article_publish', {
+        id: r.rows[0].id,
+        published_at: r.rows[0].published_at
+      });
+
+      res.json({ id: r.rows[0].id, status: r.rows[0].status, published_at: r.rows[0].published_at });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+/**
+ * STAFF: Schedule article for future publication
+ * POST /articles/:id/schedule
+ */
+router.post(
+  "/:id/schedule",
+  requireAuthOrMcp,
+  requireRole("admin", "editor"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params; // Can be either UUID or slug
+      const { scheduled_at } = req.body;
+
+      if (!scheduled_at) return res.status(400).json({ error: "scheduled_at required" });
+
+      const current = await query(
+        `SELECT id, status, author_id FROM articles
+         WHERE id::text = $1 OR slug = $1`,
+        [id]
+      );
+      if (!current.rows[0]) return res.status(404).json({ error: "NOT_FOUND" });
+
+      const articleId = current.rows[0].id; // Get the real UUID
+
+      // Ownership check
+      if (req.user.role === 'editor' && current.rows[0].author_id !== req.user.sub) {
+        return res.status(403).json({ error: "No permission" });
+      }
+
+      const r = await query(
+        `UPDATE articles SET status='scheduled', scheduled_at=$1, updated_at=now()
+         WHERE id=$2
+         RETURNING id, status, scheduled_at`,
+        [new Date(scheduled_at), articleId]
+      );
+
+      await logActivity(req.user.sub, 'article_schedule', {
+        id: r.rows[0].id,
+        scheduled_at: r.rows[0].scheduled_at
+      });
+
+      res.json({ id: r.rows[0].id, status: r.rows[0].status, scheduled_at: r.rows[0].scheduled_at });
+    } catch (e) {
+      next(e);
+    }
+  }
+);
+
+/**
+ * STAFF: Unpublish article (revert to draft)
+ * POST /articles/:id/unpublish
+ */
+router.post(
+  "/:id/unpublish",
+  requireAuthOrMcp,
+  requireRole("admin", "editor"),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params; // Can be either UUID or slug
+
+      const current = await query(
+        `SELECT id, status, author_id FROM articles
+         WHERE id::text = $1 OR slug = $1`,
+        [id]
+      );
+      if (!current.rows[0]) return res.status(404).json({ error: "NOT_FOUND" });
+
+      const articleId = current.rows[0].id; // Get the real UUID
+
+      // Ownership check
+      if (req.user.role === 'editor' && current.rows[0].author_id !== req.user.sub) {
+        return res.status(403).json({ error: "No permission" });
+      }
+
+      const r = await query(
+        `UPDATE articles SET status='draft', published_at=null, updated_at=now()
+         WHERE id=$1
+         RETURNING id, status`,
+        [articleId]
+      );
+
+      await logActivity(req.user.sub, 'article_unpublish', {
+        id: r.rows[0].id
+      });
+
+      res.json({ id: r.rows[0].id, status: r.rows[0].status });
     } catch (e) {
       next(e);
     }

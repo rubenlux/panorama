@@ -106,7 +106,7 @@ Documented in Spanish in `SISTEMA_PUBLICIDAD.md`. Key concepts:
 **Motor Algorítmico (`src/jobs/newsMonitor.js`) — se ejecuta cada ciclo:**
 - `generateAlgorithmicOpportunities(storyIds)` — genera oportunidades sin IA usando `detectStoryCategory()` + `getCategoryOpportunityTemplates()`.
 - `buildAlgorithmicSummary(story, entities)` — resumen tipo "N artículos de M fuentes informan sobre X."
-- `detectStoryCategory(title, storyType)` — scoring por keywords (CK4): cuenta cuántos patrones regex matchean por categoría; mayor puntaje gana; empates por precedencia. 10 categorías: `judicial > security > international > politics > economy > health > technology > sports > entertainment > society`. `storyType=sports/politics` es override directo.
+- `detectStoryCategory(title, storyType, entities)` — **v2 (June 25):** context-aware classification. Retorna `{category, confidence, matched_rules}`. Detects SPORTS_CONTEXT (clubes, competiciones, mercado) + ENTERTAINMENT_CONTEXT (personas públicas). Si sports context detectado, reduce health/economy/international scores. Si entertainment context detectado, prioriza entertainment sobre sports (ej: "Andrea del Boca" → entertainment, not sports). Dynamic PRECEDENCE: entertainment comes first when `hasEntertainmentContext=true`. `storyType=sports/politics` remains override. **Result:** Lozano case fixed (4 fragmented → 1 consolidated), Boca stories 60%→80% sports classification.
 - `getCategoryOpportunityTemplates(story, category, sourceList)` — 3-4 templates por categoría (LIVE_COVERAGE, NEWS, ANALYSIS, EXPLAINER, SEO con scores diferenciados) + 2 reglas cross-category (ventana de exclusiva / cobertura concentrada).
 - `ensureAlgorithmicSummaryColumn()` + `ensureOpportunityTriggerColumn()` — idempotent ALTER TABLE al arrancar.
 - `importance_score` — `LEAST(10, GREATEST(1, (LEAST(source_count*2.5, 5.0) + LEAST(article_count*0.5, 3.0) + coverage_bonus)::integer))` — 100% SQL.
@@ -532,6 +532,77 @@ Replaced variable-mutation pattern (where `finalEntity` was reassigned across br
 3. Inspect `GET /openclaw/audit-log` → STEP 3 logs should show:
    - Query 1: "INTENT IS GLOBAL ('what_happening') BUT HAS ENTITY" → entity-specific search
    - Query 2: "INTENT IS GLOBAL ('what_happening') + NO SPECIFIC ENTITY" → global search, "Session.lastEntity was: Boca (NOT USED)"
+
+### MCP Server (June 2026) — Semantic API for Panorama
+
+`mcp-server/src/` — Official API layer. 25 tools, organized by domain (Monitor, Story, Content, Editorial, Social Intelligence, Legacy).
+
+**Philosophy**: Claude Desktop is just one client. Panorama is the brain. All intelligence lives in Panorama, never in Claude.
+
+**Status**: Mature. Not adding tools. Improving editorial rigor.
+
+**Read detailed architecture in**:
+- `memory/mcp_architecture_approved.md` — Locked specification (5 tool categories, 6 immutable rules)
+- `memory/social_intelligence_mcp_tools.md` — Social Intelligence domain implementation (5 new tools, June 27)
+- `memory/editorial_reasoning_guide.md` — How Claude interprets Panorama (principles, rigor, comparison structure)
+
+### MCP Tool Naming (STRICT)
+
+**All MCP tool names MUST use underscores ONLY** — No dots (`.`) allowed.
+
+Valid pattern: `^[a-zA-Z0-9_-]{1,64}$`
+
+✅ **Correct:**
+```javascript
+server.registerTool("posts_create", ...)
+server.registerTool("posts_publish", ...)
+server.registerTool("social_dashboard", ...)
+```
+
+❌ **Wrong:**
+```javascript
+server.registerTool("posts.create", ...)      // ERROR: dot not allowed
+server.registerTool("social.dashboard", ...)  // ERROR: dot not allowed
+```
+
+**Why:** MCP schema validation rejects dots in tool names. See `memory/mcp_naming_rules.md` for full details.
+
+### Article Lookup Pattern — Slug/UUID Dual Support (Posts Domain)
+
+All article endpoints (`/articles/:id/*`) accept BOTH slug and UUID identifiers:
+
+**Pattern (in all POST/PUT handlers):**
+```javascript
+const { id } = req.params;  // Can be slug OR UUID
+
+// Step 1: Resolve to article and get real UUID
+const current = await query(
+  `SELECT id, ... FROM articles WHERE id::text = $1 OR slug = $1`,
+  [id]
+);
+if (!current.rows[0]) return res.status(404).json({ error: "NOT_FOUND" });
+const articleId = current.rows[0].id;  // Get real UUID
+
+// Step 2: All subsequent queries use UUID only (type safety)
+const r = await query(
+  `UPDATE articles SET ... WHERE id=$1`,
+  [articleId]  // Not id parameter, which might be slug
+);
+```
+
+**Why:** SEO-friendly URLs use slugs (e.g., `test-article-from-mcp-auth-3`), but UUIDs ensure type safety in PostgreSQL queries. Resolve once, use UUID for all subsequent operations.
+
+**Applied Endpoints:**
+- `POST /articles/:id/publish`
+- `POST /articles/:id/schedule`
+- `POST /articles/:id/unpublish`
+- `GET /articles/:id`
+- `PUT /articles/:id`
+- `DELETE /articles/:id`
+
+**PostgreSQL Type Casting Note:**
+Do NOT use `id=$1::uuid` because PostgreSQL fails when $1 is a slug. Instead, use:
+- `id::text = $1 OR slug = $1` — let PostgreSQL choose the path based on column types
 
 ## Key Conventions
 

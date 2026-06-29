@@ -50,7 +50,9 @@ export function createApp() {
 
   // Safe absolute path to uploads (one level up from src)
   const uploadsPath = path.join(__dirname, "../uploads");
+  const brandPath = path.join(__dirname, "../brand");
   console.log(">> SERVER STATIC UPLOADS PATH:", uploadsPath);
+  console.log(">> SERVER STATIC BRAND PATH:", brandPath);
 
   app.use(helmet({
     crossOriginResourcePolicy: false, // Disable default restrictive policy
@@ -117,6 +119,7 @@ export function createApp() {
   });
 
   app.use("/uploads", express.static(uploadsPath));
+
   // app.use("/media", mediaRouter); // Moved up
   app.use(notFound);
   app.use(errorHandler);
