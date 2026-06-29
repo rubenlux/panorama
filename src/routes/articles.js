@@ -901,44 +901,22 @@ router.post(
         return res.status(403).json({ error: "No permission" });
       }
 
-      // Always run validation check (admins can force_publish to bypass, others cannot)
+      // Minimal validation: title and slug must exist
       const checkRes = await query(
-        `SELECT a.id, a.title, a.body, a.excerpt, a.image_url, a.word_count,
-                s.meta_title, s.meta_description,
-                (SELECT COUNT(*) FROM article_categories WHERE article_id = a.id) as category_count
-         FROM articles a
-         LEFT JOIN article_seo s ON s.article_id = a.id
-         WHERE a.id = $1`,
+        `SELECT a.id, a.title, a.slug FROM articles a WHERE a.id = $1`,
         [articleId]
       );
 
       const article = checkRes.rows[0];
-      const errors = [];
-
-      if (!article.image_url) errors.push("featured_image missing");
-      if (article.category_count === 0) errors.push("category not assigned");
-      if (!article.excerpt || article.excerpt.length < 50) errors.push("excerpt too short");
-      if (article.word_count < 300) errors.push("article too short (min 300 words)");
-
-      // If validation failed, check if user can force publish
-      if (errors.length > 0) {
-        if (!force_publish || (req.user.role !== 'admin' && req.user.role !== 'mcp')) {
-          return res.status(400).json({
-            error: "VALIDATION_FAILED",
-            publishable: false,
-            checks: {
-              title: !!article.title,
-              content: (article.word_count || 0) >= 100,
-              slug: !!article.id,
-              featured_image: !!article.image_url,
-              category: article.category_count > 0,
-              excerpt: article.excerpt && article.excerpt.length >= 50,
-              word_count: (article.word_count || 0) >= 300
-            },
-            missing: errors,
-            hint: "Admin users can use force_publish: true to override"
-          });
-        }
+      if (!article.title || !article.slug) {
+        return res.status(400).json({
+          error: "VALIDATION_FAILED",
+          message: "Article must have title and slug",
+          details: {
+            title: !!article.title,
+            slug: !!article.slug
+          }
+        });
       }
 
       const r = await query(
