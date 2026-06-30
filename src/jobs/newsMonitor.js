@@ -730,6 +730,17 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
           url,
           title: metadata.cleanTitle || metadata.rawTitle, // Use cleaned title
         };
+
+        // DEBUG: Log all title sources for rejected articles (helps find extraction bugs)
+        if (metadata && (!metadata.title || metadata.title.length < 20)) {
+          console.log(`[Extractor] Title sources for ${url.slice(0, 80)}...`, {
+            rawTitle: metadata.rawTitle?.slice(0, 60) || '(none)',
+            cleanTitle: metadata.cleanTitle?.slice(0, 60) || '(none)',
+            wordCount: metadata.wordCount,
+            confidence: metadata.confidence,
+          });
+        }
+
         if (metadata && validateArticle(article)) {
           articles.push({
             title: metadata.title,
