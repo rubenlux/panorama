@@ -2,7 +2,7 @@ import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
 import crypto from 'crypto';
 import { query } from '../routes/db.js';
-import { logEvent } from './workerUtils.js';
+import { logEvent, recordCrawlAttempt, updateDomainProfile } from './workerUtils.js';
 import { scrapeWithPlaywright } from '../connectors/playwright.js';
 
 let isRunning = false;
