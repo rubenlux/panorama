@@ -36,3 +36,8 @@ debug_*.js
 list_tables.js
 check_schema.js
 test_*.js
+
+# Playwright / Browser profiles (runtime cache, not code)
+facebook-profile/
+chrome-profile/
+browser-cache/
