@@ -219,6 +219,9 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
   const startTime = Date.now();
   let sessionId = null;
 
+  // LOGGING: Entry point
+  console.log(`[FETCH] START: ${url.slice(0, 80)} (articleId=${articleId})`);
+
   // Create session if we have articleId (groups all attempts)
   if (articleId) {
     sessionId = await recordCrawlSession({ articleId, domain, strategy: 'HTTP_THEN_PLAYWRIGHT' }).catch(() => null);
@@ -246,24 +249,30 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
     });
     fetchDuration = Date.now() - start;
     httpStatus = resp.status;
+    console.log(`[FETCH] HTTP ${resp.status} (${fetchDuration}ms)`);
 
     if (!resp.ok) {
       if (resp.status === 403) fetchReason = 'cloudflare';
       else if (resp.status === 404) fetchReason = '404';
       else if (resp.status === 429) fetchReason = '429';
       else fetchReason = `http_${resp.status}`;
+      console.log(`[FETCH] HTTP FAILED: ${fetchReason}`);
     } else {
       const ct = resp.headers.get('content-type') || '';
       if (!ct.includes('html')) {
         fetchReason = 'not_html';
+        console.log(`[FETCH] Not HTML: ${ct}`);
       } else {
         html = await resp.text();
         bytesDownloaded = Buffer.byteLength(html, 'utf8');
+        console.log(`[FETCH] HTML received: ${bytesDownloaded} bytes`);
         if (!html || html.trim().length === 0) {
           fetchReason = 'empty_html';
+          console.log(`[FETCH] HTML is empty`);
         } else {
           fetchStatus = 'SUCCESS';
           fetchReason = null;
+          console.log(`[FETCH] SUCCESS`);
         }
       }
     }
@@ -308,7 +317,9 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
 
   if (fetchStatus === 'SUCCESS' && html) {
     const result = extractFromHtml(html);
+    console.log(`[FETCH] extractFromHtml result: ${result ? result.word_count : 0} words`);
     if (result?.paywall) {
+      console.log(`[FETCH] Paywall detected`);
       if (sessionId) {
         await recordCrawlAttempt({
           sessionId,
@@ -325,11 +336,16 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
     }
 
     if (result && result.word_count >= MIN_WORDS_FETCH) {
+      console.log(`[FETCH] SUCCESS (${result.word_count} words) → returning 'fetch'`);
       return { content: result.content, word_count: result.word_count, method: 'fetch' };
     }
+    console.log(`[FETCH] Insufficient content (${result?.word_count || 0} words < ${MIN_WORDS_FETCH}) → trying Playwright`);
+  } else {
+    console.log(`[FETCH] HTTP failed or no HTML → trying Playwright`);
   }
 
-  // Level 3: Playwright (only if fetch was insufficient)
+  // Level 3: Playwright (always attempted if fetch insufficient or failed)
+  console.log(`[PLAYWRIGHT] Starting attempt...`);
   let pwStartTime = Date.now();
   let pwStatus = 'FAILED';
   let pwReason = 'unknown';
@@ -337,16 +353,22 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
   let pwResult = null;
 
   try {
+    console.log(`[PLAYWRIGHT] Calling fetchWithPlaywright(${url.slice(0, 60)}...)`);
     pwResult = await fetchWithPlaywright(url);
     if (pwResult) {
       pwStatus = 'SUCCESS';
       pwReason = null;
+      console.log(`[PLAYWRIGHT] SUCCESS: ${pwResult.word_count} words`);
+    } else {
+      console.log(`[PLAYWRIGHT] Returned null`);
     }
   } catch (e) {
     pwReason = e.message.includes('Timeout') ? 'timeout' : 'playwright_error';
+    console.log(`[PLAYWRIGHT] EXCEPTION: ${pwReason} - ${e.message}`);
   }
 
   pwDuration = Date.now() - pwStartTime;
+  console.log(`[PLAYWRIGHT] Duration: ${pwDuration}ms, Status: ${pwStatus}`);
 
   if (sessionId) {
     await recordCrawlAttempt({
@@ -370,9 +392,11 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
   }
 
   if (pwResult && !pwResult.paywall && pwResult.word_count >= MIN_WORDS_FETCH) {
+    console.log(`[FINAL] PLAYWRIGHT SUCCESS: ${pwResult.word_count} words → returning 'playwright'`);
     return { content: pwResult.content, word_count: pwResult.word_count, method: 'playwright' };
   }
   if (pwResult?.paywall) {
+    console.log(`[FINAL] Paywall detected in Playwright result`);
     if (sessionId) {
       await recordCrawlAttempt({
         sessionId,
@@ -388,6 +412,9 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
     return { content: null, word_count: 0, method: 'paywall' };
   }
 
+  // BOTH HTTP and Playwright failed or insufficient
+  console.log(`[FINAL] BOTH FAILED → returning null (rss_only)`);
+  console.log(`[FINAL] HTTP: ${fetchStatus}/${fetchReason}, Playwright: ${pwStatus}/${pwReason}, Duration: ${Date.now() - startTime}ms`);
   return null; // rss_only — caller handles this
 }
 
