@@ -230,58 +230,135 @@ async function discoverArticlesViaPlaywright(source) {
       homeUrl = `https://${source.name.split(/\s+/)[0].toLowerCase()}.com`;
     }
 
-    await page.goto(homeUrl, { waitUntil: 'load', timeout: 20_000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    try {
+      await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    } catch (e) {
+      console.warn(`[Playwright] Navigation failed for ${source.name}: ${e.message}, continuing anyway`);
+    }
+    await page.waitForTimeout(1000);
 
-    // Extract article links (ultra-strict: no query params, no tracking)
-    const urls = await page.evaluate(() => {
-      const links = new Set();
+    // Generic article discovery engine - works across most news sites
+    const candidates = await page.evaluate(() => {
+      const articles = [];
 
-      // Get all links on page
-      document.querySelectorAll('a[href]').forEach(el => {
-        const href = el.getAttribute('href');
-        if (!href) return;
-
-        // Skip obvious non-article links
-        if (href === '#' || href.includes('javascript:')) return;
-        if (href.startsWith('mailto:') || href.startsWith('tel:')) return;
-        if (href.includes('login') || href.includes('signin') || href.includes('signup')) return;
-
-        let full = href.startsWith('http') ? href : window.location.origin + href;
-
-        // CRITICAL: Remove ALL query parameters (everything after ?)
-        // This eliminates tracking URLs completely
-        const cleanUrl = full.split('?')[0].split('#')[0];
-        if (!cleanUrl || cleanUrl === window.location.origin || cleanUrl === window.location.origin + '/') return;
-
-        // EXCLUDE: navigation, search, categories, authors, profile pages
-        if (cleanUrl.includes('/categor') || cleanUrl.includes('/tag/') || cleanUrl.includes('/search') ||
-            cleanUrl.includes('/autor') || cleanUrl.includes('/author') || cleanUrl.includes('/profile') ||
-            cleanUrl.includes('/page/') || cleanUrl.includes('/videos') || cleanUrl.includes('/photos') ||
-            cleanUrl.includes('/comments') || cleanUrl.endsWith('/')) {
-          return;
+      // Helper: extract text from element, prefer h2/h3/strong over generic text
+      function getBestText(card) {
+        const headings = card.querySelectorAll('h1, h2, h3, h4');
+        for (let h of headings) {
+          const text = h.textContent?.trim();
+          if (text && text.length > 15 && text.length < 200) return text;
         }
+        // If no heading, try link text as fallback (but filter generic text)
+        const link = card.querySelector('a[href]');
+        if (link) {
+          const text = link.textContent?.trim();
+          if (text && text.length > 15 && text.length < 200 && text !== 'Article' && text !== 'More') {
+            return text;
+          }
+        }
+        return null;
+      }
 
-        // REQUIRE: looks like an article (must have content indicator)
-        const isArticleLike = /\/(articulo|article|news|post|story|blog|noticia|noticias|content|nota)\//i.test(cleanUrl) ||
-                             /\/\d{4}\/\d{1,2}\/\d{1,2}/i.test(cleanUrl) ||  // Date pattern: /2026/06/29
-                             /\/\d{4,}/i.test(cleanUrl);  // Numeric ID with 4+ digits
+      // Helper: extract URL from card
+      function getCardUrl(card) {
+        const link = card.querySelector('a[href]');
+        if (!link) return null;
+        const href = link.getAttribute('href');
+        if (!href) return null;
+        let full;
+        if (href.startsWith('http')) {
+          full = href;
+        } else {
+          // Ensure leading slash for relative URLs
+          const path = href.startsWith('/') ? href : '/' + href;
+          full = window.location.origin + path;
+        }
+        return full.split('?')[0].split('#')[0];  // Clean params
+      }
 
-        if (!isArticleLike) return;
+      // Helper: validate URL (more lenient for real article URLs)
+      function isValidArticleUrl(url) {
+        if (!url || !url.startsWith('http')) return false;
+        if (url === window.location.origin || url === window.location.origin + '/') return false;
+        // Reject ONLY pure navigation/index pages (no content), not articles with trailing slash
+        // Pattern: /category/page or /search or /login or /user/ but NOT /noticia/ID/slug
+        if (url.match(/\/(categorias|tag|search|author|profile|page|videos|photos|login)\/?$/)) return false;
+        if (url.includes('/@') || url.includes('/user/')) return false;
+        // Allow /noticia/ID/slug URLs and similar article patterns
+        return true;
+      }
 
-        // Get link text for validation
-        const text = el.textContent?.trim() || '';
-        if (!text || text.length < 5 || text.toLowerCase() === 'article' || text.length > 200) return;
-
-        links.add(cleanUrl);
+      // LEVEL 1: Find <article> elements (semantic HTML)
+      document.querySelectorAll('article').forEach(card => {
+        const title = getBestText(card);
+        const url = getCardUrl(card);
+        if (title && isValidArticleUrl(url)) {
+          articles.push({ title, url });
+        }
       });
 
-      return Array.from(links).slice(0, 50);
+      if (articles.length > 0) return articles;
+
+      // LEVEL 2: Find containers with links and images (most common structure)
+      // Prioritize divs with class "card" - most common article container
+      const containers = document.querySelectorAll('div.card, div[class*="card"], div[class*="post"], div[class*="item"], section, main > div > div');
+      containers.forEach(card => {
+        if (card.querySelectorAll('article').length > 0) return;  // Skip if already processed by level 1
+        const title = getBestText(card);
+        const url = getCardUrl(card);
+        if (title && isValidArticleUrl(url)) {
+          articles.push({ title, url });
+        }
+      });
+
+      if (articles.length > 0) return articles;
+
+      // LEVEL 3: Fallback - find links that contain headings or images
+      const links = document.querySelectorAll('a[href]');
+      links.forEach(link => {
+        const hasHeading = !!link.querySelector('h1, h2, h3, h4');
+        const hasImg = !!link.querySelector('img');
+        if (!hasHeading && !hasImg) return;
+
+        const href = link.getAttribute('href');
+        let url;
+        if (href.startsWith('http')) {
+          url = href;
+        } else {
+          const path = href.startsWith('/') ? href : '/' + href;
+          url = window.location.origin + path;
+        }
+        const cleanUrl = url.split('?')[0].split('#')[0];
+
+        if (!isValidArticleUrl(cleanUrl)) return;
+
+        const title = link.querySelector('h1, h2, h3, h4')?.textContent?.trim() || link.getAttribute('aria-label') || link.textContent?.trim();
+        if (title && title.length > 15 && title.length < 200 && title !== 'Article' && title !== 'More') {
+          articles.push({ title, url: cleanUrl });
+        }
+      });
+
+      return articles;
     });
 
     await browser.close();
-    return urls.filter(u => u && u.includes('/'));
-  } catch {
+
+    // Deduplicate and filter
+    const seen = new Set();
+    const urls = candidates
+      .filter(c => {
+        if (seen.has(c.url)) return false;
+        if (c.title === 'Article' || c.title?.toLowerCase() === 'article') return false;
+        seen.add(c.url);
+        return true;
+      })
+      .map(c => c.url)
+      .slice(0, 50);
+
+    console.log(`[Playwright Discovery] Found ${urls.length} valid articles from ${source.name}`);
+    return urls;
+  } catch (err) {
+    console.error(`[Playwright Discovery] Error for ${source.name}: ${err.message}`);
     return [];
   }
 }
