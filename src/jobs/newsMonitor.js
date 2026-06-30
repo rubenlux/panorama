@@ -233,7 +233,7 @@ async function discoverArticlesViaPlaywright(source) {
     await page.goto(homeUrl, { waitUntil: 'load', timeout: 20_000 }).catch(() => {});
     await page.waitForTimeout(2000);
 
-    // Extract article links (broad selectors to catch most sites)
+    // Extract article links (strict filtering to avoid tracking URLs)
     const urls = await page.evaluate(() => {
       const links = new Set();
 
@@ -242,24 +242,39 @@ async function discoverArticlesViaPlaywright(source) {
         const href = el.getAttribute('href');
         if (!href) return;
 
-        // Skip common non-article links
-        if (href.includes('login') || href.includes('signup') || href === '#' || href.includes('javascript:')) return;
+        // Skip obvious non-article links
+        if (href === '#' || href.includes('javascript:')) return;
         if (href.startsWith('mailto:') || href.startsWith('tel:')) return;
+        if (href.includes('login') || href.includes('signin') || href.includes('signup')) return;
 
         const full = href.startsWith('http') ? href : window.location.origin + href;
 
-        // Filter: must look like article URL
-        // Accept any non-homepage link that looks like content
-        if (full !== window.location.origin && full !== window.location.origin + '/' && full.length > 20) {
-          // Exclude common non-article patterns
-          if (!full.includes('categor') && !full.includes('tag=') && !full.includes('search') &&
-              !full.includes('autor') && !full.includes('author')) {
-            links.add(full);
-          }
+        // EXCLUDE: tracking parameters, navigation, search, categories, authors
+        if (full.includes('?template=') || full.includes('utm_') || full.includes('utm-') ||
+            full.includes('categor') || full.includes('tag=') || full.includes('search') ||
+            full.includes('autor') || full.includes('author') || full.includes('profile') ||
+            full.includes('page=') || full.includes('/page/') || full.includes('#')) {
+          return;
         }
+
+        // REQUIRE: looks like an article (has /article, /news, /post, or date pattern)
+        const isArticleLike = /\/(article|news|post|story|blog|noticia|noticias|content)\//i.test(full) ||
+                             /\/\d{4}\/\d{1,2}\/\d{1,2}/i.test(full) ||  // Date pattern: /2026/06/29
+                             /\/\d+\//i.test(full);  // Numeric ID: /12345/
+
+        if (!isArticleLike) return;
+
+        // MUST NOT be homepage
+        if (full === window.location.origin || full === window.location.origin + '/') return;
+
+        // Get link text for validation
+        const text = el.textContent?.trim() || '';
+        if (!text || text.length < 3 || text === 'Article' || text === 'article') return;
+
+        links.add(full);
       });
 
-      return Array.from(links).slice(0, 100);
+      return Array.from(links).slice(0, 50);
     });
 
     await browser.close();
