@@ -292,7 +292,18 @@ function validateArticle(article) {
     return false;
   }
 
-  // Validar que NO es homepage (canonical vs origin)
+  // Validar que NO es homepage — check 1: URL itself is root
+  try {
+    const urlObj = new URL(article.url);
+    if (!urlObj.pathname || urlObj.pathname === '/' || urlObj.pathname === '') {
+      article._skipReason = 'url_is_homepage';
+      return false;
+    }
+  } catch (e) {
+    // URL parsing failed, continue
+  }
+
+  // Validar que NO es homepage — check 2: canonical vs origin
   if (article.canonical) {
     try {
       const originUrl = new URL(article.url);
@@ -527,7 +538,7 @@ async function extractArticleMetadata(page, url) {
 
     // 4. Title extraction — Capture ALL sources FIRST, THEN decide with clear logic
     let jsonldTitle = rawTitle; // Already captured above
-    let ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
+    // ogTitle already captured from OG meta tag above at line 454
     let h1El = document.querySelector('h1');
     let h1Title = h1El?.textContent?.trim();
     let h1Html = h1El?.outerHTML;
