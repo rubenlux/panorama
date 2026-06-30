@@ -350,7 +350,7 @@ async function extractArticleMetadata(page, url) {
     return null;
   }
 
-  const metadata = await page.evaluate(() => {
+  const metadata = await page.evaluate((urlParam) => {
     let rawTitle = null;
     let cleanTitle = null;
     let description = null;
@@ -609,7 +609,7 @@ async function extractArticleMetadata(page, url) {
 
     return {
       // URL & Structure
-      url,
+      url: urlParam,
       canonical,
 
       // Titles (raw + clean)
@@ -655,7 +655,7 @@ async function extractArticleMetadata(page, url) {
       // Confidence with real weights
       confidence: Math.min(100, confidence),
     };
-  });
+  }, url);  // Pass url as argument to page.evaluate()
 
   return metadata;
 }
