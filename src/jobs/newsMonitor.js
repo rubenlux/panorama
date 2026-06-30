@@ -724,7 +724,12 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
       const page = await browser.newPage();
       try {
         const metadata = await extractArticleMetadata(page, url);
-        const article = { ...metadata, url };
+        // Map extractor output to article fields (title = cleanTitle)
+        const article = {
+          ...metadata,
+          url,
+          title: metadata.cleanTitle || metadata.rawTitle, // Use cleaned title
+        };
         if (metadata && validateArticle(article)) {
           articles.push({
             title: metadata.title,
