@@ -219,9 +219,6 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
   const startTime = Date.now();
   let sessionId = null;
 
-  // LOGGING: Entry point
-  console.log(`[FETCH] START: ${url.slice(0, 80)} (articleId=${articleId})`);
-
   // Create session if we have articleId (groups all attempts)
   if (articleId) {
     sessionId = await recordCrawlSession({ articleId, domain, strategy: 'HTTP_THEN_PLAYWRIGHT' }).catch(() => null);
@@ -249,30 +246,24 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
     });
     fetchDuration = Date.now() - start;
     httpStatus = resp.status;
-    console.log(`[FETCH] HTTP ${resp.status} (${fetchDuration}ms)`);
 
     if (!resp.ok) {
       if (resp.status === 403) fetchReason = 'cloudflare';
       else if (resp.status === 404) fetchReason = '404';
       else if (resp.status === 429) fetchReason = '429';
       else fetchReason = `http_${resp.status}`;
-      console.log(`[FETCH] HTTP FAILED: ${fetchReason}`);
     } else {
       const ct = resp.headers.get('content-type') || '';
       if (!ct.includes('html')) {
         fetchReason = 'not_html';
-        console.log(`[FETCH] Not HTML: ${ct}`);
       } else {
         html = await resp.text();
         bytesDownloaded = Buffer.byteLength(html, 'utf8');
-        console.log(`[FETCH] HTML received: ${bytesDownloaded} bytes`);
         if (!html || html.trim().length === 0) {
           fetchReason = 'empty_html';
-          console.log(`[FETCH] HTML is empty`);
         } else {
           fetchStatus = 'SUCCESS';
           fetchReason = null;
-          console.log(`[FETCH] SUCCESS`);
         }
       }
     }

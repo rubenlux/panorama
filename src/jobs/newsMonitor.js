@@ -210,37 +210,129 @@ function extractMonitorEntities(title) {
   return [...new Set(results)].slice(0, 6);
 }
 
+// ── Playwright URL discovery ──────────────────────────────────────────────────
+
+async function discoverArticlesViaPlaywright(source) {
+  try {
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    const page = await browser.newPage();
+
+    // Determine homepage URL
+    let homeUrl = source.home_url || source.rss_url?.replace(/\/rss.*/, '').replace(/\/feed.*/, '');
+    if (!homeUrl || !homeUrl.startsWith('http')) {
+      homeUrl = `https://${source.name.split(/\s+/)[0].toLowerCase()}.com`;
+    }
+
+    await page.goto(homeUrl, { waitUntil: 'load', timeout: 20_000 }).catch(() => {});
+    await page.waitForTimeout(2000);
+
+    // Extract article links (common selectors)
+    const urls = await page.evaluate(() => {
+      const selectors = [
+        'article a',
+        'a[href*="/article/"]',
+        'a[href*="/news/"]',
+        'a[href*="/post/"]',
+        'a[href*="/blog/"]',
+        'a.headline',
+        'a.post-title',
+        '.article-link a',
+        '.news-item a',
+      ];
+
+      const links = new Set();
+      for (const selector of selectors) {
+        document.querySelectorAll(selector).forEach(el => {
+          const href = el.getAttribute('href');
+          if (href && (href.startsWith('http') || href.startsWith('/'))) {
+            const full = href.startsWith('http') ? href : window.location.origin + href;
+            if (full.includes('/') && full.length > 20) links.add(full);
+          }
+        });
+      }
+      return Array.from(links).slice(0, 50);
+    });
+
+    await browser.close();
+    return urls.filter(u => u && u.includes('/'));
+  } catch {
+    return [];
+  }
+}
+
 // ── Source processing ─────────────────────────────────────────────────────────
 
 async function processSource(source) {
   const newIds = [];
+  let format = null;
+  let items = [];
+
   try {
-    const xml = await fetchFeedXml(source.rss_url);
-    if (!xml) return newIds;
-
-    const format = detectFeedFormat(xml);
-    let items = [];
-
-    if (format === 'news-sitemap') {
-      items = parseNewsSitemapItems(xml);
-    } else if (format === 'sitemap-index') {
-      // Fetch up to 3 child sitemaps (most recent entries are last — reverse)
-      const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
-      for (const childUrl of childUrls) {
-        try {
-          const childXml = await fetchFeedXml(childUrl);
-          if (!childXml) continue;
-          const childFmt = detectFeedFormat(childXml);
-          items.push(...(childFmt === 'news-sitemap'
-            ? parseNewsSitemapItems(childXml)
-            : parseRssItems(childXml)));
-        } catch {}
-        if (items.length >= 60) break;
+    // Try RSS (or provided rss_url)
+    if (source.rss_url) {
+      const xml = await fetchFeedXml(source.rss_url);
+      if (xml) {
+        format = detectFeedFormat(xml);
+        if (format === 'news-sitemap') {
+          items = parseNewsSitemapItems(xml);
+        } else if (format === 'sitemap-index') {
+          const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+          for (const childUrl of childUrls) {
+            try {
+              const childXml = await fetchFeedXml(childUrl);
+              if (!childXml) continue;
+              const childFmt = detectFeedFormat(childXml);
+              items.push(...(childFmt === 'news-sitemap'
+                ? parseNewsSitemapItems(childXml)
+                : parseRssItems(childXml)));
+            } catch {}
+            if (items.length >= 60) break;
+          }
+        } else {
+          items = parseRssItems(xml);
+        }
       }
-    } else {
-      items = parseRssItems(xml);
     }
 
+    // Fallback: Try sitemap_url if RSS failed
+    if (items.length === 0 && source.sitemap_url) {
+      const xml = await fetchFeedXml(source.sitemap_url);
+      if (xml) {
+        format = detectFeedFormat(xml);
+        if (format === 'news-sitemap') {
+          items = parseNewsSitemapItems(xml);
+        } else if (format === 'sitemap-index') {
+          const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+          for (const childUrl of childUrls) {
+            try {
+              const childXml = await fetchFeedXml(childUrl);
+              if (!childXml) continue;
+              const childFmt = detectFeedFormat(childXml);
+              items.push(...(childFmt === 'news-sitemap'
+                ? parseNewsSitemapItems(childXml)
+                : parseRssItems(childXml)));
+            } catch {}
+            if (items.length >= 60) break;
+          }
+        }
+      }
+    }
+
+    // Fallback: Use Playwright to discover URLs from homepage
+    if (items.length === 0) {
+      const discoveredUrls = await discoverArticlesViaPlaywright(source);
+      items = discoveredUrls.map(url => ({
+        title: url.split('/').pop() || 'Article',
+        link: url,
+        description: '',
+        pubDate: new Date().toISOString(),
+        guid: url
+      }));
+      format = format || 'playwright-discovery';
+    }
+
+    // Insert discovered items into DB
     for (const item of items) {
       const url = item.link;
       if (!url || !item.title) continue;
@@ -262,10 +354,12 @@ async function processSource(source) {
       if (rows[0]) newIds.push(rows[0].id);
     }
 
-    await query(
-      `UPDATE rss_sources SET last_checked = now(), last_format_detected = $2 WHERE id = $1`,
-      [source.id, format]
-    );
+    if (format) {
+      await query(
+        `UPDATE rss_sources SET last_checked = now(), last_format_detected = $2 WHERE id = $1`,
+        [source.id, format]
+      );
+    }
     if (items.length > 0)
       console.log(`[Monitor] "${source.name}" (${format}): ${items.length} items → ${newIds.length} new`);
   } catch (e) {
