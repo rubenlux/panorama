@@ -353,6 +353,7 @@ async function extractArticleMetadata(page, url) {
 
   const metadata = await page.evaluate((urlParam) => {
     let rawTitle = null;
+    let titleSource = null; // NEW: track which source provided the title
     let cleanTitle = null;
     let description = null;
     let author = null;
@@ -416,7 +417,10 @@ async function extractArticleMetadata(page, url) {
 
       if (bestSchema) {
         jsonld = bestSchema; // NEW: save complete schema
-        if (bestSchema.headline) rawTitle = bestSchema.headline;
+        if (bestSchema.headline) {
+          rawTitle = bestSchema.headline;
+          titleSource = 'json-ld.headline';
+        }
         if (bestSchema.description) description = bestSchema.description;
         if (bestSchema.datePublished) publishedAt = bestSchema.datePublished;
         if (bestSchema.dateModified) modifiedAt = bestSchema.dateModified;
@@ -731,14 +735,22 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
           title: metadata.cleanTitle || metadata.rawTitle, // Use cleaned title
         };
 
-        // DEBUG: Log all title sources for rejected articles (helps find extraction bugs)
-        if (metadata && (!metadata.title || metadata.title.length < 20)) {
-          console.log(`[Extractor] Title sources for ${url.slice(0, 80)}...`, {
-            rawTitle: metadata.rawTitle?.slice(0, 60) || '(none)',
-            cleanTitle: metadata.cleanTitle?.slice(0, 60) || '(none)',
-            wordCount: metadata.wordCount,
-            confidence: metadata.confidence,
-          });
+        // DEBUG: Log all title sources (shows which source was used and if it's truncated)
+        if (metadata && metadata.rawTitle) {
+          const hasNewlines = metadata.rawTitle.includes('\n');
+          const isTruncated = metadata.rawTitle.length > 50 && metadata.rawTitle.endsWith('…') ||
+                             (metadata.rawTitle.length > 50 && !metadata.rawTitle.match(/[.!?]$/));
+
+          if (hasNewlines || isTruncated || metadata.rawTitle.length < 20) {
+            console.log(`[Extractor] ⚠️ Title issue for ${url.slice(0, 70)}`, {
+              rawTitle: metadata.rawTitle.replace(/\n/g, ' ↵ '),
+              isTruncated: isTruncated ? 'LIKELY' : 'no',
+              hasNewlines: hasNewlines ? 'YES' : 'no',
+              length: metadata.rawTitle.length,
+              wordCount: metadata.wordCount,
+              confidence: metadata.confidence,
+            });
+          }
         }
 
         if (metadata && validateArticle(article)) {
