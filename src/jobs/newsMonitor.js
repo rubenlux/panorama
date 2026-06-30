@@ -343,7 +343,8 @@ function validateArticle(article) {
 async function extractArticleMetadata(page, url) {
   try {
     // Use 'load' + fixed timeout (not networkidle — ads/analytics never end)
-    await page.goto(url, { waitUntil: 'load', timeout: 20_000 });
+    // 25s timeout: some sites (Yahoo) need 20s+ to load articles
+    await page.goto(url, { waitUntil: 'load', timeout: 25_000 });
     await page.waitForTimeout(1500); // Stable: let DOM settle without waiting for ads/analytics
   } catch (e) {
     console.warn(`[Extractor] Navigation failed: ${e.message}`);
