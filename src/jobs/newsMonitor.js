@@ -286,19 +286,29 @@ function validateArticle(article) {
     return false;
   }
 
-  // Contenido mínimo (si existe)
-  if (article.content && article.content.length < 300) {
-    article._skipReason = 'content_too_short';
-    return false;
+  // Content minimum (FIXED: measure words, not chars — ~120 words = ~600 chars)
+  if (article.content) {
+    const words = article.content.split(/\s+/).filter(w => w.length > 0).length;
+    if (words < 120) {
+      article._skipReason = `content_too_short:${words}words`;
+      return false;
+    }
   }
 
-  // NEW: Validar que NO es homepage (canonical == homepage = homepage)
-  if (article.canonical && article.canonical.split('?')[0] === article.url.split('?')[0]) {
-    // canonical es igual a URL = podría ser artículo
-  } else if (article.canonical && article.canonical.split('/').filter(p => p).length <= 3) {
-    // canonical es corto = probablemente homepage o categoría
-    article._skipReason = 'canonical_is_homepage';
-    return false;
+  // Validar que NO es homepage (canonical vs origin)
+  if (article.canonical) {
+    try {
+      const originUrl = new URL(article.url);
+      const canonicalUrl = new URL(article.canonical);
+
+      // Si canonical es solo origin + '/', es homepage
+      if (canonicalUrl.pathname === '/' && canonicalUrl.hostname === originUrl.hostname) {
+        article._skipReason = 'canonical_is_homepage';
+        return false;
+      }
+    } catch (e) {
+      // URL parsing failed, continue with validation
+    }
   }
 
   // NEW: Validar og:type
@@ -343,45 +353,126 @@ async function extractArticleMetadata(page, url) {
     let content = null;
     let ogType = null;
     let jsonLdType = null;
+    let confidence = 0;
 
-    // 1. JSON-LD (most structured)
+    // 1. JSON-LD (most structured) — FIXED: recorrer todos, elegir el correcto
     try {
-      const jsonLd = document.querySelector('script[type="application/ld+json"]');
-      if (jsonLd) {
-        const data = JSON.parse(jsonLd.textContent);
-        if (data.headline) title = data.headline;
-        if (data.description) description = data.description;
-        if (data.datePublished) publishedAt = data.datePublished;
-        if (data['@type']) jsonLdType = data['@type'];
+      const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+      let bestSchema = null;
+
+      for (const script of jsonLdScripts) {
+        const data = JSON.parse(script.textContent);
+        const types = Array.isArray(data['@type']) ? data['@type'] : [data['@type']];
+
+        // Priorizar NewsArticle > Article > BlogPosting
+        if (types.includes('NewsArticle') || types.includes('Article') || types.includes('BlogPosting')) {
+          bestSchema = data;
+          jsonLdType = types.includes('NewsArticle') ? 'NewsArticle'
+                     : types.includes('Article') ? 'Article'
+                     : 'BlogPosting';
+          break;
+        }
+      }
+
+      if (bestSchema) {
+        if (bestSchema.headline) title = bestSchema.headline;
+        if (bestSchema.description) description = bestSchema.description;
+        if (bestSchema.datePublished) publishedAt = bestSchema.datePublished;
+        confidence += 20;
       }
     } catch {}
 
     // 2. OpenGraph
-    if (!title) title = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
-    if (!description) description = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
+    const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
+    if (ogTitle && !title) title = ogTitle;
+    if (ogTitle) confidence += 5; // Partial credit if we had to use OG
+
+    const ogDesc = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
+    if (ogDesc && !description) description = ogDesc;
+    if (ogDesc) confidence += 5;
+
     ogType = document.querySelector('meta[property="og:type"]')?.getAttribute('content');
+    if (ogType === 'article') confidence += 20;
 
     // 3. Meta tags
-    if (!description) description = document.querySelector('meta[name="description"]')?.getAttribute('content');
-    if (!publishedAt) publishedAt = document.querySelector('meta[property="article:published_time"]')?.getAttribute('content');
+    if (!description) {
+      description = document.querySelector('meta[name="description"]')?.getAttribute('content');
+      if (description) confidence += 5;
+    }
+    if (!publishedAt) {
+      publishedAt = document.querySelector('meta[property="article:published_time"]')?.getAttribute('content')
+                 || document.querySelector('meta[name="publish_date"]')?.getAttribute('content')
+                 || document.querySelector('meta[itemprop="datePublished"]')?.getAttribute('content');
+      if (publishedAt) confidence += 10;
+    }
+
     canonical = document.querySelector('link[rel="canonical"]')?.getAttribute('href');
+    if (canonical) confidence += 20;
 
     // 4. HTML elements
     if (!title) title = document.querySelector('h1')?.textContent?.trim();
+    if (title) confidence += 5;
+
     if (!title) title = document.title;
+    if (title) confidence += 10;
 
-    // 5. Content (first 500 chars of main content)
-    const contentEl = document.querySelector('article, main, [role="main"], .content');
-    if (contentEl) {
-      content = contentEl.textContent?.trim().slice(0, 1000);
+    // 5. Content (FIXED: smart selection instead of fixed selector)
+    // Search for largest content block (most paragraphs, most text)
+    let contentEl = null;
+    const candidates = [
+      ...document.querySelectorAll('article'),
+      ...document.querySelectorAll('main, [role="main"]'),
+      ...document.querySelectorAll('[class*="content"], [class*="entry"], [class*="post-content"], [class*="news-body"], [class*="article-body"], [class*="story"]'),
+      ...document.querySelectorAll('section > div'),
+    ];
+
+    let bestCandidate = null;
+    let bestScore = 0;
+
+    for (const el of candidates) {
+      const paragraphs = el.querySelectorAll('p').length;
+      const text = el.textContent?.trim().length || 0;
+      const links = el.querySelectorAll('a').length;
+
+      // Score: more paragraphs and text, fewer links
+      const score = (paragraphs * 5) + (text / 100) - (links * 2);
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestCandidate = el;
+      }
     }
 
-    // Clean title
+    if (bestCandidate) {
+      content = bestCandidate.textContent?.trim();
+      if (content) confidence += 20;
+    }
+
+    // Clean title (FIXED: don't blindly split on |)
     if (title) {
-      title = title.split('|')[0].trim().slice(0, 200);
+      title = title.trim().slice(0, 200);
+      // Remove common site suffixes intelligently
+      const suffixes = [
+        / \| .+$/,     // "Título | Sitio"
+        / - .+$/,      // "Título - Sitio"
+        /^Infobae - /, // "Infobae - "
+        /^.+ \| /,    // "Sitio | Título" — pero esto es arriesgado
+      ];
+      for (const suffix of suffixes.slice(0, 3)) { // Apply first 3 only
+        title = title.replace(suffix, '');
+      }
     }
 
-    return { title, description, publishedAt, canonical, content, ogType, jsonLdType };
+    return {
+      title,
+      description,
+      publishedAt,
+      canonical,
+      content,
+      ogType,
+      jsonLdType,
+      confidence: Math.min(100, confidence), // Cap at 100
+    };
   });
 
   return metadata;
