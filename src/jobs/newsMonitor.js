@@ -517,16 +517,64 @@ async function extractArticleMetadata(page, url) {
       if (val && !keywords.includes(val)) keywords.push(val);
     });
 
-    // 4. HTML elements for title
-    if (!rawTitle) {
-      rawTitle = document.querySelector('h1')?.textContent?.trim();
-      if (rawTitle) confidence += 25; // High value for h1
+    // 4. HTML elements for title — IMPROVED: Capture ALL sources before deciding
+    // This helps debug which source is winning and if it's the wrong choice
+    let titleSources = {
+      'json-ld': rawTitle, // Already captured above
+      'og': null,
+      'h1': null,
+      'document-title': null,
+      'twitter': null,
+    };
+
+    // Capture OG if not already set
+    if (!titleSources['og']) {
+      const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
+      if (ogTitle) titleSources['og'] = ogTitle;
     }
 
-    if (!rawTitle) {
-      rawTitle = document.title;
-      if (rawTitle) confidence += 5; // Low value for page title
+    // Capture H1
+    const h1El = document.querySelector('h1');
+    if (h1El) {
+      titleSources['h1'] = h1El.textContent?.trim();
+      // Store the outer HTML for debugging (helps see if there's hidden content, scripts, etc)
+      const h1Html = h1El.outerHTML;
+      if (h1Html.length > 1000) {
+        metadata.h1OuterHtml = h1Html.substring(0, 1000) + '...'; // Truncate if too long
+      } else {
+        metadata.h1OuterHtml = h1Html;
+      }
     }
+
+    // Capture document.title
+    titleSources['document-title'] = document.title;
+
+    // Capture Twitter card if present
+    const twitterTitle = document.querySelector('meta[name="twitter:title"]')?.getAttribute('content');
+    if (twitterTitle) titleSources['twitter'] = twitterTitle;
+
+    // Decide which source to use (cascade priority)
+    if (!rawTitle) {
+      rawTitle = titleSources['json-ld'] || titleSources['og'] || titleSources['h1'] || titleSources['document-title'] || null;
+
+      // Track which one won
+      if (rawTitle === titleSources['json-ld']) {
+        titleSource = 'json-ld';
+      } else if (rawTitle === titleSources['og']) {
+        titleSource = 'og';
+        confidence += 10;
+      } else if (rawTitle === titleSources['h1']) {
+        titleSource = 'h1';
+        confidence += 25;
+      } else if (rawTitle === titleSources['document-title']) {
+        titleSource = 'document-title';
+        confidence += 5;
+      }
+    }
+
+    // Store all sources for debugging
+    metadata.titleSources = titleSources;
+    metadata.titleWinner = titleSource;
 
     // 5. Smart content selection — NO class selectors, limit div traversal
     const candidates = [];
@@ -732,25 +780,31 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
         const article = {
           ...metadata,
           url,
-          title: metadata.cleanTitle || metadata.rawTitle, // Use cleaned title
+          title: metadata.cleanTitle || metadata.rawTitle,
         };
 
-        // DEBUG: Log all title sources (shows which source was used and if it's truncated)
-        if (metadata && metadata.rawTitle) {
-          const hasNewlines = metadata.rawTitle.includes('\n');
-          const isTruncated = metadata.rawTitle.length > 50 && metadata.rawTitle.endsWith('…') ||
-                             (metadata.rawTitle.length > 50 && !metadata.rawTitle.match(/[.!?]$/));
-
-          if (hasNewlines || isTruncated || metadata.rawTitle.length < 20) {
-            console.log(`[Extractor] ⚠️ Title issue for ${url.slice(0, 70)}`, {
-              rawTitle: metadata.rawTitle.replace(/\n/g, ' ↵ '),
-              isTruncated: isTruncated ? 'LIKELY' : 'no',
-              hasNewlines: hasNewlines ? 'YES' : 'no',
-              length: metadata.rawTitle.length,
-              wordCount: metadata.wordCount,
-              confidence: metadata.confidence,
-            });
+        // DEBUG: Comprehensive title source logging when validation might fail
+        if (metadata && (!metadata.title || metadata.title.length < 20)) {
+          console.log(`\n[Extractor] 🔍 TITLE EXTRACTION DIAGNOSTICS`);
+          console.log(`[Extractor] URL: ${url}`);
+          console.log(`[Extractor] ════════════════════════════════════════`);
+          console.log(`[Extractor] ALL SOURCES CAPTURED:`);
+          if (metadata.titleSources) {
+            console.log(`[Extractor]   JSON-LD: "${metadata.titleSources['json-ld']?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   OG:title: "${metadata.titleSources['og']?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   H1: "${metadata.titleSources['h1']?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   Document.title: "${metadata.titleSources['document-title']?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   Twitter: "${metadata.titleSources['twitter']?.slice(0, 60) || '(none)'}"`);
           }
+          console.log(`[Extractor] ════════════════════════════════════════`);
+          console.log(`[Extractor] WINNER: ${metadata.titleWinner || '(none)'}`);
+          console.log(`[Extractor] Final rawTitle: "${metadata.rawTitle?.replace(/\n/g, '↵') || '(none)'}"`);
+          console.log(`[Extractor] Final cleanTitle: "${metadata.cleanTitle?.replace(/\n/g, '↵') || '(none)'}"`);
+          if (metadata.h1OuterHtml) {
+            console.log(`[Extractor] H1 HTML: ${metadata.h1OuterHtml.substring(0, 150)}...`);
+          }
+          console.log(`[Extractor] Stats: ${metadata.wordCount} words, confidence ${metadata.confidence}`);
+          console.log(`[Extractor] ════════════════════════════════════════\n`);
         }
 
         if (metadata && validateArticle(article)) {
