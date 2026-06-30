@@ -121,6 +121,11 @@ async function fetchFeedXml(url) {
     signal: AbortSignal.timeout(15_000),
   });
   if (!res.ok) return null;
+
+  // If Content-Type is HTML (not XML), return null to trigger Playwright fallback
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('text/html')) return null;
+
   return res.text();
 }
 
