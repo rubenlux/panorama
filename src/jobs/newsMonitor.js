@@ -217,6 +217,219 @@ function extractMonitorEntities(title) {
 
 // ── Playwright URL discovery ──────────────────────────────────────────────────
 
+// URL Scoring: Intelligent pattern-based scoring
+function scoreUrl(url) {
+  let score = 0;
+
+  // POSITIVE PATTERNS
+  const slug = url.split('/').pop();
+
+  // Slug muy largo = probable artículo
+  if (slug && slug.length > 30) score += 50;
+  if (slug && slug.length > 20) score += 30;
+
+  // Fecha en URL
+  if (/\/\d{4}\/\d{2}\/\d{2}/i.test(url)) score += 40;
+  if (/\/\d{4}-\d{2}-\d{2}/i.test(url)) score += 35;
+
+  // Muchas palabras separadas con guiones
+  if ((slug?.match(/-/g) || []).length > 3) score += 30;
+
+  // Números en el slug (ID + slug)
+  if (/\d{4,}/.test(slug)) score += 20;
+
+  // No termina en / (no es categoría pura)
+  if (!url.endsWith('/')) score += 15;
+
+  // Patrones comunes de artículos
+  if (/\/(noticia|articulo|post|news|story|article)s?\//i.test(url)) score += 50;
+  if (/\/(deportes|politica|economia|tecnologia|internacionales|salud|cultura|opinion)\//i.test(url)) score += 25;
+
+  // NEGATIVE PATTERNS
+
+  // Rutas de navegación
+  if (/\/(rss|feed|sitemap|login|search|contacto|privacy|about|terms|autor|author|category|tag|page)\/?$/i.test(url)) score -= 100;
+
+  // Parámetros de paginación/categoría
+  if (/\?.*?(page|cat|author|tag|search)=/i.test(url)) score -= 80;
+
+  // Enlaces rotos
+  if (url.includes('javascript:') || url.includes('mailto:') || url.endsWith('#')) score -= 100;
+
+  // Archivos
+  if (/\.(jpg|png|webp|pdf|gif|doc)$/i.test(url)) score -= 100;
+
+  // URLs muy cortas (probablemente categoría)
+  if (url.split('/').filter(p => p).length < 3) score -= 40;
+
+  // Dominios externos
+  if (!url.startsWith('http')) score -= 50;
+
+  return Math.max(0, score);
+}
+
+// Validar que un artículo sea real
+function validateArticle(article) {
+  if (!article.title || article.title.length < 20) return false;
+  if (!article.url) return false;
+
+  // Rechazar títulos genéricos
+  const badTitles = ['Article', 'Read more', 'Leer más', 'Untitled', 'Sin título'];
+  if (badTitles.some(bad => article.title === bad)) return false;
+
+  // Contenido mínimo (si existe)
+  if (article.content && article.content.length < 300) return false;
+
+  // Si no tiene canonical o fecha, puede ser artículo pero menos confiable
+  return true;
+}
+
+// Extraer metadata de una URL individual (con Playwright)
+async function extractArticleMetadata(page, url) {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+  } catch (e) {
+    console.warn(`[Extractor] Navigation failed: ${e.message}`);
+    return null;
+  }
+
+  const metadata = await page.evaluate(() => {
+    let title = null;
+    let description = null;
+    let publishedAt = null;
+    let canonical = null;
+    let content = null;
+
+    // 1. JSON-LD (most structured)
+    try {
+      const jsonLd = document.querySelector('script[type="application/ld+json"]');
+      if (jsonLd) {
+        const data = JSON.parse(jsonLd.textContent);
+        if (data.headline) title = data.headline;
+        if (data.description) description = data.description;
+        if (data.datePublished) publishedAt = data.datePublished;
+      }
+    } catch {}
+
+    // 2. OpenGraph
+    if (!title) title = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
+    if (!description) description = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
+
+    // 3. Meta tags
+    if (!description) description = document.querySelector('meta[name="description"]')?.getAttribute('content');
+    if (!publishedAt) publishedAt = document.querySelector('meta[property="article:published_time"]')?.getAttribute('content');
+    canonical = document.querySelector('link[rel="canonical"]')?.getAttribute('href');
+
+    // 4. HTML elements
+    if (!title) title = document.querySelector('h1')?.textContent?.trim();
+    if (!title) title = document.title;
+
+    // 5. Content (first 500 chars of main content)
+    const contentEl = document.querySelector('article, main, [role="main"], .content');
+    if (contentEl) {
+      content = contentEl.textContent?.trim().slice(0, 1000);
+    }
+
+    // Clean title
+    if (title) {
+      title = title.split('|')[0].trim().slice(0, 200);
+    }
+
+    return { title, description, publishedAt, canonical, content };
+  });
+
+  return metadata;
+}
+
+// Discovery: Extract ALL URLs from homepage and score them
+async function discoverArticleUrlsFromHomepage(page, homeUrl) {
+  try {
+    await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    await page.waitForTimeout(500);
+  } catch (e) {
+    console.warn(`[Discovery] Navigation failed: ${e.message}`);
+    return [];
+  }
+
+  const allUrls = await page.evaluate(() => {
+    const urls = new Set();
+    const links = document.querySelectorAll('a[href]');
+
+    links.forEach(link => {
+      const href = link.getAttribute('href');
+      if (!href) return;
+
+      let full;
+      if (href.startsWith('http')) {
+        full = href;
+      } else {
+        const path = href.startsWith('/') ? href : '/' + href;
+        full = window.location.origin + path;
+      }
+
+      // Clean: remove query params and fragments
+      full = full.split('?')[0].split('#')[0];
+
+      // Must be same domain
+      if (full.startsWith(window.location.origin) && full.length > 10) {
+        urls.add(full);
+      }
+    });
+
+    return Array.from(urls);
+  });
+
+  // Score and sort
+  const scored = allUrls.map(url => ({ url, score: scoreUrl(url) }));
+  const topUrls = scored
+    .filter(u => u.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 30)
+    .map(u => u.url);
+
+  return topUrls;
+}
+
+// Extract metadata from multiple URLs with concurrency limit
+async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
+  const articles = [];
+  const queue = [...urls];
+  const workers = [];
+
+  const worker = async () => {
+    while (queue.length > 0) {
+      const url = queue.shift();
+      if (!url) break;
+
+      const page = await browser.newPage();
+      try {
+        const metadata = await extractArticleMetadata(page, url);
+        if (metadata && validateArticle({ ...metadata, url })) {
+          articles.push({
+            title: metadata.title,
+            link: url,
+            description: metadata.description || '',
+            pubDate: metadata.publishedAt || new Date().toISOString(),
+            guid: url
+          });
+        }
+      } catch (e) {
+        console.warn(`[Extractor] Error processing ${url}: ${e.message}`);
+      } finally {
+        await page.close();
+      }
+    }
+  };
+
+  // Launch workers
+  for (let i = 0; i < workerCount; i++) {
+    workers.push(worker());
+  }
+
+  await Promise.all(workers);
+  return articles;
+}
+
 async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
   try {
@@ -230,133 +443,23 @@ async function discoverArticlesViaPlaywright(source) {
       homeUrl = `https://${source.name.split(/\s+/)[0].toLowerCase()}.com`;
     }
 
-    try {
-      await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
-    } catch (e) {
-      console.warn(`[Playwright] Navigation failed for ${source.name}: ${e.message}, continuing anyway`);
+    // STEP 1: Discover URLs from homepage
+    console.log(`[Playwright Discovery] Discovering URLs from ${homeUrl}`);
+    const topUrls = await discoverArticleUrlsFromHomepage(page, homeUrl);
+    console.log(`[Playwright Discovery] Found ${topUrls.length} candidate URLs from ${source.name}`);
+
+    if (topUrls.length === 0) {
+      await browser.close();
+      return [];
     }
-    await page.waitForTimeout(1000);
 
-    // Generic article discovery engine - works across most news sites
-    const candidates = await page.evaluate(() => {
-      const articles = [];
-
-      // Helper: extract text from element, prefer h2/h3/strong over generic text
-      function getBestText(card) {
-        const headings = card.querySelectorAll('h1, h2, h3, h4');
-        for (let h of headings) {
-          const text = h.textContent?.trim();
-          if (text && text.length > 15 && text.length < 200) return text;
-        }
-        // If no heading, try link text as fallback (but filter generic text)
-        const link = card.querySelector('a[href]');
-        if (link) {
-          const text = link.textContent?.trim();
-          if (text && text.length > 15 && text.length < 200 && text !== 'Article' && text !== 'More') {
-            return text;
-          }
-        }
-        return null;
-      }
-
-      // Helper: extract URL from card
-      function getCardUrl(card) {
-        const link = card.querySelector('a[href]');
-        if (!link) return null;
-        const href = link.getAttribute('href');
-        if (!href) return null;
-        let full;
-        if (href.startsWith('http')) {
-          full = href;
-        } else {
-          // Ensure leading slash for relative URLs
-          const path = href.startsWith('/') ? href : '/' + href;
-          full = window.location.origin + path;
-        }
-        return full.split('?')[0].split('#')[0];  // Clean params
-      }
-
-      // Helper: validate URL (more lenient for real article URLs)
-      function isValidArticleUrl(url) {
-        if (!url || !url.startsWith('http')) return false;
-        if (url === window.location.origin || url === window.location.origin + '/') return false;
-        // Reject ONLY pure navigation/index pages (no content), not articles with trailing slash
-        // Pattern: /category/page or /search or /login or /user/ but NOT /noticia/ID/slug
-        if (url.match(/\/(categorias|tag|search|author|profile|page|videos|photos|login)\/?$/)) return false;
-        if (url.includes('/@') || url.includes('/user/')) return false;
-        // Allow /noticia/ID/slug URLs and similar article patterns
-        return true;
-      }
-
-      // LEVEL 1: Find <article> elements (semantic HTML)
-      document.querySelectorAll('article').forEach(card => {
-        const title = getBestText(card);
-        const url = getCardUrl(card);
-        if (title && isValidArticleUrl(url)) {
-          articles.push({ title, url });
-        }
-      });
-
-      if (articles.length > 0) return articles;
-
-      // LEVEL 2: Find containers with links and images (most common structure)
-      // Prioritize divs with class "card" - most common article container
-      const containers = document.querySelectorAll('div.card, div[class*="card"], div[class*="post"], div[class*="item"], section, main > div > div');
-      containers.forEach(card => {
-        if (card.querySelectorAll('article').length > 0) return;  // Skip if already processed by level 1
-        const title = getBestText(card);
-        const url = getCardUrl(card);
-        if (title && isValidArticleUrl(url)) {
-          articles.push({ title, url });
-        }
-      });
-
-      if (articles.length > 0) return articles;
-
-      // LEVEL 3: Fallback - find links that contain headings or images
-      const links = document.querySelectorAll('a[href]');
-      links.forEach(link => {
-        const hasHeading = !!link.querySelector('h1, h2, h3, h4');
-        const hasImg = !!link.querySelector('img');
-        if (!hasHeading && !hasImg) return;
-
-        const href = link.getAttribute('href');
-        let url;
-        if (href.startsWith('http')) {
-          url = href;
-        } else {
-          const path = href.startsWith('/') ? href : '/' + href;
-          url = window.location.origin + path;
-        }
-        const cleanUrl = url.split('?')[0].split('#')[0];
-
-        if (!isValidArticleUrl(cleanUrl)) return;
-
-        const title = link.querySelector('h1, h2, h3, h4')?.textContent?.trim() || link.getAttribute('aria-label') || link.textContent?.trim();
-        if (title && title.length > 15 && title.length < 200 && title !== 'Article' && title !== 'More') {
-          articles.push({ title, url: cleanUrl });
-        }
-      });
-
-      return articles;
-    });
+    // STEP 2: Extract metadata from top URLs with concurrency
+    console.log(`[Playwright Discovery] Extracting metadata from ${topUrls.length} URLs`);
+    const articles = await extractArticlesWithConcurrency(browser, topUrls.slice(0, 20), 5);
+    console.log(`[Playwright Discovery] Extracted ${articles.length} valid articles from ${source.name}`);
 
     await browser.close();
-
-    // Deduplicate and filter
-    const seen = new Set();
-    const urls = candidates
-      .filter(c => {
-        if (seen.has(c.url)) return false;
-        if (c.title === 'Article' || c.title?.toLowerCase() === 'article') return false;
-        seen.add(c.url);
-        return true;
-      })
-      .map(c => c.url)
-      .slice(0, 50);
-
-    console.log(`[Playwright Discovery] Found ${urls.length} valid articles from ${source.name}`);
-    return urls;
+    return articles;
   } catch (err) {
     console.error(`[Playwright Discovery] Error for ${source.name}: ${err.message}`);
     return [];
@@ -424,15 +527,9 @@ async function processSource(source) {
     // Fallback: Use Playwright to discover URLs from homepage
     if (items.length === 0) {
       console.log(`[Monitor] "${source.name}" RSS/Sitemap failed → trying Playwright discovery`);
-      const discoveredUrls = await discoverArticlesViaPlaywright(source);
-      console.log(`[Monitor] "${source.name}" Playwright found ${discoveredUrls.length} URLs`);
-      items = discoveredUrls.map(url => ({
-        title: url.split('/').pop() || 'Article',
-        link: url,
-        description: '',
-        pubDate: new Date().toISOString(),
-        guid: url
-      }));
+      const articles = await discoverArticlesViaPlaywright(source);
+      console.log(`[Monitor] "${source.name}" Playwright found ${articles.length} articles`);
+      items = articles;
       format = format || 'playwright-discovery';
     }
 
