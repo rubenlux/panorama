@@ -268,29 +268,29 @@ function scoreUrl(url) {
   return Math.max(0, score);
 }
 
-// Validar que un artículo sea real (content-first, not title-first)
+// Validar que un artículo sea real
 function validateArticle(article) {
+  if (!article.title || article.title.length < 20) {
+    article._skipReason = 'title_too_short';
+    return false;
+  }
   if (!article.url) {
     article._skipReason = 'no_url';
     return false;
   }
 
-  // CRITICAL: Content is more important than title
-  // If we have >120 words, it's a real article (title can come from slug)
-  if (article.wordCount !== undefined && article.wordCount < 120) {
-    article._skipReason = `content_too_short:${article.wordCount}words`;
-    return false;
-  }
-
-  // Reject ONLY truly generic placeholder titles (not just short titles)
+  // Rechazar títulos genéricos
   const badTitles = ['Article', 'Read more', 'Leer más', 'Untitled', 'Sin título'];
-  if (article.title && badTitles.some(bad => article.title === bad)) {
+  if (badTitles.some(bad => article.title === bad)) {
     article._skipReason = 'generic_title';
     return false;
   }
 
-  // Don't reject by title length anymore. If content is valid (>120 words),
-  // title can be short. URLs like /galo-villavicencio-gano-el-oro... ARE valid articles.
+  // Content minimum (measure by wordCount from extractor)
+  if (article.wordCount !== undefined && article.wordCount < 120) {
+    article._skipReason = `content_too_short:${article.wordCount}words`;
+    return false;
+  }
 
   // Validar que NO es homepage (canonical vs origin)
   if (article.canonical) {
