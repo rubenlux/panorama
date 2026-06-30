@@ -213,6 +213,7 @@ function extractMonitorEntities(title) {
 // ── Playwright URL discovery ──────────────────────────────────────────────────
 
 async function discoverArticlesViaPlaywright(source) {
+  console.log(`[Playwright Discovery] Starting for: ${source.name}`);
   try {
     const { chromium } = await import('playwright');
     const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
@@ -227,31 +228,33 @@ async function discoverArticlesViaPlaywright(source) {
     await page.goto(homeUrl, { waitUntil: 'load', timeout: 20_000 }).catch(() => {});
     await page.waitForTimeout(2000);
 
-    // Extract article links (common selectors)
+    // Extract article links (broad selectors to catch most sites)
     const urls = await page.evaluate(() => {
-      const selectors = [
-        'article a',
-        'a[href*="/article/"]',
-        'a[href*="/news/"]',
-        'a[href*="/post/"]',
-        'a[href*="/blog/"]',
-        'a.headline',
-        'a.post-title',
-        '.article-link a',
-        '.news-item a',
-      ];
-
       const links = new Set();
-      for (const selector of selectors) {
-        document.querySelectorAll(selector).forEach(el => {
-          const href = el.getAttribute('href');
-          if (href && (href.startsWith('http') || href.startsWith('/'))) {
-            const full = href.startsWith('http') ? href : window.location.origin + href;
-            if (full.includes('/') && full.length > 20) links.add(full);
+
+      // Get all links on page
+      document.querySelectorAll('a[href]').forEach(el => {
+        const href = el.getAttribute('href');
+        if (!href) return;
+
+        // Skip common non-article links
+        if (href.includes('login') || href.includes('signup') || href === '#' || href.includes('javascript:')) return;
+        if (href.startsWith('mailto:') || href.startsWith('tel:')) return;
+
+        const full = href.startsWith('http') ? href : window.location.origin + href;
+
+        // Filter: must look like article URL
+        // Accept any non-homepage link that looks like content
+        if (full !== window.location.origin && full !== window.location.origin + '/' && full.length > 20) {
+          // Exclude common non-article patterns
+          if (!full.includes('categor') && !full.includes('tag=') && !full.includes('search') &&
+              !full.includes('autor') && !full.includes('author')) {
+            links.add(full);
           }
-        });
-      }
-      return Array.from(links).slice(0, 50);
+        }
+      });
+
+      return Array.from(links).slice(0, 100);
     });
 
     await browser.close();
@@ -321,7 +324,9 @@ async function processSource(source) {
 
     // Fallback: Use Playwright to discover URLs from homepage
     if (items.length === 0) {
+      console.log(`[Monitor] "${source.name}" RSS/Sitemap failed → trying Playwright discovery`);
       const discoveredUrls = await discoverArticlesViaPlaywright(source);
+      console.log(`[Monitor] "${source.name}" Playwright found ${discoveredUrls.length} URLs`);
       items = discoveredUrls.map(url => ({
         title: url.split('/').pop() || 'Article',
         link: url,
