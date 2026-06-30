@@ -154,9 +154,8 @@ async function fetchWithPlaywright(url) {
     });
     const page = await context.newPage();
     try {
-      // Use 'load' instead of 'domcontentloaded' to wait for all scripts (Cloudflare JS execution)
-      await page.goto(url, { waitUntil: 'load', timeout: PLAYWRIGHT_TIMEOUT });
-      await page.waitForTimeout(2000); // Increased wait for JS execution
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PLAYWRIGHT_TIMEOUT });
+      await page.waitForTimeout(1500);
       const html = await page.content();
       return extractFromHtml(html);
     } finally {
@@ -330,8 +329,7 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
     }
   }
 
-  // Level 3: Playwright (always attempt if HTTP failed or insufficient content)
-  // Especially for 403/429 (Cloudflare, rate limit) where JS-rendered content is common
+  // Level 3: Playwright (only if fetch was insufficient)
   let pwStartTime = Date.now();
   let pwStatus = 'FAILED';
   let pwReason = 'unknown';
