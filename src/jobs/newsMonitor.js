@@ -233,7 +233,7 @@ async function discoverArticlesViaPlaywright(source) {
     await page.goto(homeUrl, { waitUntil: 'load', timeout: 20_000 }).catch(() => {});
     await page.waitForTimeout(2000);
 
-    // Extract article links (strict filtering to avoid tracking URLs)
+    // Extract article links (ultra-strict: no query params, no tracking)
     const urls = await page.evaluate(() => {
       const links = new Set();
 
@@ -247,31 +247,33 @@ async function discoverArticlesViaPlaywright(source) {
         if (href.startsWith('mailto:') || href.startsWith('tel:')) return;
         if (href.includes('login') || href.includes('signin') || href.includes('signup')) return;
 
-        const full = href.startsWith('http') ? href : window.location.origin + href;
+        let full = href.startsWith('http') ? href : window.location.origin + href;
 
-        // EXCLUDE: tracking parameters, navigation, search, categories, authors
-        if (full.includes('?template=') || full.includes('utm_') || full.includes('utm-') ||
-            full.includes('categor') || full.includes('tag=') || full.includes('search') ||
-            full.includes('autor') || full.includes('author') || full.includes('profile') ||
-            full.includes('page=') || full.includes('/page/') || full.includes('#')) {
+        // CRITICAL: Remove ALL query parameters (everything after ?)
+        // This eliminates tracking URLs completely
+        const cleanUrl = full.split('?')[0].split('#')[0];
+        if (!cleanUrl || cleanUrl === window.location.origin || cleanUrl === window.location.origin + '/') return;
+
+        // EXCLUDE: navigation, search, categories, authors, profile pages
+        if (cleanUrl.includes('/categor') || cleanUrl.includes('/tag/') || cleanUrl.includes('/search') ||
+            cleanUrl.includes('/autor') || cleanUrl.includes('/author') || cleanUrl.includes('/profile') ||
+            cleanUrl.includes('/page/') || cleanUrl.includes('/videos') || cleanUrl.includes('/photos') ||
+            cleanUrl.includes('/comments') || cleanUrl.endsWith('/')) {
           return;
         }
 
-        // REQUIRE: looks like an article (has /article, /news, /post, or date pattern)
-        const isArticleLike = /\/(article|news|post|story|blog|noticia|noticias|content)\//i.test(full) ||
-                             /\/\d{4}\/\d{1,2}\/\d{1,2}/i.test(full) ||  // Date pattern: /2026/06/29
-                             /\/\d+\//i.test(full);  // Numeric ID: /12345/
+        // REQUIRE: looks like an article (must have content indicator)
+        const isArticleLike = /\/(articulo|article|news|post|story|blog|noticia|noticias|content|nota)\//i.test(cleanUrl) ||
+                             /\/\d{4}\/\d{1,2}\/\d{1,2}/i.test(cleanUrl) ||  // Date pattern: /2026/06/29
+                             /\/\d{4,}/i.test(cleanUrl);  // Numeric ID with 4+ digits
 
         if (!isArticleLike) return;
 
-        // MUST NOT be homepage
-        if (full === window.location.origin || full === window.location.origin + '/') return;
-
         // Get link text for validation
         const text = el.textContent?.trim() || '';
-        if (!text || text.length < 3 || text === 'Article' || text === 'article') return;
+        if (!text || text.length < 5 || text.toLowerCase() === 'article' || text.length > 200) return;
 
-        links.add(full);
+        links.add(cleanUrl);
       });
 
       return Array.from(links).slice(0, 50);
