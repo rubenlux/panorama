@@ -330,25 +330,21 @@ function validateArticle(article) {
     }
   }
 
-  // Missing publishedAt — don't block, but lower confidence
+  // Missing publishedAt — log it but don't block (old articles may lack dates)
   if (!article.publishedAt) {
-    // Some older articles may not have dates; penalize confidence but allow
-    if (article.confidence) article.confidence = Math.max(0, article.confidence - 15);
+    article._skipReason = 'no_published_date';
+    // Note: confidence already penalized by extractor
   }
 
   return true;
 }
 
-// Extraer metadata de una URL individual (con Playwright) — RICH EXTRACTOR
+// Extraer metadata de una URL individual (con Playwright) — RICH EXTRACTOR v2
 async function extractArticleMetadata(page, url) {
   try {
-    // FIXED: Use 'load' + networkidle instead of domcontentloaded (Cloudflare compatible)
+    // Use 'load' + fixed timeout (not networkidle — ads/analytics never end)
     await page.goto(url, { waitUntil: 'load', timeout: 20_000 });
-    try {
-      await page.waitForLoadState('networkidle', { timeout: 3_000 });
-    } catch {
-      // networkidle timeout is acceptable, continue
-    }
+    await page.waitForTimeout(1500); // Stable: let DOM settle without waiting for ads/analytics
   } catch (e) {
     console.warn(`[Extractor] Navigation failed: ${e.message}`);
     return null;
@@ -364,16 +360,23 @@ async function extractArticleMetadata(page, url) {
     let canonical = null;
     let section = null;
     let language = null;
-    let images = [];
+    let images = []; // NEW: will be {url, alt, width, height}
     let keywords = [];
     let contentHtml = null;
     let contentText = null;
     let wordCount = 0;
     let paragraphCount = 0;
+    let readingTime = 0; // NEW: wordCount / 220
     let confidence = 0;
     let ogType = null;
     let jsonLdType = null;
-    let jsonLdSchema = null;
+    let jsonld = null; // NEW: full schema, not just type
+    let hasVideo = false; // NEW
+    let hasGallery = false; // NEW
+    let hasIframe = false; // NEW
+    let hasEmbed = false; // NEW
+    let hasTable = false; // NEW
+    let entities = { people: [], organizations: [], locations: [] }; // NEW: basic extraction
 
     // 1. JSON-LD (most structured) — FIXED: support array, object, @graph
     try {
@@ -411,7 +414,7 @@ async function extractArticleMetadata(page, url) {
       }
 
       if (bestSchema) {
-        jsonLdSchema = bestSchema;
+        jsonld = bestSchema; // NEW: save complete schema
         if (bestSchema.headline) rawTitle = bestSchema.headline;
         if (bestSchema.description) description = bestSchema.description;
         if (bestSchema.datePublished) publishedAt = bestSchema.datePublished;
@@ -422,12 +425,15 @@ async function extractArticleMetadata(page, url) {
         }
         if (bestSchema.image) {
           const imgs = Array.isArray(bestSchema.image) ? bestSchema.image : [bestSchema.image];
-          images = imgs.map(img => typeof img === 'string' ? img : img.url).filter(Boolean);
+          images = imgs.map(img => {
+            if (typeof img === 'string') return { url: img, alt: null, width: null, height: null };
+            return { url: img.url, alt: img.caption || img.name || null, width: img.width || null, height: img.height || null };
+          }).filter(i => i.url);
         }
         if (bestSchema.keywords) keywords = typeof bestSchema.keywords === 'string'
           ? bestSchema.keywords.split(',').map(k => k.trim())
           : Array.isArray(bestSchema.keywords) ? bestSchema.keywords : [];
-        confidence += 25; // FIXED: weight by value, not by attribute count
+        confidence += 25;
       }
     } catch {}
 
@@ -440,8 +446,11 @@ async function extractArticleMetadata(page, url) {
 
     ogType = document.querySelector('meta[property="og:type"]')?.getAttribute('content');
 
+    // NEW: Extract OG image with metadata
     const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
-    if (ogImage && !images.includes(ogImage)) images.push(ogImage);
+    if (ogImage && !images.find(i => i.url === ogImage)) {
+      images.push({ url: ogImage, alt: null, width: null, height: null });
+    }
 
     if (ogType === 'article') confidence += 10;
 
@@ -474,17 +483,34 @@ async function extractArticleMetadata(page, url) {
 
     language = document.documentElement.lang || document.querySelector('meta[name="language"]')?.getAttribute('content');
 
-    // Extract schema image if not in JSON-LD
+    // Extract images from multiple sources
     if (!images.length) {
       const schemaImg = document.querySelector('meta[itemprop="image"]')?.getAttribute('content');
-      if (schemaImg) images.push(schemaImg);
+      if (schemaImg) images.push({ url: schemaImg, alt: null, width: null, height: null });
     }
 
-    // Extract keywords from meta
+    // NEW: Extract from figure img (many news sites skip OG)
+    if (images.length < 3) {
+      document.querySelectorAll('figure img').forEach(img => {
+        const url = img.src || img.dataset.src;
+        if (url && !images.find(i => i.url === url)) {
+          images.push({ url, alt: img.alt || null, width: img.naturalWidth || null, height: img.naturalHeight || null });
+        }
+      });
+    }
+
+    // Extract keywords from multiple sources
     if (!keywords.length) {
       const metaKeywords = document.querySelector('meta[name="keywords"]')?.getAttribute('content');
       if (metaKeywords) keywords = metaKeywords.split(',').map(k => k.trim());
     }
+
+    // NEW: Extract from article:tag (WordPress common)
+    const articleTags = document.querySelectorAll('meta[property="article:tag"]');
+    articleTags.forEach(tag => {
+      const val = tag.getAttribute('content');
+      if (val && !keywords.includes(val)) keywords.push(val);
+    });
 
     // 4. HTML elements for title
     if (!rawTitle) {
@@ -497,17 +523,31 @@ async function extractArticleMetadata(page, url) {
       if (rawTitle) confidence += 5; // Low value for page title
     }
 
-    // 5. Smart content selection — NO class selectors, just structural scoring
+    // 5. Smart content selection — NO class selectors, limit div traversal
     const candidates = [];
 
-    // Collect ALL potential content containers
-    ['article', 'main', '[role="main"]', 'section', 'div'].forEach(selector => {
+    // Collect potential content containers (high-priority first)
+    ['article', 'main', '[role="main"]', 'section'].forEach(selector => {
       try {
         document.querySelectorAll(selector).forEach(el => {
           if (el.textContent?.trim().length > 100) candidates.push(el);
         });
       } catch {}
     });
+
+    // Only add divs that have paragraphs (not all 20K divs)
+    try {
+      document.querySelectorAll('div:has(p)').forEach(el => {
+        if (el.textContent?.trim().length > 100) candidates.push(el);
+      });
+    } catch {
+      // :has() not supported, fallback to checking divs with paragraphs
+      document.querySelectorAll('div').forEach(el => {
+        if (el.querySelectorAll('p').length > 0 && el.textContent?.trim().length > 100) {
+          candidates.push(el);
+        }
+      });
+    }
 
     let bestCandidate = null;
     let bestScore = 0;
@@ -516,10 +556,10 @@ async function extractArticleMetadata(page, url) {
       const paragraphs = el.querySelectorAll('p').length;
       const text = el.textContent?.trim().length || 0;
       const links = el.querySelectorAll('a').length;
-      const depth = Array.from(el.parentElement?.children || []).indexOf(el);
 
-      // Score: paragraphs (×5), text volume (÷100), fewer links (×-2), DOM depth
-      const score = (paragraphs * 5) + (text / 100) - (links * 2) + (depth > 0 ? 5 : 0);
+      // Score: paragraphs (×5), text volume (÷100), fewer links (×-2)
+      // Removed DOM depth — not meaningful
+      const score = (paragraphs * 5) + (text / 100) - (links * 2);
 
       if (score > bestScore && paragraphs > 0) { // Must have at least one paragraph
         bestScore = score;
@@ -534,8 +574,16 @@ async function extractArticleMetadata(page, url) {
 
       paragraphCount = bestCandidate.querySelectorAll('p').length;
       wordCount = contentText.split(/\s+/).filter(w => w.length > 0).length;
+      readingTime = Math.ceil(wordCount / 220); // NEW: reading time in minutes
 
       if (wordCount > 0) confidence += 5;
+
+      // NEW: Detect media & structural elements
+      hasVideo = bestCandidate.querySelector('video, iframe[src*="youtube"], iframe[src*="vimeo"]') !== null;
+      hasGallery = bestCandidate.querySelectorAll('img').length > 3;
+      hasIframe = bestCandidate.querySelector('iframe') !== null;
+      hasEmbed = bestCandidate.querySelector('[class*="embed"]') !== null;
+      hasTable = bestCandidate.querySelector('table') !== null;
     }
 
     // 6. Title cleaning — keep raw, create clean version
@@ -544,6 +592,19 @@ async function extractArticleMetadata(page, url) {
       cleanTitle = cleanTitle.trim().slice(0, 200);
       // Only remove the most obvious suffixes — don't be aggressive
       cleanTitle = cleanTitle.replace(/ \| .+$/, '').replace(/ - .+$/, '');
+    }
+
+    // NEW: Extract basic entities from title + description (simple NER)
+    if (rawTitle) {
+      const titleText = rawTitle + ' ' + (description || '');
+      // Look for capitalized patterns (very basic, but no AI cost)
+      const namePattern = /\b([A-Z][a-z]+ (?:de |del )?[A-Z][a-záéíóú]+)\b/g;
+      const matches = titleText.match(namePattern) || [];
+      matches.forEach(name => {
+        if (name.length > 3 && !entities.people.includes(name)) {
+          entities.people.push(name);
+        }
+      });
     }
 
     return {
@@ -563,22 +624,33 @@ async function extractArticleMetadata(page, url) {
       section,
       language,
 
-      // Images & Keywords
+      // Images & Keywords (enriched)
       images,
       keywords,
 
-      // Content (HTML + TEXT)
+      // Content (HTML + TEXT — never lose structure)
       contentHtml,
       contentText,
 
-      // Metrics
+      // Metrics (reading time new)
       wordCount,
       paragraphCount,
+      readingTime,
 
-      // Schema & OG info
+      // Media & Structural elements (new)
+      hasVideo,
+      hasGallery,
+      hasIframe,
+      hasEmbed,
+      hasTable,
+
+      // Schema & OG info (jsonld now complete)
       jsonLdType,
-      jsonldSchema,
+      jsonld,
       ogType,
+
+      // Entities (basic extraction)
+      entities,
 
       // Confidence with real weights
       confidence: Math.min(100, confidence),
