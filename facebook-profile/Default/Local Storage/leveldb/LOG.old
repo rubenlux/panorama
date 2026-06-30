@@ -1,3 +1,14 @@
-2026/06/30-11:47:15.628 103c Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Local Storage\leveldb/MANIFEST-000001
-2026/06/30-11:47:15.634 103c Recovering log #22
-2026/06/30-11:47:15.635 103c Reusing old log C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Local Storage\leveldb/000022.log 
+2026/06/30-18:43:19.015 5b38 Reusing MANIFEST C:\Users\ruben\Documents\Mis-Proyectos\news\facebook-profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/06/30-18:43:19.020 5b38 Recovering log #46
+2026/06/30-18:43:19.021 5b38 Level-0 table #48: started
+2026/06/30-18:43:19.023 5b38 Level-0 table #48: 11077 bytes OK
+2026/06/30-18:43:19.026 5b38 Delete type=0 #46
+2026/06/30-18:43:19.026 4078 Compacting 4@0 + 1@1 files
+2026/06/30-18:43:19.030 4078 Generated table #50@0: 188 keys, 20204 bytes
+2026/06/30-18:43:19.030 4078 Compacted 4@0 + 1@1 files => 20204 bytes
+2026/06/30-18:43:19.031 4078 compacted to: files[ 0 1 0 0 0 0 0 ]
+2026/06/30-18:43:19.031 4078 Delete type=2 #23
+2026/06/30-18:43:19.031 4078 Delete type=2 #25
+2026/06/30-18:43:19.031 4078 Delete type=2 #42
+2026/06/30-18:43:19.032 4078 Delete type=2 #45
+2026/06/30-18:43:19.032 4078 Delete type=2 #48

@@ -84,6 +84,26 @@ Documented in Spanish in `SISTEMA_PUBLICIDAD.md`. Key concepts:
 
 `src/services/AiService.js` wraps both Anthropic (`@anthropic-ai/sdk`) and OpenAI SDKs. Exposed via `src/routes/ai.js` and `src/routes/editorial-studio.js`. Use `AiService` for any new AI feature rather than importing the SDK directly in a route.
 
+### Universal Article Extractor (`src/jobs/newsMonitor.js`) — Phase 2, Production
+
+**Architecture:** Resilient, CMS-agnostic metadata extraction via Playwright. Three extraction gates:
+1. **URL pathname validation** — reject homepages (`/` or no path) early
+2. **Content volume** — minimum 120 words (filters noise)
+3. **Structured validation** — title source reliability, og:type, JSON-LD type
+
+**Extract function:** `extractArticleMetadata(page, url)` → returns:
+- `title` (cleaned), `canonical`, `description`, `author`, `publishedAt`, `modifiedAt`
+- `contentHtml` (preserves structure), `contentText` (for AI)
+- `wordCount`, `paragraphCount`, `readingTime`
+- `images` (URL + alt + dimensions), `keywords`, `entities` (basic NER)
+- `confidence` (weighted: JSON-LD 25pt, H1 25pt, canonical 15pt, published 10pt, author 10pt, OG 10pt, body 5pt)
+- Media features: `hasVideo`, `hasGallery`, `hasIframe`, `hasEmbed`, `hasTable`
+
+**Discovery:** RSS → Sitemap → Playwright homepage scan (URL-pattern scoring, 60+ patterns).
+
+**Status:** Production (Phase 2 validation metrics in progress).  
+**Latest fix:** BUG-001 — Homepage URL validation gate added (June 30, 2026). Homepages no longer pass discovery.
+
 ### Cost Killer Architecture (Sprints CK1 → CK3) — ⚠️ READ BEFORE TOUCHING IA CALLS
 
 **Principio fundamental:** Claude está reservado SOLO para acciones manuales explícitas del usuario. Todo lo demás es SQL/algoritmos.
