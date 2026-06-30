@@ -286,13 +286,10 @@ function validateArticle(article) {
     return false;
   }
 
-  // Content minimum (FIXED: measure words, not chars — ~120 words = ~600 chars)
-  if (article.content) {
-    const words = article.content.split(/\s+/).filter(w => w.length > 0).length;
-    if (words < 120) {
-      article._skipReason = `content_too_short:${words}words`;
-      return false;
-    }
+  // Content minimum (measure by wordCount from extractor)
+  if (article.wordCount !== undefined && article.wordCount < 120) {
+    article._skipReason = `content_too_short:${article.wordCount}words`;
+    return false;
   }
 
   // Validar que NO es homepage (canonical vs origin)
@@ -333,40 +330,79 @@ function validateArticle(article) {
     }
   }
 
+  // Missing publishedAt — don't block, but lower confidence
+  if (!article.publishedAt) {
+    // Some older articles may not have dates; penalize confidence but allow
+    if (article.confidence) article.confidence = Math.max(0, article.confidence - 15);
+  }
+
   return true;
 }
 
-// Extraer metadata de una URL individual (con Playwright)
+// Extraer metadata de una URL individual (con Playwright) — RICH EXTRACTOR
 async function extractArticleMetadata(page, url) {
   try {
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+    // FIXED: Use 'load' + networkidle instead of domcontentloaded (Cloudflare compatible)
+    await page.goto(url, { waitUntil: 'load', timeout: 20_000 });
+    try {
+      await page.waitForLoadState('networkidle', { timeout: 3_000 });
+    } catch {
+      // networkidle timeout is acceptable, continue
+    }
   } catch (e) {
     console.warn(`[Extractor] Navigation failed: ${e.message}`);
     return null;
   }
 
   const metadata = await page.evaluate(() => {
-    let title = null;
+    let rawTitle = null;
+    let cleanTitle = null;
     let description = null;
+    let author = null;
     let publishedAt = null;
+    let modifiedAt = null;
     let canonical = null;
-    let content = null;
+    let section = null;
+    let language = null;
+    let images = [];
+    let keywords = [];
+    let contentHtml = null;
+    let contentText = null;
+    let wordCount = 0;
+    let paragraphCount = 0;
+    let confidence = 0;
     let ogType = null;
     let jsonLdType = null;
-    let confidence = 0;
+    let jsonLdSchema = null;
 
-    // 1. JSON-LD (most structured) — FIXED: recorrer todos, elegir el correcto
+    // 1. JSON-LD (most structured) — FIXED: support array, object, @graph
     try {
       const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
-      let bestSchema = null;
+      let allSchemas = [];
 
       for (const script of jsonLdScripts) {
         const data = JSON.parse(script.textContent);
-        const types = Array.isArray(data['@type']) ? data['@type'] : [data['@type']];
 
-        // Priorizar NewsArticle > Article > BlogPosting
+        // Handle array of schemas
+        if (Array.isArray(data)) {
+          allSchemas = allSchemas.concat(data);
+        }
+        // Handle @graph
+        else if (data['@graph']) {
+          allSchemas = allSchemas.concat(Array.isArray(data['@graph']) ? data['@graph'] : [data['@graph']]);
+        }
+        // Handle single object
+        else {
+          allSchemas.push(data);
+        }
+      }
+
+      // Find best schema (NewsArticle > Article > BlogPosting)
+      let bestSchema = null;
+      for (const schema of allSchemas) {
+        const types = Array.isArray(schema['@type']) ? schema['@type'] : [schema['@type']];
         if (types.includes('NewsArticle') || types.includes('Article') || types.includes('BlogPosting')) {
-          bestSchema = data;
+          bestSchema = schema;
           jsonLdType = types.includes('NewsArticle') ? 'NewsArticle'
                      : types.includes('Article') ? 'Article'
                      : 'BlogPosting';
@@ -375,56 +411,103 @@ async function extractArticleMetadata(page, url) {
       }
 
       if (bestSchema) {
-        if (bestSchema.headline) title = bestSchema.headline;
+        jsonLdSchema = bestSchema;
+        if (bestSchema.headline) rawTitle = bestSchema.headline;
         if (bestSchema.description) description = bestSchema.description;
         if (bestSchema.datePublished) publishedAt = bestSchema.datePublished;
-        confidence += 20;
+        if (bestSchema.dateModified) modifiedAt = bestSchema.dateModified;
+        if (bestSchema.author) {
+          author = typeof bestSchema.author === 'string' ? bestSchema.author
+                 : bestSchema.author.name || null;
+        }
+        if (bestSchema.image) {
+          const imgs = Array.isArray(bestSchema.image) ? bestSchema.image : [bestSchema.image];
+          images = imgs.map(img => typeof img === 'string' ? img : img.url).filter(Boolean);
+        }
+        if (bestSchema.keywords) keywords = typeof bestSchema.keywords === 'string'
+          ? bestSchema.keywords.split(',').map(k => k.trim())
+          : Array.isArray(bestSchema.keywords) ? bestSchema.keywords : [];
+        confidence += 25; // FIXED: weight by value, not by attribute count
       }
     } catch {}
 
     // 2. OpenGraph
     const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
-    if (ogTitle && !title) title = ogTitle;
-    if (ogTitle) confidence += 5; // Partial credit if we had to use OG
+    if (ogTitle && !rawTitle) rawTitle = ogTitle;
 
     const ogDesc = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
     if (ogDesc && !description) description = ogDesc;
-    if (ogDesc) confidence += 5;
 
     ogType = document.querySelector('meta[property="og:type"]')?.getAttribute('content');
-    if (ogType === 'article') confidence += 20;
+
+    const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content');
+    if (ogImage && !images.includes(ogImage)) images.push(ogImage);
+
+    if (ogType === 'article') confidence += 10;
 
     // 3. Meta tags
     if (!description) {
       description = document.querySelector('meta[name="description"]')?.getAttribute('content');
-      if (description) confidence += 5;
     }
+
+    if (!author) {
+      author = document.querySelector('meta[name="author"]')?.getAttribute('content')
+            || document.querySelector('meta[property="article:author"]')?.getAttribute('content');
+    }
+    if (author) confidence += 10;
+
     if (!publishedAt) {
       publishedAt = document.querySelector('meta[property="article:published_time"]')?.getAttribute('content')
                  || document.querySelector('meta[name="publish_date"]')?.getAttribute('content')
                  || document.querySelector('meta[itemprop="datePublished"]')?.getAttribute('content');
-      if (publishedAt) confidence += 10;
+    }
+    if (publishedAt) confidence += 10;
+
+    if (!modifiedAt) {
+      modifiedAt = document.querySelector('meta[property="article:modified_time"]')?.getAttribute('content');
     }
 
     canonical = document.querySelector('link[rel="canonical"]')?.getAttribute('href');
-    if (canonical) confidence += 20;
+    if (canonical) confidence += 15;
 
-    // 4. HTML elements
-    if (!title) title = document.querySelector('h1')?.textContent?.trim();
-    if (title) confidence += 5;
+    section = document.querySelector('meta[property="article:section"]')?.getAttribute('content');
 
-    if (!title) title = document.title;
-    if (title) confidence += 10;
+    language = document.documentElement.lang || document.querySelector('meta[name="language"]')?.getAttribute('content');
 
-    // 5. Content (FIXED: smart selection instead of fixed selector)
-    // Search for largest content block (most paragraphs, most text)
-    let contentEl = null;
-    const candidates = [
-      ...document.querySelectorAll('article'),
-      ...document.querySelectorAll('main, [role="main"]'),
-      ...document.querySelectorAll('[class*="content"], [class*="entry"], [class*="post-content"], [class*="news-body"], [class*="article-body"], [class*="story"]'),
-      ...document.querySelectorAll('section > div'),
-    ];
+    // Extract schema image if not in JSON-LD
+    if (!images.length) {
+      const schemaImg = document.querySelector('meta[itemprop="image"]')?.getAttribute('content');
+      if (schemaImg) images.push(schemaImg);
+    }
+
+    // Extract keywords from meta
+    if (!keywords.length) {
+      const metaKeywords = document.querySelector('meta[name="keywords"]')?.getAttribute('content');
+      if (metaKeywords) keywords = metaKeywords.split(',').map(k => k.trim());
+    }
+
+    // 4. HTML elements for title
+    if (!rawTitle) {
+      rawTitle = document.querySelector('h1')?.textContent?.trim();
+      if (rawTitle) confidence += 25; // High value for h1
+    }
+
+    if (!rawTitle) {
+      rawTitle = document.title;
+      if (rawTitle) confidence += 5; // Low value for page title
+    }
+
+    // 5. Smart content selection — NO class selectors, just structural scoring
+    const candidates = [];
+
+    // Collect ALL potential content containers
+    ['article', 'main', '[role="main"]', 'section', 'div'].forEach(selector => {
+      try {
+        document.querySelectorAll(selector).forEach(el => {
+          if (el.textContent?.trim().length > 100) candidates.push(el);
+        });
+      } catch {}
+    });
 
     let bestCandidate = null;
     let bestScore = 0;
@@ -433,45 +516,72 @@ async function extractArticleMetadata(page, url) {
       const paragraphs = el.querySelectorAll('p').length;
       const text = el.textContent?.trim().length || 0;
       const links = el.querySelectorAll('a').length;
+      const depth = Array.from(el.parentElement?.children || []).indexOf(el);
 
-      // Score: more paragraphs and text, fewer links
-      const score = (paragraphs * 5) + (text / 100) - (links * 2);
+      // Score: paragraphs (×5), text volume (÷100), fewer links (×-2), DOM depth
+      const score = (paragraphs * 5) + (text / 100) - (links * 2) + (depth > 0 ? 5 : 0);
 
-      if (score > bestScore) {
+      if (score > bestScore && paragraphs > 0) { // Must have at least one paragraph
         bestScore = score;
         bestCandidate = el;
       }
     }
 
     if (bestCandidate) {
-      content = bestCandidate.textContent?.trim();
-      if (content) confidence += 20;
+      // FIXED: Extract BOTH HTML and TEXT — never discard structure
+      contentHtml = bestCandidate.innerHTML;
+      contentText = bestCandidate.textContent?.trim() || '';
+
+      paragraphCount = bestCandidate.querySelectorAll('p').length;
+      wordCount = contentText.split(/\s+/).filter(w => w.length > 0).length;
+
+      if (wordCount > 0) confidence += 5;
     }
 
-    // Clean title (FIXED: don't blindly split on |)
-    if (title) {
-      title = title.trim().slice(0, 200);
-      // Remove common site suffixes intelligently
-      const suffixes = [
-        / \| .+$/,     // "Título | Sitio"
-        / - .+$/,      // "Título - Sitio"
-        /^Infobae - /, // "Infobae - "
-        /^.+ \| /,    // "Sitio | Título" — pero esto es arriesgado
-      ];
-      for (const suffix of suffixes.slice(0, 3)) { // Apply first 3 only
-        title = title.replace(suffix, '');
-      }
+    // 6. Title cleaning — keep raw, create clean version
+    cleanTitle = rawTitle;
+    if (cleanTitle) {
+      cleanTitle = cleanTitle.trim().slice(0, 200);
+      // Only remove the most obvious suffixes — don't be aggressive
+      cleanTitle = cleanTitle.replace(/ \| .+$/, '').replace(/ - .+$/, '');
     }
 
     return {
-      title,
-      description,
-      publishedAt,
+      // URL & Structure
+      url,
       canonical,
-      content,
-      ogType,
+
+      // Titles (raw + clean)
+      rawTitle,
+      cleanTitle,
+
+      // Metadata
+      description,
+      author,
+      publishedAt,
+      modifiedAt,
+      section,
+      language,
+
+      // Images & Keywords
+      images,
+      keywords,
+
+      // Content (HTML + TEXT)
+      contentHtml,
+      contentText,
+
+      // Metrics
+      wordCount,
+      paragraphCount,
+
+      // Schema & OG info
       jsonLdType,
-      confidence: Math.min(100, confidence), // Cap at 100
+      jsonldSchema,
+      ogType,
+
+      // Confidence with real weights
+      confidence: Math.min(100, confidence),
     };
   });
 
