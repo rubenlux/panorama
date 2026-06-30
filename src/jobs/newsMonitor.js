@@ -270,17 +270,59 @@ function scoreUrl(url) {
 
 // Validar que un artículo sea real
 function validateArticle(article) {
-  if (!article.title || article.title.length < 20) return false;
-  if (!article.url) return false;
+  if (!article.title || article.title.length < 20) {
+    article._skipReason = 'title_too_short';
+    return false;
+  }
+  if (!article.url) {
+    article._skipReason = 'no_url';
+    return false;
+  }
 
   // Rechazar títulos genéricos
   const badTitles = ['Article', 'Read more', 'Leer más', 'Untitled', 'Sin título'];
-  if (badTitles.some(bad => article.title === bad)) return false;
+  if (badTitles.some(bad => article.title === bad)) {
+    article._skipReason = 'generic_title';
+    return false;
+  }
 
   // Contenido mínimo (si existe)
-  if (article.content && article.content.length < 300) return false;
+  if (article.content && article.content.length < 300) {
+    article._skipReason = 'content_too_short';
+    return false;
+  }
 
-  // Si no tiene canonical o fecha, puede ser artículo pero menos confiable
+  // NEW: Validar que NO es homepage (canonical == homepage = homepage)
+  if (article.canonical && article.canonical.split('?')[0] === article.url.split('?')[0]) {
+    // canonical es igual a URL = podría ser artículo
+  } else if (article.canonical && article.canonical.split('/').filter(p => p).length <= 3) {
+    // canonical es corto = probablemente homepage o categoría
+    article._skipReason = 'canonical_is_homepage';
+    return false;
+  }
+
+  // NEW: Validar og:type
+  if (article.ogType && article.ogType !== 'article') {
+    article._skipReason = `og:type=${article.ogType}`;
+    return false;
+  }
+
+  // NEW: Validar JSON-LD type
+  if (article.jsonLdType) {
+    const validTypes = ['NewsArticle', 'Article', 'BlogPosting'];
+    const invalidTypes = ['WebSite', 'Organization', 'CollectionPage'];
+
+    if (invalidTypes.includes(article.jsonLdType)) {
+      article._skipReason = `jsonld=${article.jsonLdType}`;
+      return false;
+    }
+
+    if (!validTypes.includes(article.jsonLdType)) {
+      // Tipo no reconocido - es sospechoso pero permitir
+      article._skipReason = `jsonld=${article.jsonLdType}`;
+    }
+  }
+
   return true;
 }
 
@@ -299,6 +341,8 @@ async function extractArticleMetadata(page, url) {
     let publishedAt = null;
     let canonical = null;
     let content = null;
+    let ogType = null;
+    let jsonLdType = null;
 
     // 1. JSON-LD (most structured)
     try {
@@ -308,12 +352,14 @@ async function extractArticleMetadata(page, url) {
         if (data.headline) title = data.headline;
         if (data.description) description = data.description;
         if (data.datePublished) publishedAt = data.datePublished;
+        if (data['@type']) jsonLdType = data['@type'];
       }
     } catch {}
 
     // 2. OpenGraph
     if (!title) title = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
     if (!description) description = document.querySelector('meta[property="og:description"]')?.getAttribute('content');
+    ogType = document.querySelector('meta[property="og:type"]')?.getAttribute('content');
 
     // 3. Meta tags
     if (!description) description = document.querySelector('meta[name="description"]')?.getAttribute('content');
@@ -335,7 +381,7 @@ async function extractArticleMetadata(page, url) {
       title = title.split('|')[0].trim().slice(0, 200);
     }
 
-    return { title, description, publishedAt, canonical, content };
+    return { title, description, publishedAt, canonical, content, ogType, jsonLdType };
   });
 
   return metadata;
@@ -404,7 +450,8 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
       const page = await browser.newPage();
       try {
         const metadata = await extractArticleMetadata(page, url);
-        if (metadata && validateArticle({ ...metadata, url })) {
+        const article = { ...metadata, url };
+        if (metadata && validateArticle(article)) {
           articles.push({
             title: metadata.title,
             link: url,
@@ -412,6 +459,8 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
             pubDate: metadata.publishedAt || new Date().toISOString(),
             guid: url
           });
+        } else if (article._skipReason) {
+          console.log(`[Extractor] SKIP: reason=${article._skipReason} | ${url}`);
         }
       } catch (e) {
         console.warn(`[Extractor] Error processing ${url}: ${e.message}`);
@@ -427,6 +476,12 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
   }
 
   await Promise.all(workers);
+
+  // Log skipped articles
+  if (queue.length === 0 && articles.length === 0) {
+    console.log(`[Extractor] All URLs skipped validation`);
+  }
+
   return articles;
 }
 
