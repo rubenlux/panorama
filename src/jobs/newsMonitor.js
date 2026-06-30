@@ -352,8 +352,16 @@ async function extractArticleMetadata(page, url) {
   }
 
   const metadata = await page.evaluate((urlParam) => {
+    // CRITICAL: Capture page readiness first (may explain incomplete extraction)
+    const pageReady = {
+      readyState: document.readyState,
+      bodyLength: document.body.innerText.length,
+      h1Count: document.querySelectorAll('h1').length,
+      paragraphCount: document.querySelectorAll('p').length,
+    };
+
     let rawTitle = null;
-    let titleSource = null; // NEW: track which source provided the title
+    let titleWinner = null; // Track which source was chosen
     let cleanTitle = null;
     let description = null;
     let author = null;
@@ -517,64 +525,46 @@ async function extractArticleMetadata(page, url) {
       if (val && !keywords.includes(val)) keywords.push(val);
     });
 
-    // 4. HTML elements for title — IMPROVED: Capture ALL sources before deciding
-    // This helps debug which source is winning and if it's the wrong choice
-    let titleSources = {
-      'json-ld': rawTitle, // Already captured above
-      'og': null,
-      'h1': null,
-      'document-title': null,
-      'twitter': null,
+    // 4. Title extraction — Capture ALL sources FIRST, THEN decide with clear logic
+    let jsonldTitle = rawTitle; // Already captured above
+    let ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
+    let h1El = document.querySelector('h1');
+    let h1Title = h1El?.textContent?.trim();
+    let h1Html = h1El?.outerHTML;
+    let docTitle = document.title;
+    let twitterTitle = document.querySelector('meta[name="twitter:title"]')?.getAttribute('content');
+
+    // Decide which source wins (explicit, not cascaded)
+    if (jsonldTitle) {
+      titleWinner = 'json-ld';
+      rawTitle = jsonldTitle;
+      confidence += 25;
+    } else if (ogTitle) {
+      titleWinner = 'og';
+      rawTitle = ogTitle;
+      confidence += 20;
+    } else if (h1Title) {
+      titleWinner = 'h1';
+      rawTitle = h1Title;
+      confidence += 20;
+    } else if (docTitle) {
+      titleWinner = 'document';
+      rawTitle = docTitle;
+      confidence += 5;
+    } else if (twitterTitle) {
+      titleWinner = 'twitter';
+      rawTitle = twitterTitle;
+      confidence += 15;
+    }
+
+    // Store ALL sources with their lengths for debugging
+    const titleSources = {
+      'json-ld': { value: jsonldTitle, length: jsonldTitle?.length || 0 },
+      'og': { value: ogTitle, length: ogTitle?.length || 0 },
+      'h1': { value: h1Title, length: h1Title?.length || 0 },
+      'document': { value: docTitle, length: docTitle?.length || 0 },
+      'twitter': { value: twitterTitle, length: twitterTitle?.length || 0 },
     };
-
-    // Capture OG if not already set
-    if (!titleSources['og']) {
-      const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content');
-      if (ogTitle) titleSources['og'] = ogTitle;
-    }
-
-    // Capture H1
-    const h1El = document.querySelector('h1');
-    if (h1El) {
-      titleSources['h1'] = h1El.textContent?.trim();
-      // Store the outer HTML for debugging (helps see if there's hidden content, scripts, etc)
-      const h1Html = h1El.outerHTML;
-      if (h1Html.length > 1000) {
-        metadata.h1OuterHtml = h1Html.substring(0, 1000) + '...'; // Truncate if too long
-      } else {
-        metadata.h1OuterHtml = h1Html;
-      }
-    }
-
-    // Capture document.title
-    titleSources['document-title'] = document.title;
-
-    // Capture Twitter card if present
-    const twitterTitle = document.querySelector('meta[name="twitter:title"]')?.getAttribute('content');
-    if (twitterTitle) titleSources['twitter'] = twitterTitle;
-
-    // Decide which source to use (cascade priority)
-    if (!rawTitle) {
-      rawTitle = titleSources['json-ld'] || titleSources['og'] || titleSources['h1'] || titleSources['document-title'] || null;
-
-      // Track which one won
-      if (rawTitle === titleSources['json-ld']) {
-        titleSource = 'json-ld';
-      } else if (rawTitle === titleSources['og']) {
-        titleSource = 'og';
-        confidence += 10;
-      } else if (rawTitle === titleSources['h1']) {
-        titleSource = 'h1';
-        confidence += 25;
-      } else if (rawTitle === titleSources['document-title']) {
-        titleSource = 'document-title';
-        confidence += 5;
-      }
-    }
-
-    // Store all sources for debugging
-    metadata.titleSources = titleSources;
-    metadata.titleWinner = titleSource;
 
     // 5. Smart content selection — NO class selectors, limit div traversal
     const candidates = [];
@@ -668,6 +658,9 @@ async function extractArticleMetadata(page, url) {
       // Titles (raw + clean)
       rawTitle,
       cleanTitle,
+      titleWinner,
+      titleSources,
+      h1OuterHtml: h1Html,
 
       // Metadata
       description,
@@ -704,6 +697,9 @@ async function extractArticleMetadata(page, url) {
 
       // Entities (basic extraction)
       entities,
+
+      // Page readiness (CRITICAL: helps detect incomplete rendering)
+      pageReady,
 
       // Confidence with real weights
       confidence: Math.min(100, confidence),
@@ -783,28 +779,40 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
           title: metadata.cleanTitle || metadata.rawTitle,
         };
 
-        // DEBUG: Comprehensive title source logging when validation might fail
-        if (metadata && (!metadata.title || metadata.title.length < 20)) {
-          console.log(`\n[Extractor] 🔍 TITLE EXTRACTION DIAGNOSTICS`);
+        // DEBUG: Log EVERYTHING when title might fail validation
+        // Use article.title (the actual field being validated), not metadata.title
+        const validateTitle = article.title;
+        if (metadata && (!validateTitle || validateTitle.length < 20)) {
+          console.log(`\n[Extractor] 🔍 TITLE EXTRACTION FAILURE — FULL DIAGNOSTICS`);
           console.log(`[Extractor] URL: ${url}`);
-          console.log(`[Extractor] ════════════════════════════════════════`);
-          console.log(`[Extractor] ALL SOURCES CAPTURED:`);
+          console.log(`[Extractor] ════════════════════════════════════════════════════════════`);
+
+          console.log(`[Extractor] PAGE READINESS:`);
+          if (metadata.pageReady) {
+            console.log(`[Extractor]   readyState: ${metadata.pageReady.readyState} (interactive=incomplete, complete=ready)`);
+            console.log(`[Extractor]   bodyLength: ${metadata.pageReady.bodyLength} chars`);
+            console.log(`[Extractor]   h1Count: ${metadata.pageReady.h1Count}`);
+            console.log(`[Extractor]   paragraphCount: ${metadata.pageReady.paragraphCount}`);
+          }
+
+          console.log(`[Extractor] TITLE SOURCES WITH LENGTHS:`);
           if (metadata.titleSources) {
-            console.log(`[Extractor]   JSON-LD: "${metadata.titleSources['json-ld']?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   OG:title: "${metadata.titleSources['og']?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   H1: "${metadata.titleSources['h1']?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   Document.title: "${metadata.titleSources['document-title']?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   Twitter: "${metadata.titleSources['twitter']?.slice(0, 60) || '(none)'}"`);
+            const s = metadata.titleSources;
+            console.log(`[Extractor]   JSON-LD (len=${s['json-ld'].length}): "${s['json-ld'].value?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   OG (len=${s['og'].length}): "${s['og'].value?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   H1 (len=${s['h1'].length}): "${s['h1'].value?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   Document (len=${s['document'].length}): "${s['document'].value?.slice(0, 60) || '(none)'}"`);
+            console.log(`[Extractor]   Twitter (len=${s['twitter'].length}): "${s['twitter'].value?.slice(0, 60) || '(none)'}"`);
           }
-          console.log(`[Extractor] ════════════════════════════════════════`);
+
+          console.log(`[Extractor] ════════════════════════════════════════════════════════════`);
           console.log(`[Extractor] WINNER: ${metadata.titleWinner || '(none)'}`);
-          console.log(`[Extractor] Final rawTitle: "${metadata.rawTitle?.replace(/\n/g, '↵') || '(none)'}"`);
-          console.log(`[Extractor] Final cleanTitle: "${metadata.cleanTitle?.replace(/\n/g, '↵') || '(none)'}"`);
+          console.log(`[Extractor] Final title: "${validateTitle?.replace(/\n/g, '↵') || '(none)'}"`);
           if (metadata.h1OuterHtml) {
-            console.log(`[Extractor] H1 HTML: ${metadata.h1OuterHtml.substring(0, 150)}...`);
+            console.log(`[Extractor] H1 HTML: ${metadata.h1OuterHtml.substring(0, 200)}`);
           }
-          console.log(`[Extractor] Stats: ${metadata.wordCount} words, confidence ${metadata.confidence}`);
-          console.log(`[Extractor] ════════════════════════════════════════\n`);
+          console.log(`[Extractor] Content: ${metadata.wordCount} words, ${metadata.paragraphCount} paragraphs`);
+          console.log(`[Extractor] ════════════════════════════════════════════════════════════\n`);
         }
 
         if (metadata && validateArticle(article)) {
