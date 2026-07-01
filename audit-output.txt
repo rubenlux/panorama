@@ -1,0 +1,631 @@
+[dotenv@17.2.3] injecting env (22) from .env -- tip: ⚙️  write to custom object with { processEnv: myObject }
+
+╔════════════════════════════════════════════════════════════════╗
+║  AUDITORÍA TÉCNICA: MONITOR DE MEDIOS                          ║
+║  Objetivo: Encontrar por qué algunos medios funcionan/no       ║
+╚════════════════════════════════════════════════════════════════╝
+
+
+=== PARTE 1: SOURCES CONFIGURADAS ===
+
+Total de fuentes: 37
+Habilitadas: 37
+
+✅ Agenfor (ID: 0c7dc541-8949-4f08-adbb-c35b270f36a9)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:40.249Z
+   Last format: rss
+   Interval: 60s
+
+✅ BAE negocios (ID: 5575f138-bdbd-4b0e-832c-e0bd7753cf3f)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:50:56.583Z
+   Last format: playwright-discovery
+   Interval: 60s
+
+✅ BBC Mundo (ID: 8323affc-24a1-4447-b796-564a98ce2de3)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:28.711Z
+   Last format: rss
+   Interval: 60s
+
+✅ Bola Vip (ID: 8d100e29-f8ed-4a38-ab07-60a41bf1bd6a)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:27.691Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ C5N (ID: c6344158-899d-4180-a761-69b0d4511485)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:39.266Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ Canal26 (ID: f1ad503b-9a11-40b2-99e0-9ebef9958c8e)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:27.003Z
+   Last format: rss
+   Interval: 60s
+
+✅ Chaco por dia (ID: 65c9df07-bf1a-4126-a708-995a6a548ffa)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:34.652Z
+   Last format: rss
+   Interval: 60s
+
+✅ Clarin (ID: 23af97d2-672f-4580-8ce0-28b7b7d3306f)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:31.426Z
+   Last format: rss
+   Interval: 60s
+
+✅ Diario Chaco (ID: 42e6a2e2-bc82-46ba-8300-bf33fb296255)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:29.054Z
+   Last format: rss
+   Interval: 60s
+
+✅ Diario El Comercial (ID: c5bb11bb-cedc-45a2-b7be-628b183cd478)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:30.085Z
+   Last format: rss
+   Interval: 60s
+
+✅ Diario Expres (ID: 12754228-f4d6-45ff-b343-0a12ea6c3084)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:38:30.094Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ Diario Formosa (ID: 6a75635e-7ce9-4f32-b28e-a8c6559e5808)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:44:04.261Z
+   Last format: playwright-discovery
+   Interval: 60s
+
+✅ Diario Norte (ID: 53ce65c7-ac7a-47e0-b993-9411bea05c0a)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:37.295Z
+   Last format: rss
+   Interval: 60s
+
+✅ Diario Ole (ID: d3d072ed-8be6-461e-93ae-bc1b78b353cd)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:38:03.123Z
+   Last format: rss
+   Interval: 60s
+
+✅ Diario Opinion (ID: 0da561ea-ed28-4e72-90b1-51e67a680a6f)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:37.511Z
+   Last format: rss
+   Interval: 60s
+
+✅ Diario tag (ID: d3bcc45e-01b8-4a91-9734-16b8365d4e6d)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:38:30.922Z
+   Last format: rss
+   Interval: 60s
+
+✅ El Cronista (ID: 96d234d6-addd-4fdd-96f6-545edb4be0af)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:50:40.586Z
+   Last format: rss
+   Interval: 60s
+
+✅ El Destape (ID: b954245c-7937-4201-af2a-90eb909b678c)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:38:32.425Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ Es nota diario (ID: 95389cd0-5f9f-48a4-8585-cd73e4835c41)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:30.276Z
+   Last format: rss
+   Interval: 60s
+
+✅ Fayer Tecno (ID: 571f7aef-8502-48c9-8680-830adf922832)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:24.991Z
+   Last format: rss
+   Interval: 60s
+
+✅ Fayer Wayer (ID: 8ef7a890-6695-43e3-8ecb-a4ad1b56fc53)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:25.051Z
+   Last format: rss
+   Interval: 60s
+
+✅ Guau Formosa (ID: 9ceafb79-2cb9-416e-8d44-108d9ac6ece8)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:39:12.765Z
+   Last format: playwright-discovery
+   Interval: 60s
+
+✅ La Derecha Diario (ID: ef87f2d5-81e1-42cf-b9b1-3b88c22e090c)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:24.260Z
+   Last format: rss
+   Interval: 60s
+
+✅ La Mañana (ID: 55e4af96-89bd-4db8-8066-366761109887)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✓
+   Last checked: 2026-06-30T21:38:02.888Z
+   Last format: playwright-discovery
+   Interval: 60s
+
+✅ La Nación (ID: 678d7bba-94b6-444d-8cdc-d749a418fc58)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:34.202Z
+   Last format: rss
+   Interval: 60s
+
+✅ Perfil (ID: 414658e0-92fd-4ea5-bc54-66f2b5917636)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:33.799Z
+   Last format: rss
+   Interval: 60s
+
+✅ Prensa Libre Fsa (ID: 339a58b7-315d-4dba-b07b-c69cdc713fff)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:38:31.194Z
+   Last format: rss
+   Interval: 60s
+
+✅ Reuters (ID: baecf026-8f5e-4d3f-9969-f7d0547914c8)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:36.977Z
+   Last format: sitemap-index
+   Interval: 60s
+
+✅ TN (ID: ccba2f5b-fbf0-4c16-9c86-2a96ef82be26)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:28.164Z
+   Last format: rss
+   Interval: 60s
+
+✅ Tecno (ID: c6fa4895-c88f-412f-b14a-af6a9cac09fd)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:29.786Z
+   Last format: rss
+   Interval: 60s
+
+✅ TyC Sports (ID: 62ff55a5-4b6f-4c77-88bd-0bcf1ae9900d)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:38.686Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ Uberbin Tecno (ID: 8b4019a0-7c33-40e2-8ca9-81a09190c542)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:31.283Z
+   Last format: rss
+   Interval: 60s
+
+✅ Urgente 24 (ID: e4e4b987-4c2e-4c5e-a349-fb85ee56f14b)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:38:30.683Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ Vía País (ID: 39b5a760-7997-4813-abc0-bd6a135ed092)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:26.513Z
+   Last format: playwright-discovery
+   Interval: 60s
+
+✅ Wired Tecno (ID: 69d9496f-b33a-43b8-9779-2e1ebde800a8)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:32.179Z
+   Last format: rss
+   Interval: 60s
+
+✅ Xataka (ID: b538c00c-d36c-42a8-81bd-9bd981e2365e)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:40:31.919Z
+   Last format: news-sitemap
+   Interval: 60s
+
+✅ Yahoo Noticias (ID: 7b6b9cc0-4433-4424-bec3-d95067b4eda2)
+   RSS: ✓
+   Sitemap: ✗
+   Home: ✗
+   Last checked: 2026-06-30T21:43:36.550Z
+   Last format: playwright-discovery
+   Interval: 60s
+
+
+=== PARTE 2: ARTÍCULOS DESCUBIERTOS (ÚLTIMOS 7 DÍAS) ===
+
+Total artículos (últimos 7 días): 0282720751683161915499158406935284744093723533082992852722711941921901601358777696160403633721
+
+📰 Reuters
+   Total: 2827
+   Pendientes: 5
+   Fetch (HTTP): 2218
+   Playwright: 0
+   Paywall: 0
+   RSS only: 604
+   Última: 2026-06-30T21:40:36.927Z
+
+📰 El Cronista
+   Total: 2075
+   Pendientes: 192
+   Fetch (HTTP): 1862
+   Playwright: 0
+   Paywall: 0
+   RSS only: 21
+   Última: 2026-06-30T21:43:36.889Z
+
+📰 TN
+   Total: 1683
+   Pendientes: 104
+   Fetch (HTTP): 1420
+   Playwright: 0
+   Paywall: 0
+   RSS only: 159
+   Última: 2026-06-30T21:36:39.117Z
+
+📰 TyC Sports
+   Total: 1619
+   Pendientes: 0
+   Fetch (HTTP): 1618
+   Playwright: 1
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T21:36:43.952Z
+
+📰 La Nación
+   Total: 1549
+   Pendientes: 2
+   Fetch (HTTP): 1509
+   Playwright: 0
+   Paywall: 1
+   RSS only: 37
+   Última: 2026-06-30T21:36:56.130Z
+
+📰 Perfil
+   Total: 915
+   Pendientes: 6
+   Fetch (HTTP): 762
+   Playwright: 6
+   Paywall: 0
+   RSS only: 141
+   Última: 2026-06-30T21:36:54.574Z
+
+📰 Clarin
+   Total: 840
+   Pendientes: 3
+   Fetch (HTTP): 832
+   Playwright: 0
+   Paywall: 1
+   RSS only: 4
+   Última: 2026-06-30T21:17:50.479Z
+
+📰 C5N
+   Total: 693
+   Pendientes: 29
+   Fetch (HTTP): 591
+   Playwright: 0
+   Paywall: 0
+   RSS only: 73
+   Última: 2026-06-30T21:36:45.767Z
+
+📰 El Destape
+   Total: 528
+   Pendientes: 262
+   Fetch (HTTP): 259
+   Playwright: 0
+   Paywall: 1
+   RSS only: 6
+   Última: 2026-06-30T21:38:31.831Z
+
+📰 Bola Vip
+   Total: 474
+   Pendientes: 0
+   Fetch (HTTP): 469
+   Playwright: 0
+   Paywall: 0
+   RSS only: 5
+   Última: 2026-06-30T21:22:19.124Z
+
+📰 Diario Ole
+   Total: 409
+   Pendientes: 19
+   Fetch (HTTP): 381
+   Playwright: 1
+   Paywall: 0
+   RSS only: 8
+   Última: 2026-06-30T21:22:58.711Z
+
+📰 La Derecha Diario
+   Total: 372
+   Pendientes: 36
+   Fetch (HTTP): 309
+   Playwright: 0
+   Paywall: 0
+   RSS only: 27
+   Última: 2026-06-30T21:35:52.102Z
+
+📰 Diario Chaco
+   Total: 353
+   Pendientes: 21
+   Fetch (HTTP): 332
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T21:40:29.002Z
+
+📰 Es nota diario
+   Total: 308
+   Pendientes: 0
+   Fetch (HTTP): 307
+   Playwright: 0
+   Paywall: 0
+   RSS only: 1
+   Última: 2026-06-30T21:22:23.135Z
+
+📰 Diario tag
+   Total: 299
+   Pendientes: 27
+   Fetch (HTTP): 272
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T21:35:30.994Z
+
+📰 Xataka
+   Total: 285
+   Pendientes: 33
+   Fetch (HTTP): 252
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T20:09:12.979Z
+
+📰 Chaco por dia
+   Total: 272
+   Pendientes: 0
+   Fetch (HTTP): 0
+   Playwright: 0
+   Paywall: 0
+   RSS only: 272
+   Última: 2026-06-30T21:01:32.266Z
+
+📰 Diario Norte
+   Total: 271
+   Pendientes: 0
+   Fetch (HTTP): 266
+   Playwright: 0
+   Paywall: 1
+   RSS only: 4
+   Última: 2026-06-30T21:17:55.393Z
+
+📰 Diario El Comercial
+   Total: 194
+   Pendientes: 0
+   Fetch (HTTP): 193
+   Playwright: 0
+   Paywall: 0
+   RSS only: 1
+   Última: 2026-06-30T21:17:49.087Z
+
+📰 Urgente 24
+   Total: 192
+   Pendientes: 22
+   Fetch (HTTP): 168
+   Playwright: 0
+   Paywall: 0
+   RSS only: 2
+   Última: 2026-06-30T21:20:53.424Z
+
+📰 Yahoo Noticias
+   Total: 190
+   Pendientes: 32
+   Fetch (HTTP): 107
+   Playwright: 13
+   Paywall: 1
+   RSS only: 37
+   Última: 2026-06-30T20:01:43.743Z
+
+📰 Diario Expres
+   Total: 160
+   Pendientes: 2
+   Fetch (HTTP): 158
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T20:01:04.751Z
+
+📰 Canal26
+   Total: 135
+   Pendientes: 21
+   Fetch (HTTP): 109
+   Playwright: 0
+   Paywall: 0
+   RSS only: 5
+   Última: 2026-06-30T21:22:18.742Z
+
+📰 Diario Opinion
+   Total: 87
+   Pendientes: 0
+   Fetch (HTTP): 86
+   Playwright: 0
+   Paywall: 0
+   RSS only: 1
+   Última: 2026-06-30T20:01:50.716Z
+
+📰 La Mañana
+   Total: 77
+   Pendientes: 1
+   Fetch (HTTP): 54
+   Playwright: 0
+   Paywall: 7
+   RSS only: 15
+   Última: 2026-06-30T14:43:16.996Z
+
+📰 BBC Mundo
+   Total: 69
+   Pendientes: 5
+   Fetch (HTTP): 64
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T20:01:46.427Z
+
+📰 Agenfor
+   Total: 61
+   Pendientes: 0
+   Fetch (HTTP): 0
+   Playwright: 0
+   Paywall: 0
+   RSS only: 61
+   Última: 2026-06-30T21:01:38.135Z
+
+📰 Wired Tecno
+   Total: 60
+   Pendientes: 0
+   Fetch (HTTP): 60
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T20:53:12.658Z
+
+📰 Prensa Libre Fsa
+   Total: 40
+   Pendientes: 2
+   Fetch (HTTP): 38
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T20:54:33.874Z
+
+📰 BAE negocios
+   Total: 36
+   Pendientes: 9
+   Fetch (HTTP): 22
+   Playwright: 0
+   Paywall: 0
+   RSS only: 5
+   Última: 2026-06-30T20:01:45.442Z
+
+📰 Fayer Tecno
+   Total: 33
+   Pendientes: 0
+   Fetch (HTTP): 33
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T16:02:28.737Z
+
+📰 Tecno
+   Total: 7
+   Pendientes: 0
+   Fetch (HTTP): 7
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T14:10:19.044Z
+
+📰 Fayer Wayer
+   Total: 2
+   Pendientes: 2
+   Fetch (HTTP): 0
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-30T20:00:59.290Z
+
+📰 Uberbin Tecno
+   Total: 1
+   Pendientes: 0
+   Fetch (HTTP): 1
+   Playwright: 0
+   Paywall: 0
+   RSS only: 0
+   Última: 2026-06-25T11:44:24.762Z
+
+
+=== PARTE 3: ANÁLISIS DE VALIDACIÓN ===
+
+
+❌ ERROR: COALESCE types uuid and integer cannot be matched
+error: COALESCE types uuid and integer cannot be matched
+    at C:\Users\ruben\Documents\Mis-Proyectos\news\node_modules\pg-pool\index.js:45:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async audit (file:///C:/Users/ruben/Documents/Mis-Proyectos/news/audit-monitor.mjs:94:29)
+
+📁 Informe guardado en: audit-2026-06-30.log
