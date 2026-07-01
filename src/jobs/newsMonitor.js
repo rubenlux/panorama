@@ -7,6 +7,7 @@ import { startRun, finishRun } from './workerUtils.js';
 import { browserAudit } from '../services/browserLifecycleLogger.js';
 import { MonitorProfiler } from './monitorProfiler.js';
 import { DiscoveryFactory, initializeFactory } from '../services/DiscoveryFactory.js';
+import { processEntityExtraction, processStoryDetection, processEventDetection, processOpportunityGeneration } from './newsMonitor/workers/index.js';
 
 const ai = new AiService();
 
@@ -3138,8 +3139,8 @@ export async function runNewsMonitor() {
     console.time('3. Entities & Trends');
     profiler.begin('Entity Matching + NER');
     await matchResearchEntities(allNewIds);
-    // Monitor NER → MONITOR entities → clusters
-    await discoverMonitorEntities(allNewIds);
+    // Monitor NER → MONITOR entities → clusters (via EntityWorker)
+    await processEntityExtraction(allNewIds);
 
     await refreshTrendingTopics();
     await checkAutoResearchTriggers();
@@ -3154,7 +3155,7 @@ export async function runNewsMonitor() {
     // Sprint 5.5 — story intelligence
     console.time('4. Story Intelligence (Stories)');
     profiler.begin('Story Detection + Clustering');
-    await detectStories(allNewIds);
+    await processStoryDetection(allNewIds);
     await markStaleStories();
     profiler.end('Story Detection + Clustering');
     console.timeEnd('4. Story Intelligence (Stories)');
@@ -3168,7 +3169,7 @@ export async function runNewsMonitor() {
         AND last_seen > now() - interval '2 hours'
     `);
     if (recentForOpps.length > 0) {
-      await generateAlgorithmicOpportunities(recentForOpps.map(r => r.id))
+      await processOpportunityGeneration(recentForOpps.map(r => r.id))
         .catch(e => console.error('[Monitor] Algo opportunities error:', e.message));
     }
     profiler.end('Opportunity Generation');
@@ -3188,7 +3189,7 @@ export async function runNewsMonitor() {
         AND last_seen > now() - interval '2 hours'
     `);
     const recentStoryIds = recentStories.map(r => r.id);
-    const eventStats = await detectEvents(recentStoryIds);
+    const eventStats = await processEventDetection(recentStoryIds);
     await markStaleEvents();
     profiler.end('Event Detection');
     console.timeEnd('6. Event Intelligence (Events)');
