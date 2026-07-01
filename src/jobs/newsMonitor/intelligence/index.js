@@ -44,6 +44,17 @@ export {
   MONITOR_STOPWORDS,
 } from './entities.js';
 
+// Re-export from original newsMonitor.js (will be extracted to entities.js in Phase 3)
+export {
+  discoverMonitorEntities,
+  matchResearchEntities,
+  upsertTrendCluster,
+  refreshTrendingTopics,
+  summarizePendingClusters,
+  markStaleClusters,
+  checkAutoResearchTriggers,
+} from '../../newsMonitor.js';
+
 // ── Events
 export {
   detectEvents,
