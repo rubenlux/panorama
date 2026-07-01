@@ -217,55 +217,47 @@ function extractMonitorEntities(title) {
 
 // ── Playwright URL discovery ──────────────────────────────────────────────────
 
-// URL Scoring: Intelligent pattern-based scoring
-function scoreUrl(url) {
-  let score = 0;
+// URL Candidate Check: Return true if worth opening, false if garbage
+function isCandidateUrl(url, mediaHostname) {
+  // Must be valid HTTP(S) URL
+  if (!url.startsWith('http')) return false;
 
-  // POSITIVE PATTERNS
-  const slug = url.split('/').pop();
+  // Social media exclusion: reject known social platforms
+  const socialDomains = ['facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'youtube.com', 'tiktok.com', 'linkedin.com'];
+  try {
+    const urlObj = new URL(url);
+    const hostname = urlObj.hostname.toLowerCase();
 
-  // Slug muy largo = probable artículo
-  if (slug && slug.length > 30) score += 50;
-  if (slug && slug.length > 20) score += 30;
+    // If URL is from a social platform, reject
+    if (socialDomains.some(social => hostname.includes(social))) {
+      return false;
+    }
 
-  // Fecha en URL
-  if (/\/\d{4}\/\d{2}\/\d{2}/i.test(url)) score += 40;
-  if (/\/\d{4}-\d{2}-\d{2}/i.test(url)) score += 35;
+    // If mediaHostname provided, verify URL belongs to that media
+    if (mediaHostname) {
+      const mediaDomain = mediaHostname.toLowerCase();
+      // Accept same domain (including www, m, amp variants)
+      if (!hostname.includes(mediaDomain.replace(/^www\./, ''))) {
+        return false;
+      }
+    }
+  } catch (e) {
+    return false; // Invalid URL
+  }
 
-  // Muchas palabras separadas con guiones
-  if ((slug?.match(/-/g) || []).length > 3) score += 30;
+  // Garbage filters: explicitly reject certain patterns
+  const badPatterns = [
+    /\/(rss|feed|sitemap|login|search|contacto|privacy|about|terms|autor|author|category|tag|page)\/?$/i,
+    /\?.*?(page|cat|author|tag|search)=/i,
+    /javascript:|mailto:/,
+    /\.(jpg|png|webp|pdf|gif|doc|docx)$/i,
+  ];
 
-  // Números en el slug (ID + slug)
-  if (/\d{4,}/.test(slug)) score += 20;
+  if (badPatterns.some(pattern => pattern.test(url))) {
+    return false;
+  }
 
-  // No termina en / (no es categoría pura)
-  if (!url.endsWith('/')) score += 15;
-
-  // Patrones comunes de artículos
-  if (/\/(noticia|articulo|post|news|story|article)s?\//i.test(url)) score += 50;
-  if (/\/(deportes|politica|economia|tecnologia|internacionales|salud|cultura|opinion)\//i.test(url)) score += 25;
-
-  // NEGATIVE PATTERNS
-
-  // Rutas de navegación
-  if (/\/(rss|feed|sitemap|login|search|contacto|privacy|about|terms|autor|author|category|tag|page)\/?$/i.test(url)) score -= 100;
-
-  // Parámetros de paginación/categoría
-  if (/\?.*?(page|cat|author|tag|search)=/i.test(url)) score -= 80;
-
-  // Enlaces rotos
-  if (url.includes('javascript:') || url.includes('mailto:') || url.endsWith('#')) score -= 100;
-
-  // Archivos
-  if (/\.(jpg|png|webp|pdf|gif|doc)$/i.test(url)) score -= 100;
-
-  // URLs muy cortas (probablemente categoría)
-  if (url.split('/').filter(p => p).length < 3) score -= 40;
-
-  // Dominios externos
-  if (!url.startsWith('http')) score -= 50;
-
-  return Math.max(0, score);
+  return true;
 }
 
 // Validar que un artículo sea real
@@ -720,7 +712,7 @@ async function extractArticleMetadata(page, url) {
   return metadata;
 }
 
-// Discovery: Extract ALL URLs from homepage and score them
+// Discovery: Extract URLs from homepage with garbage filtering
 async function discoverArticleUrlsFromHomepage(page, homeUrl) {
   try {
     await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
@@ -758,13 +750,67 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
     return Array.from(urls);
   });
 
-  // Score and sort
-  const scored = allUrls.map(url => ({ url, score: scoreUrl(url) }));
-  const topUrls = scored
-    .filter(u => u.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 30)
-    .map(u => u.url);
+  // Extract media hostname from homeUrl for domain verification
+  let mediaHostname = '';
+  try {
+    const urlObj = new URL(homeUrl);
+    mediaHostname = urlObj.hostname;
+  } catch (e) {
+    console.warn(`[Discovery] Could not parse homeUrl: ${e.message}`);
+  }
+
+  // Filter candidates and track rejection reasons
+  const discardStats = {
+    rss_feed: 0,
+    social_media: 0,
+    images: 0,
+    javascript_mailto: 0,
+    login_privacy_search: 0,
+    external_domain: 0,
+    invalid_url: 0
+  };
+
+  const candidates = allUrls.filter(url => {
+    if (!isCandidateUrl(url, mediaHostname)) {
+      // Categorize the rejection reason
+      if (/\.(jpg|png|webp|gif|pdf|doc|docx)$/i.test(url)) {
+        discardStats.images++;
+      } else if (/\/(rss|feed|sitemap)\/?$/i.test(url)) {
+        discardStats.rss_feed++;
+      } else if (/javascript:|mailto:/.test(url)) {
+        discardStats.javascript_mailto++;
+      } else if (/\/(login|search|contacto|privacy|about|terms|author|category|tag|page)\/?$/i.test(url)) {
+        discardStats.login_privacy_search++;
+      } else if (/\?.*?(page|cat|author|tag|search)=/i.test(url)) {
+        discardStats.login_privacy_search++;
+      } else if (['facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'youtube.com', 'tiktok.com', 'linkedin.com'].some(social => url.includes(social))) {
+        discardStats.social_media++;
+      } else if (!url.startsWith('http')) {
+        discardStats.invalid_url++;
+      } else {
+        discardStats.external_domain++;
+      }
+      return false;
+    }
+    return true;
+  });
+
+  // Log discovery summary
+  console.log(`[Discovery] Summary:`);
+  console.log(`[Discovery]   Found: ${allUrls.length} links`);
+  console.log(`[Discovery]   Accepted (same domain): ${candidates.length}`);
+  console.log(`[Discovery]   Discarded breakdown:`);
+  if (discardStats.social_media > 0) console.log(`[Discovery]     - social media: ${discardStats.social_media}`);
+  if (discardStats.rss_feed > 0) console.log(`[Discovery]     - rss/feed: ${discardStats.rss_feed}`);
+  if (discardStats.images > 0) console.log(`[Discovery]     - images: ${discardStats.images}`);
+  if (discardStats.javascript_mailto > 0) console.log(`[Discovery]     - javascript/mailto: ${discardStats.javascript_mailto}`);
+  if (discardStats.login_privacy_search > 0) console.log(`[Discovery]     - login/privacy/search: ${discardStats.login_privacy_search}`);
+  if (discardStats.external_domain > 0) console.log(`[Discovery]     - external domain: ${discardStats.external_domain}`);
+  if (discardStats.invalid_url > 0) console.log(`[Discovery]     - invalid url: ${discardStats.invalid_url}`);
+  console.log(`[Discovery]   Processing: ${Math.min(30, candidates.length)}`);
+
+  // Take first 30 in DOM order (no scoring)
+  const topUrls = candidates.slice(0, 30);
 
   return topUrls;
 }
@@ -772,6 +818,18 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
 // Extract metadata from multiple URLs with concurrency limit
 async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
   const articles = [];
+  const rejectStats = {
+    title_too_short: 0,
+    content_too_short: 0,
+    generic_title: 0,
+    url_is_homepage: 0,
+    canonical_is_homepage: 0,
+    no_published_date: 0,
+    og_type_invalid: 0,
+    jsonld_invalid: 0,
+    no_url: 0,
+    extraction_failed: 0
+  };
   const queue = [...urls];
   const workers = [];
 
@@ -790,42 +848,6 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
           title: metadata.cleanTitle || metadata.rawTitle,
         };
 
-        // DEBUG: Log EVERYTHING when title might fail validation
-        // Use article.title (the actual field being validated), not metadata.title
-        const validateTitle = article.title;
-        if (metadata && (!validateTitle || validateTitle.length < 20)) {
-          console.log(`\n[Extractor] 🔍 TITLE EXTRACTION FAILURE — FULL DIAGNOSTICS`);
-          console.log(`[Extractor] URL: ${url}`);
-          console.log(`[Extractor] ════════════════════════════════════════════════════════════`);
-
-          console.log(`[Extractor] PAGE READINESS:`);
-          if (metadata.pageReady) {
-            console.log(`[Extractor]   readyState: ${metadata.pageReady.readyState} (interactive=incomplete, complete=ready)`);
-            console.log(`[Extractor]   bodyLength: ${metadata.pageReady.bodyLength} chars`);
-            console.log(`[Extractor]   h1Count: ${metadata.pageReady.h1Count}`);
-            console.log(`[Extractor]   paragraphCount: ${metadata.pageReady.paragraphCount}`);
-          }
-
-          console.log(`[Extractor] TITLE SOURCES WITH LENGTHS:`);
-          if (metadata.titleSources) {
-            const s = metadata.titleSources;
-            console.log(`[Extractor]   JSON-LD (len=${s['json-ld'].length}): "${s['json-ld'].value?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   OG (len=${s['og'].length}): "${s['og'].value?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   H1 (len=${s['h1'].length}): "${s['h1'].value?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   Document (len=${s['document'].length}): "${s['document'].value?.slice(0, 60) || '(none)'}"`);
-            console.log(`[Extractor]   Twitter (len=${s['twitter'].length}): "${s['twitter'].value?.slice(0, 60) || '(none)'}"`);
-          }
-
-          console.log(`[Extractor] ════════════════════════════════════════════════════════════`);
-          console.log(`[Extractor] WINNER: ${metadata.titleWinner || '(none)'}`);
-          console.log(`[Extractor] Final title: "${validateTitle?.replace(/\n/g, '↵') || '(none)'}"`);
-          if (metadata.h1OuterHtml) {
-            console.log(`[Extractor] H1 HTML: ${metadata.h1OuterHtml.substring(0, 200)}`);
-          }
-          console.log(`[Extractor] Content: ${metadata.wordCount} words, ${metadata.paragraphCount} paragraphs`);
-          console.log(`[Extractor] ════════════════════════════════════════════════════════════\n`);
-        }
-
         if (metadata && validateArticle(article)) {
           articles.push({
             title: metadata.title,
@@ -835,9 +857,14 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
             guid: url
           });
         } else if (article._skipReason) {
-          console.log(`[Extractor] SKIP: reason=${article._skipReason} | ${url}`);
+          const reason = article._skipReason.split(':')[0];
+          if (rejectStats.hasOwnProperty(reason)) {
+            rejectStats[reason]++;
+          }
+          console.log(`[Extractor] REJECT: ${article._skipReason} | ${url}`);
         }
       } catch (e) {
+        rejectStats.extraction_failed++;
         console.warn(`[Extractor] Error processing ${url}: ${e.message}`);
       } finally {
         await page.close();
@@ -852,16 +879,24 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
 
   await Promise.all(workers);
 
-  // Log skipped articles
-  if (queue.length === 0 && articles.length === 0) {
-    console.log(`[Extractor] All URLs skipped validation`);
-  }
+  // Log extraction summary
+  console.log(`[Extractor] Summary:`);
+  console.log(`[Extractor]   URLs processed: ${urls.length}`);
+  console.log(`[Extractor]   Articles accepted: ${articles.length}`);
+  console.log(`[Extractor]   Rejected breakdown:`);
+  Object.entries(rejectStats).forEach(([reason, count]) => {
+    if (count > 0) {
+      console.log(`[Extractor]     - ${reason}: ${count}`);
+    }
+  });
 
   return articles;
 }
 
 async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
+  const isTraceSource = source.name === 'Guau Formosa';
+
   try {
     const { chromium } = await import('playwright');
     const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
@@ -878,6 +913,14 @@ async function discoverArticlesViaPlaywright(source) {
     const topUrls = await discoverArticleUrlsFromHomepage(page, homeUrl);
     console.log(`[Playwright Discovery] Found ${topUrls.length} candidate URLs from ${source.name}`);
 
+    if (isTraceSource) {
+      console.log(`\n[TRACE] URLs descubiertas (${topUrls.length}):`);
+      topUrls.slice(0, 25).forEach((url, i) => {
+        console.log(`  ${i+1}. ${url}`);
+      });
+      if (topUrls.length > 25) console.log(`  ... y ${topUrls.length - 25} más`);
+    }
+
     if (topUrls.length === 0) {
       await browser.close();
       return [];
@@ -887,6 +930,13 @@ async function discoverArticlesViaPlaywright(source) {
     console.log(`[Playwright Discovery] Extracting metadata from ${topUrls.length} URLs`);
     const articles = await extractArticlesWithConcurrency(browser, topUrls.slice(0, 20), 5);
     console.log(`[Playwright Discovery] Extracted ${articles.length} valid articles from ${source.name}`);
+
+    if (isTraceSource) {
+      console.log(`\n[TRACE] Artículos aceptados (${articles.length}):`);
+      articles.forEach((art, i) => {
+        console.log(`  ${i+1}. "${art.title.substring(0, 50)}..." (${art.wordCount} words)`);
+      });
+    }
 
     await browser.close();
     return articles;
@@ -964,6 +1014,9 @@ async function processSource(source) {
     }
 
     // Insert discovered items into DB
+    const isTraceSource = source.name === 'Guau Formosa';
+    if (isTraceSource) console.log(`\n[TRACE] Insertando ${items.length} items...\n`);
+
     for (const item of items) {
       const url = item.link;
       if (!url || !item.title) continue;
@@ -982,7 +1035,24 @@ async function processSource(source) {
         [source.id, item.guid || null, item.title, url,
          item.description || null, pubDate, hashUrl(url)]
       );
-      if (rows[0]) newIds.push(rows[0].id);
+      if (rows[0]) {
+        newIds.push(rows[0].id);
+        if (isTraceSource) {
+          console.log(`  ✅ INSERT: ${rows[0].id.substring(0, 8)}... "${item.title.substring(0, 40)}..."`);
+        }
+      } else {
+        if (isTraceSource) {
+          console.log(`  ⚠️  DUPLICATE: "${item.title.substring(0, 40)}..."`);
+        }
+      }
+    }
+
+    if (isTraceSource) {
+      console.log(`\n[TRACE] IDs realmente insertados (${newIds.length}):`);
+      newIds.forEach((id, i) => {
+        console.log(`  ${i+1}. ${id}`);
+      });
+      console.log();
     }
 
     if (format) {
@@ -1345,6 +1415,19 @@ const STORY_ENTITY_GATE_MIN_ARTICLE = 1; // min article entities to activate gat
 
 async function detectStories(newArticleIds) {
   if (newArticleIds.length === 0) return;
+
+  // [AUDIT] Log what detectStories receives
+  console.log(`\n[AUDIT] detectStories() recibió ${newArticleIds.length} artículos`);
+  const { rows: auditArticles } = await query(
+    `SELECT id, title, extraction_method, content_words FROM monitored_articles WHERE id = ANY($1::uuid[]) LIMIT 10`,
+    [newArticleIds]
+  );
+  auditArticles.forEach(a => {
+    const marker = a.id === 'd36fc24b-d390-4998-8d70-9781d8510066' ? ' ← TRACE ARTICLE' : '';
+    const state = `[${a.extraction_method || 'NULL'}, ${a.content_words || 0} words]`;
+    console.log(`  ${a.id.substring(0, 8)}... ${state} "${a.title.substring(0, 40)}..."${marker}`);
+  });
+  if (newArticleIds.length > 10) console.log(`  ... y ${newArticleIds.length - 10} más`);
 
   const { rows: articles } = await query(
     `SELECT id, title, source_id, detected_at FROM monitored_articles WHERE id = ANY($1::uuid[])`,
@@ -2816,6 +2899,14 @@ async function fetchPendingArticleContent() {
   if (pending.length === 0) return;
   console.log(`[Monitor] Fetching content for ${pending.length} articles…`);
 
+  // [AUDIT] Log pending articles
+  console.log(`\n[AUDIT] fetchPendingArticleContent() procesando (${pending.length} artículos):`);
+  pending.slice(0, 10).forEach(a => {
+    const marker = a.id === 'd36fc24b-d390-4998-8d70-9781d8510066' ? ' ← TRACE ARTICLE' : '';
+    console.log(`  ${a.id.substring(0, 8)}... ${a.url.substring(0, 50)}${marker}`);
+  });
+  if (pending.length > 10) console.log(`  ... y ${pending.length - 10} más`);
+
   let fetched = 0, playwright = 0, paywall = 0, failed = 0;
 
   for (const article of pending) {
@@ -2948,6 +3039,20 @@ export async function runNewsMonitor() {
     }
 
     console.log(`[Monitor] ${allNewIds.length} new articles from ${sources.length} sources`);
+
+    // [AUDIT] Log allNewIds
+    if (allNewIds.length > 0) {
+      console.log(`\n[AUDIT] allNewIds (${allNewIds.length} artículos):`);
+      const { rows: newArticles } = await query(
+        `SELECT id, title FROM monitored_articles WHERE id = ANY($1::uuid[]) ORDER BY detected_at DESC LIMIT 10`,
+        [allNewIds]
+      );
+      newArticles.forEach(a => {
+        const marker = a.id === 'd36fc24b-d390-4998-8d70-9781d8510066' ? ' ← TRACE ARTICLE' : '';
+        console.log(`  ${a.id.substring(0, 8)}... "${a.title.substring(0, 40)}..."${marker}`);
+      });
+      if (allNewIds.length > 10) console.log(`  ... y ${allNewIds.length - 10} más`);
+    }
 
     // Sprint 5.8 — fetch full article content in background (does not block intelligence pipeline)
     console.time('2. Content Extraction');
