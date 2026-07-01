@@ -343,7 +343,8 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
       for (const item of items) {
         let url = item.href;
         if (url && url.startsWith('/')) url = `https://www.facebook.com${url}`;
-        if (!url) url = baseUrl;
+        // Only keep posts with valid URLs; don't use baseUrl as fallback
+        if (!url) continue;
 
         // Always use content hash: the DOM walk-up (depth ≤ 25) becomes a common
         // ancestor across multiple post bodies, returning the same sibling post URL
