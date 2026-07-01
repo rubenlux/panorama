@@ -4,6 +4,13 @@
  */
 
 import pLimit from 'p-limit';
+import {
+  isBlockedByChallenge,
+  isGarbageUrl,
+  belongsToMedia,
+  extractArticleMetadata,
+  validateArticle,
+} from '../extraction/index.js';
 
 const DISCOVERY_LIMIT = 30; // How many URLs to open per homepage
 
@@ -11,11 +18,9 @@ const DISCOVERY_LIMIT = 30; // How many URLs to open per homepage
  * Discover article URLs from a media homepage
  * @param {Page} page - Playwright page object
  * @param {string} homeUrl - Homepage URL to scrape
- * @param {Object} helpers - {isBlockedByChallenge, isGarbageUrl, belongsToMedia}
  * @returns {Promise<Array>} Candidate URLs
  */
-async function discoverArticleUrlsFromHomepage(page, homeUrl, helpers) {
-  const { isBlockedByChallenge, isGarbageUrl, belongsToMedia } = helpers;
+async function discoverArticleUrlsFromHomepage(page, homeUrl) {
 
   try {
     await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
@@ -121,11 +126,9 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl, helpers) {
  * @param {Browser} browser - Playwright browser object
  * @param {Array<string>} urls - URLs to extract
  * @param {number} workerCount - Concurrency limit
- * @param {Object} helpers - {extractArticleMetadata, validateArticle}
  * @returns {Promise<Array>} Extracted articles
  */
-async function extractArticlesWithConcurrency(browser, urls, workerCount, helpers) {
-  const { extractArticleMetadata, validateArticle } = helpers;
+async function extractArticlesWithConcurrency(browser, urls, workerCount) {
 
   const articles = [];
   let metadataOk = 0;
@@ -214,12 +217,9 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount, helper
  * Discover articles via Playwright for a source
  * Uses homepage scraping when RSS/Sitemaps fail
  * @param {Object} source - Source record from DB
- * @param {Object} helpers - Helper functions and dependencies
  * @returns {Promise<Array>} Discovered articles
  */
-async function discoverArticlesViaPlaywright(source, helpers) {
-  const { extractArticleMetadata, validateArticle, isBlockedByChallenge, isGarbageUrl, belongsToMedia } = helpers;
-
+async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
   const isTraceSource = source.name === 'Guau Formosa';
 
@@ -236,11 +236,7 @@ async function discoverArticlesViaPlaywright(source, helpers) {
 
     // STEP 1: Discover URLs from homepage
     console.log(`[Playwright Discovery] Discovering URLs from ${homeUrl}`);
-    const topUrls = await discoverArticleUrlsFromHomepage(page, homeUrl, {
-      isBlockedByChallenge,
-      isGarbageUrl,
-      belongsToMedia,
-    });
+    const topUrls = await discoverArticleUrlsFromHomepage(page, homeUrl);
     console.log(`[Playwright Discovery] Found ${topUrls.length} candidate URLs from ${source.name}`);
 
     if (isTraceSource) {
@@ -258,10 +254,7 @@ async function discoverArticlesViaPlaywright(source, helpers) {
 
     // STEP 2: Extract metadata from top URLs with concurrency
     console.log(`[Playwright Discovery] Extracting metadata from ${topUrls.length} URLs`);
-    const articles = await extractArticlesWithConcurrency(browser, topUrls.slice(0, 20), 5, {
-      extractArticleMetadata,
-      validateArticle,
-    });
+    const articles = await extractArticlesWithConcurrency(browser, topUrls.slice(0, 20), 5);
     console.log(`[Playwright Discovery] Extracted ${articles.length} valid articles from ${source.name}`);
 
     if (isTraceSource) {

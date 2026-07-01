@@ -1,6 +1,7 @@
 /**
  * Discovery Module — Feed fetching, parsing, and URL extraction
  * Public API: All parser/fetcher utilities + DiscoveryFactory
+ * Re-exports extraction functions for convenience
  */
 
 export {
@@ -28,3 +29,13 @@ export {
   DiscoveryStrategy,
   initializeFactory,
 } from './DiscoveryFactory.js';
+
+// Re-export extraction functions for convenience (discovery depends on extraction)
+export {
+  belongsToMedia,
+  isGarbageUrl,
+  isBlockedByChallenge,
+  isCandidateUrl,
+  validateArticle,
+  extractArticleMetadata,
+} from '../extraction/index.js';
