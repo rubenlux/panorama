@@ -66,11 +66,14 @@ class RssDiscovery extends DiscoveryStrategy {
     const articles = [];
     let format = null;
 
-    if (!source.discovery_url) {
+    // Map: current schema uses rss_url, not discovery_url (Sprint 2 schema mismatch fix)
+    const discoveryUrl = source.discovery_url || source.rss_url;
+
+    if (!discoveryUrl) {
       return { articles: [], format: null };
     }
 
-    const xml = await fetchFeedXml(source.discovery_url);
+    const xml = await fetchFeedXml(discoveryUrl);
     if (!xml) {
       return { articles: [], format: null };
     }
@@ -104,11 +107,14 @@ class SitemapDiscovery extends DiscoveryStrategy {
     const articles = [];
     let format = null;
 
-    if (!source.discovery_url) {
+    // Map: current schema uses rss_url, not discovery_url
+    const discoveryUrl = source.discovery_url || source.rss_url;
+
+    if (!discoveryUrl) {
       return { articles: [], format: null };
     }
 
-    const xml = await fetchFeedXml(source.discovery_url);
+    const xml = await fetchFeedXml(discoveryUrl);
     if (!xml) {
       return { articles: [], format: null };
     }
