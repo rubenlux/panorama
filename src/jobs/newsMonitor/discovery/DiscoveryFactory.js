@@ -10,6 +10,15 @@
  * Future methods (GOOGLE_NEWS, ATOM, API) plug in without modifying newsMonitor.
  */
 
+import {
+  fetchFeedXml,
+  parseRssItems,
+  parseNewsSitemapItems,
+  parseSitemapIndexUrls,
+  detectFeedFormat,
+  discoverArticlesViaPlaywright,
+} from './index.js';
+
 // Abstract base class for all discovery strategies
 class DiscoveryStrategy {
   async execute(source) {
@@ -48,17 +57,9 @@ class DiscoveryStrategy {
   }
 }
 
-// Importable from newsMonitor - these are defined there
-let fetchFeedXml, parseRssItems, parseNewsSitemapItems, parseSitemapIndexUrls, detectFeedFormat, discoverArticlesViaPlaywright;
-
-// Import functions from newsMonitor (passed during factory initialization)
-export function initializeFactory({ fetchFeedXml: ffx, parseRssItems: pri, parseNewsSitemapItems: pnsi, parseSitemapIndexUrls: psiu, detectFeedFormat: dff, discoverArticlesViaPlaywright: davp }) {
-  fetchFeedXml = ffx;
-  parseRssItems = pri;
-  parseNewsSitemapItems = pnsi;
-  parseSitemapIndexUrls = psiu;
-  detectFeedFormat = dff;
-  discoverArticlesViaPlaywright = davp;
+// Legacy compatibility: initializeFactory is now a no-op (imports happen at module load)
+export function initializeFactory() {
+  // No-op: All functions now imported directly from module
 }
 
 class RssDiscovery extends DiscoveryStrategy {
