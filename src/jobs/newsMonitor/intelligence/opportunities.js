@@ -4,8 +4,8 @@
  * and AI-driven opportunities (on-demand via POST /editorial-workflow/dossiers/:id/enrich)
  */
 
-import { query } from '../../routes/db.js';
-import { AiService } from '../../services/AiService.js';
+import { query } from '../../../routes/db.js';
+import { AiService } from '../../../services/AiService.js';
 import {
   STORY_WINDOW_HOURS,
   STORY_SUMMARY_MIN_ARTICLES,

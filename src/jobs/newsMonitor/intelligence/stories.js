@@ -5,8 +5,8 @@
  * Cost Killer 1+2: Algorithmic summaries (no AI)
  */
 
-import { query } from '../../routes/db.js';
-import { AiService } from '../../services/AiService.js';
+import { query } from '../../../routes/db.js';
+import { AiService } from '../../../services/AiService.js';
 import { MONITOR_STOPWORDS } from './entities.js';
 
 const ai = new AiService();

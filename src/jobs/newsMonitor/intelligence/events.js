@@ -5,8 +5,8 @@
  * Cost Killer 1: Algorithmic editorial scoring (no AI for simple events)
  */
 
-import { query } from '../../routes/db.js';
-import { AiService } from '../../services/AiService.js';
+import { query } from '../../../routes/db.js';
+import { AiService } from '../../../services/AiService.js';
 import { RELEVANCE_FILTER_THRESHOLD } from './stories.js';
 
 const ai = new AiService();
