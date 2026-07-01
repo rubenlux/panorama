@@ -246,17 +246,29 @@ function isGarbageUrl(url) {
   if (/\?.*?(page|search|q)=/i.test(url)) return true;
 
   // Garbage paths: only match complete path segments, not text within slug
-  // Match /segment/ or segment$ at end of path
   const pathSegments = new URL(url).pathname.split('/').filter(s => s);
   const garbageSegments = ['rss', 'feed', 'sitemap', 'login', 'signin', 'logout', 'search',
                            'contacto', 'contact', 'privacy', 'about', 'terms', 'legal',
-                           'help', 'faq', 'suscripci', 'subscribe', 'ads', 'jobs', 'carrera'];
+                           'help', 'faq', 'suscripci', 'subscribe', 'ads', 'jobs', 'carrera',
+                           'category', 'tag', 'author', 'page', 'archivo'];
 
   if (pathSegments.some(seg => garbageSegments.includes(seg.toLowerCase()))) {
     return true;
   }
 
   return false;
+}
+
+// Detect Cloudflare or other blocking challenges
+function isBlockedByChallenge(title, content) {
+  const cloudflareIndicators = [
+    title === 'Just a moment...',
+    content.includes('/cdn-cgi/challenge-platform/'),
+    content.includes('Checking your browser'),
+    content.includes('Attention Required'),
+    content.includes('cf-browser-verification'),
+  ];
+  return cloudflareIndicators.some(indicator => indicator);
 }
 
 // URL Candidate Check: Return true if worth opening, false if garbage
@@ -743,6 +755,15 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
     await page.waitForTimeout(500);
   } catch (e) {
     console.warn(`[Discovery] Navigation failed: ${e.message}`);
+    return [];
+  }
+
+  // Check for Cloudflare or other blocking challenges
+  const pageTitle = await page.title();
+  const pageContent = await page.content();
+
+  if (isBlockedByChallenge(pageTitle, pageContent)) {
+    console.log(`[Discovery] BLOCKED_BY_CLOUDFLARE | source_url=${homeUrl} | title="${pageTitle}"`);
     return [];
   }
 
