@@ -3184,8 +3184,30 @@ export async function runNewsMonitor() {
 
     console.timeEnd('Full Cycle');
 
-    // Profiling report
-    profiler.report();
+    // Add metrics before reporting
+    profiler.setMetrics({
+      browsers: playwrightMetrics.browsersLaunched,
+      pages: playwrightMetrics.pagesOpened,
+      articlesFound: itemsFound,
+      articlesValid: itemsFound, // All found were valid (already filtered)
+    });
+
+    // Profiling report (includes JSON export)
+    const profileJson = profiler.report();
+
+    // Export to JSON for analysis
+    try {
+      const fs = await import('fs').then(m => m.promises);
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const filePath = `./logs/monitor-profile-${timestamp}.json`;
+
+      // Ensure logs directory exists
+      await fs.mkdir('./logs', { recursive: true });
+      await fs.writeFile(filePath, JSON.stringify(profileJson, null, 2));
+      console.log(`[Monitor] Profile saved to ${filePath}`);
+    } catch (e) {
+      console.warn(`[Monitor] Could not save profile JSON: ${e.message}`);
+    }
 
     // Ranking summary
     console.log('\n--- Resource Metrics ---');
