@@ -6,6 +6,7 @@ import { fetchArticleContentForMonitor, playwrightMetrics } from '../services/Ar
 import { startRun, finishRun } from './workerUtils.js';
 import { browserAudit } from '../services/browserLifecycleLogger.js';
 import { MonitorProfiler } from './monitorProfiler.js';
+import { DiscoveryFactory, initializeFactory } from '../services/DiscoveryFactory.js';
 
 const ai = new AiService();
 
@@ -997,71 +998,76 @@ async function discoverArticlesViaPlaywright(source) {
   }
 }
 
+// ── Discovery Strategy (Sprint 2) ─────────────────────────────────────────────
+// DiscoveryFactory pattern: operator chooses method, worker executes
+
+async function discoverArticlesForSource(source) {
+  let articles = [];
+  let status = 'OK';
+  let errorMessage = null;
+  let format = null;
+  const startTime = Date.now();
+
+  try {
+    const discoveryType = source.discovery_type || 'RSS';
+    const strategy = DiscoveryFactory.get(discoveryType);
+    const result = await strategy.execute(source);
+    articles = result.articles;
+    format = result.format;
+
+    if (articles.length === 0) {
+      status = 'EMPTY';
+    } else {
+      status = 'OK';
+    }
+
+  } catch (error) {
+    const classification = DiscoveryFactory.classifyError(error);
+    status = classification.status;
+    errorMessage = classification.error;
+    articles = [];
+  }
+
+  const durationMs = Date.now() - startTime;
+
+  // Update discovery status and metrics in database
+  try {
+    await query(
+      `UPDATE news_sources
+       SET last_discovery_status = $1,
+           last_discovery_error = $2,
+           last_discovery_duration_ms = $3,
+           last_articles_found = $4,
+           last_discovery_at = NOW()
+       WHERE id = $5`,
+      [status, errorMessage, durationMs, articles.length, source.id]
+    );
+  } catch (dbError) {
+    console.error(`[Monitor] Failed to update discovery status for "${source.name}": ${dbError.message}`);
+  }
+
+  return { articles, status, errorMessage, format };
+}
+
 // ── Source processing ─────────────────────────────────────────────────────────
 
 async function processSource(source) {
   const newIds = [];
   let format = null;
   let items = [];
+  let discoveryStatus = 'OK';
 
   try {
-    // Try RSS (or provided rss_url)
-    if (source.rss_url) {
-      const xml = await fetchFeedXml(source.rss_url);
-      if (xml) {
-        format = detectFeedFormat(xml);
-        if (format === 'news-sitemap') {
-          items = parseNewsSitemapItems(xml);
-        } else if (format === 'sitemap-index') {
-          const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
-          for (const childUrl of childUrls) {
-            try {
-              const childXml = await fetchFeedXml(childUrl);
-              if (!childXml) continue;
-              const childFmt = detectFeedFormat(childXml);
-              items.push(...(childFmt === 'news-sitemap'
-                ? parseNewsSitemapItems(childXml)
-                : parseRssItems(childXml)));
-            } catch {}
-            if (items.length >= 60) break;
-          }
-        } else {
-          items = parseRssItems(xml);
-        }
-      }
-    }
+    // Use discovery strategy (Sprint 2): single switch statement, no fallbacks
+    const discovery = await discoverArticlesForSource(source);
+    items = discovery.articles;
+    discoveryStatus = discovery.status;
+    format = discovery.format;
 
-    // Fallback: Try sitemap_url if RSS failed
-    if (items.length === 0 && source.sitemap_url) {
-      const xml = await fetchFeedXml(source.sitemap_url);
-      if (xml) {
-        format = detectFeedFormat(xml);
-        if (format === 'news-sitemap') {
-          items = parseNewsSitemapItems(xml);
-        } else if (format === 'sitemap-index') {
-          const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
-          for (const childUrl of childUrls) {
-            try {
-              const childXml = await fetchFeedXml(childUrl);
-              if (!childXml) continue;
-              const childFmt = detectFeedFormat(childXml);
-              items.push(...(childFmt === 'news-sitemap'
-                ? parseNewsSitemapItems(childXml)
-                : parseRssItems(childXml)));
-            } catch {}
-            if (items.length >= 60) break;
-          }
-        }
-      }
-    }
-
-    // Fallback: Use Playwright to discover URLs from homepage
-    if (items.length === 0) {
-      console.log(`[Monitor] "${source.name}" RSS/Sitemap failed → trying Playwright discovery`);
-      const articles = await discoverArticlesViaPlaywright(source);
-      console.log(`[Monitor] "${source.name}" Playwright found ${articles.length} articles`);
-      items = articles;
-      format = format || 'playwright-discovery';
+    if (discoveryStatus === 'OK' || discoveryStatus === 'EMPTY') {
+      console.log(`[Monitor] "${source.name}" (${source.discovery_type}): ${items.length} items found`);
+    } else {
+      console.log(`[Monitor] "${source.name}" discovery failed: ${discoveryStatus} - ${discovery.errorMessage || 'unknown error'}`);
     }
 
     // Insert discovered items into DB
@@ -3045,6 +3051,17 @@ export async function runNewsMonitor() {
   try {
     console.time('1. Feed (Sources + Fetching)');
     profiler.begin('RSS + Playwright Discovery');
+
+    // Initialize DiscoveryFactory with helper functions
+    initializeFactory({
+      fetchFeedXml,
+      parseRssItems,
+      parseNewsSitemapItems,
+      parseSitemapIndexUrls,
+      detectFeedFormat,
+      discoverArticlesViaPlaywright
+    });
+
     const { rows: sources } = await query(`
       SELECT * FROM rss_sources
       WHERE enabled = true
