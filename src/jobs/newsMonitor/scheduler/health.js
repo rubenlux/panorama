@@ -10,8 +10,8 @@
  * Phase 3+: May consolidate cleanup operations here
  */
 
-// Re-export freshness recalculation from stories
-export { recalcFreshness } from '../intelligence/stories.js';
+// Re-export freshness recalculation from original file (Phase 3: will move to separate module)
+export { recalcFreshness } from '../../newsMonitor.js';
 
 // Re-export stale-marking functions from intelligence
 export { markStaleStories } from '../intelligence/stories.js';
