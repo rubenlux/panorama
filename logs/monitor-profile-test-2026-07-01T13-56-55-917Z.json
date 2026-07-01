@@ -1,0 +1,63 @@
+{
+  "timestamp": "2026-07-01T13:56:54.491Z",
+  "duration_ms": 1425,
+  "cpu_user_ms": "0",
+  "peak_memory_mb": "4.5",
+  "chromium": {
+    "browsers": 1,
+    "contexts": 2,
+    "pages": 5
+  },
+  "articles": {
+    "found": 42,
+    "valid": 38,
+    "throughput_per_sec": "26.67"
+  },
+  "components": [
+    {
+      "name": "RSS Discovery",
+      "wall_ms": 513,
+      "cpu_ms": "0",
+      "pct_time": "36.0",
+      "pct_cpu": "0.0"
+    },
+    {
+      "name": "Playwright Extraction",
+      "wall_ms": 402,
+      "cpu_ms": "0",
+      "pct_time": "28.2",
+      "pct_cpu": "0.0"
+    },
+    {
+      "name": "URL Extraction",
+      "wall_ms": 303,
+      "cpu_ms": "0",
+      "pct_time": "21.3",
+      "pct_cpu": "0.0"
+    },
+    {
+      "name": "Story Clustering",
+      "wall_ms": 205,
+      "cpu_ms": "0",
+      "pct_time": "14.4",
+      "pct_cpu": "0.0"
+    }
+  ],
+  "source_timings": {
+    "Reuters": [
+      1200,
+      1250,
+      1100
+    ],
+    "TN": [
+      950,
+      1000,
+      900
+    ],
+    "BBC": [
+      2500,
+      2400,
+      2600
+    ]
+  }
+}

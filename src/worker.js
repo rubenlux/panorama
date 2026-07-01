@@ -1,7 +1,8 @@
 import "dotenv/config";
 import cron from "node-cron";
 import { calculateAdRevenue } from "./jobs/calculateAdRevenue.js";
-import { runNewsMonitor, recalcFreshness } from "./jobs/newsMonitor.js";
+import { runNewsMonitor } from "./jobs/newsMonitor/index.js";
+import { recalcFreshness } from "./jobs/newsMonitor.js";
 import { runSocialMonitor }   from "./jobs/socialMonitor.js";
 import { trackedSourceMonitor } from "./jobs/trackedSourceMonitor.js";
 import { pool } from "./routes/db.js";
