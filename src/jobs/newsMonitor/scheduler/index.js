@@ -18,7 +18,4 @@ export {
   markStaleEvents,
 } from './health.js';
 
-// ── Content Fetching (still in newsMonitor.js, will extract in Phase 3)
-export {
-  fetchPendingArticleContent,
-} from '../../newsMonitor.js';
+// ── Content Fetching (Phase 3: will extract fetchPendingArticleContent from newsMonitor.js)
