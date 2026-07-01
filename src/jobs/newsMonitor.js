@@ -5,6 +5,7 @@ import { AiService } from '../services/AiService.js';
 import { fetchArticleContentForMonitor, playwrightMetrics } from '../services/ArticleFetcher.js';
 import { startRun, finishRun } from './workerUtils.js';
 import { browserAudit } from '../services/browserLifecycleLogger.js';
+import { MonitorProfiler } from './monitorProfiler.js';
 
 const ai = new AiService();
 
@@ -3008,6 +3009,8 @@ export async function runNewsMonitor() {
   }
   isNewsRunning = true;
   const cycleStart = Date.now();
+  const profiler = new MonitorProfiler();
+  profiler.start();
   browserAudit.resetPeaks();
 
   // Respect pause flag — lets the CMS pause AI consumption without stopping the process
@@ -3041,6 +3044,7 @@ export async function runNewsMonitor() {
 
   try {
     console.time('1. Feed (Sources + Fetching)');
+    profiler.begin('RSS + Playwright Discovery');
     const { rows: sources } = await query(`
       SELECT * FROM rss_sources
       WHERE enabled = true
@@ -3049,6 +3053,7 @@ export async function runNewsMonitor() {
     `);
 
     if (sources.length === 0) {
+      profiler.end('RSS + Playwright Discovery');
       console.timeEnd('1. Feed (Sources + Fetching)');
       console.timeEnd('Full Cycle');
       await finishRun(runId, { status: 'success' });
@@ -3064,6 +3069,7 @@ export async function runNewsMonitor() {
     }
 
     itemsFound = allNewIds.length;
+    profiler.end('RSS + Playwright Discovery');
     console.timeEnd('1. Feed (Sources + Fetching)');
 
     if (allNewIds.length === 0) {
@@ -3106,17 +3112,21 @@ export async function runNewsMonitor() {
 
     // Sprint 5.8 — fetch full article content in background (does not block intelligence pipeline)
     console.time('2. Content Extraction');
+    profiler.begin('HTTP Fetch');
     await fetchPendingArticleContent().catch(e => console.error('[Monitor] Content fetch error:', e.message));
+    profiler.end('HTTP Fetch');
     console.timeEnd('2. Content Extraction');
 
     // Research entity matching (knowledge base context)
     console.time('3. Entities & Trends');
+    profiler.begin('Entity Matching + NER');
     await matchResearchEntities(allNewIds);
     // Monitor NER → MONITOR entities → clusters
     await discoverMonitorEntities(allNewIds);
 
     await refreshTrendingTopics();
     await checkAutoResearchTriggers();
+    profiler.end('Entity Matching + NER');
     console.timeEnd('3. Entities & Trends');
 
     // Sprint 5.3 — trend clusters
@@ -3126,12 +3136,15 @@ export async function runNewsMonitor() {
 
     // Sprint 5.5 — story intelligence
     console.time('4. Story Intelligence (Stories)');
+    profiler.begin('Story Detection + Clustering');
     await detectStories(allNewIds);
     await markStaleStories();
+    profiler.end('Story Detection + Clustering');
     console.timeEnd('4. Story Intelligence (Stories)');
-    
+
     // [Cost Killer 2] Algorithmic opportunities — no IA, runs every cycle
     console.time('5. Opportunities (Algo)');
+    profiler.begin('Opportunity Generation');
     const { rows: recentForOpps } = await query(`
       SELECT id FROM story_clusters
       WHERE status IN ('active','ready') AND is_recurring = false
@@ -3141,6 +3154,7 @@ export async function runNewsMonitor() {
       await generateAlgorithmicOpportunities(recentForOpps.map(r => r.id))
         .catch(e => console.error('[Monitor] Algo opportunities error:', e.message));
     }
+    profiler.end('Opportunity Generation');
     console.timeEnd('5. Opportunities (Algo)');
 
     // Sprint 5.6.1 — editorial opportunity engine
@@ -3149,6 +3163,7 @@ export async function runNewsMonitor() {
 
     // Sprint 5.6 — event intelligence
     console.time('6. Event Intelligence (Events)');
+    profiler.begin('Event Detection');
     const { rows: recentStories } = await query(`
       SELECT id FROM story_clusters
       WHERE status IN ('active','ready','followed')
@@ -3158,6 +3173,7 @@ export async function runNewsMonitor() {
     const recentStoryIds = recentStories.map(r => r.id);
     const eventStats = await detectEvents(recentStoryIds);
     await markStaleEvents();
+    profiler.end('Event Detection');
     console.timeEnd('6. Event Intelligence (Events)');
     console.log('\n=== Event Clustering Report ===');
     console.log(`Stories analyzed:               ${eventStats.storiesAnalyzed}`);
@@ -3167,6 +3183,9 @@ export async function runNewsMonitor() {
     console.log('================================\n');
 
     console.timeEnd('Full Cycle');
+
+    // Profiling report
+    profiler.report();
 
     // Ranking summary
     console.log('\n--- Resource Metrics ---');
