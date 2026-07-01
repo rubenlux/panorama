@@ -1033,7 +1033,7 @@ async function discoverArticlesForSource(source) {
   // Update discovery status and metrics in database
   try {
     await query(
-      `UPDATE news_sources
+      `UPDATE rss_sources
        SET last_discovery_status = $1,
            last_discovery_error = $2,
            last_discovery_duration_ms = $3,
