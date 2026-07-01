@@ -216,6 +216,7 @@ function extractMonitorEntities(title) {
 }
 
 // ── Playwright URL discovery ──────────────────────────────────────────────────
+const DISCOVERY_LIMIT = 30; // Configurable: how many URLs to open per homepage
 
 // Check if hostname belongs to media (exact match or subdomain)
 function belongsToMedia(hostname, mediaHostname) {
@@ -233,6 +234,31 @@ function belongsToMedia(hostname, mediaHostname) {
   return false;
 }
 
+// Check if URL is obviously garbage (not an article)
+function isGarbageUrl(url) {
+  // File extensions
+  if (/\.(jpg|png|webp|pdf|gif|doc|docx)$/i.test(url)) return true;
+
+  // Broken URLs
+  if (/javascript:|mailto:/.test(url)) return true;
+
+  // Query parameters (search, pagination)
+  if (/\?.*?(page|search|q)=/i.test(url)) return true;
+
+  // Garbage paths: only match complete path segments, not text within slug
+  // Match /segment/ or segment$ at end of path
+  const pathSegments = new URL(url).pathname.split('/').filter(s => s);
+  const garbageSegments = ['rss', 'feed', 'sitemap', 'login', 'signin', 'logout', 'search',
+                           'contacto', 'contact', 'privacy', 'about', 'terms', 'legal',
+                           'help', 'faq', 'suscripci', 'subscribe', 'ads', 'jobs', 'carrera'];
+
+  if (pathSegments.some(seg => garbageSegments.includes(seg.toLowerCase()))) {
+    return true;
+  }
+
+  return false;
+}
+
 // URL Candidate Check: Return true if worth opening, false if garbage
 function isCandidateUrl(url, mediaHostname) {
   // Must be valid HTTP(S) URL
@@ -242,25 +268,17 @@ function isCandidateUrl(url, mediaHostname) {
     const urlObj = new URL(url);
     const hostname = urlObj.hostname.toLowerCase();
 
-    // Verify URL belongs to media domain (automatically rejects social platforms)
+    // Step 1: Verify URL belongs to media domain (automatically rejects social platforms)
     if (!belongsToMedia(hostname, mediaHostname)) {
+      return false;
+    }
+
+    // Step 2: Check if obviously garbage
+    if (isGarbageUrl(url)) {
       return false;
     }
   } catch (e) {
     return false; // Invalid URL
-  }
-
-  // Garbage filters: explicitly reject certain patterns
-  // Conservative: only reject clearly non-article paths
-  const badPatterns = [
-    /\/(rss|feed|sitemap|login|signin|logout|search|contacto|contact|privacy|about|terms|legal|help|faq|podcast|newsletter|suscripci|subscribe|publicidad|ads|jobs|carrera)\/?$/i,
-    /\?.*?(page|search|q)=/i,  // Pagination and search params only
-    /javascript:|mailto:/,
-    /\.(jpg|png|webp|pdf|gif|doc|docx)$/i,
-  ];
-
-  if (badPatterns.some(pattern => pattern.test(url))) {
-    return false;
   }
 
   return true;
@@ -718,7 +736,7 @@ async function extractArticleMetadata(page, url) {
   return metadata;
 }
 
-// Discovery: Extract URLs from homepage with garbage filtering
+// Discovery: Extract URLs from homepage, filter by domain and garbage only
 async function discoverArticleUrlsFromHomepage(page, homeUrl) {
   try {
     await page.goto(homeUrl, { waitUntil: 'domcontentloaded', timeout: 15_000 });
@@ -758,112 +776,56 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
 
   // Extract media hostname from homeUrl for domain verification
   let mediaHostname = '';
-  let origin = '';
   try {
     const urlObj = new URL(homeUrl);
     mediaHostname = urlObj.hostname;
-    origin = urlObj.origin;
   } catch (e) {
     console.warn(`[Discovery] Could not parse homeUrl: ${e.message}`);
   }
 
-  // Filter candidates and track rejection reasons
-  const discardStats = {
-    rss_feed: 0,
-    navigation: 0,
-    images: 0,
-    javascript_mailto: 0,
-    garbage: 0,
-    external_domain: 0,
-    invalid_url: 0,
-    homepage: 0,
-    anchor: 0,
-    duplicate: 0
-  };
-
-  // Step 1: Apply garbage filters
-  const filtered = allUrls.filter(url => {
-    if (!isCandidateUrl(url, mediaHostname)) {
-      // Categorize the rejection reason
-      if (/\.(jpg|png|webp|gif|pdf|doc|docx)$/i.test(url)) {
-        discardStats.images++;
-      } else if (/\/(rss|feed|sitemap)\/?$/i.test(url)) {
-        discardStats.rss_feed++;
-      } else if (/javascript:|mailto:/.test(url)) {
-        discardStats.javascript_mailto++;
-      } else if (!url.startsWith('http')) {
-        discardStats.invalid_url++;
-      } else if (!belongsToMedia(new URL(url).hostname, mediaHostname)) {
-        discardStats.external_domain++;
-      } else {
-        discardStats.garbage++;
-      }
+  // Step 1: Filter by domain (must belong to media)
+  const sameDomaincounter = 0;
+  const sameDomain = allUrls.filter(url => {
+    try {
+      const urlObj = new URL(url);
+      return belongsToMedia(urlObj.hostname, mediaHostname);
+    } catch {
       return false;
     }
-    return true;
   });
 
-  // Step 2: Remove homepage (/ only)
-  const noHomepage = filtered.filter(url => {
-    const path = new URL(url).pathname;
-    if (path === '/' || path === '') {
-      discardStats.homepage++;
-      return false;
-    }
-    return true;
-  });
+  // Step 2: Filter by garbage (reject obvious non-articles)
+  const garbageCount = 0;
+  const notGarbage = sameDomain.filter(url => !isGarbageUrl(url));
 
-  // Step 3: Remove anchors within page (#section)
-  const noAnchors = noHomepage.filter(url => {
-    if (url.includes('#')) {
-      discardStats.anchor++;
-      return false;
-    }
-    return true;
-  });
-
-  // Step 4: Remove navigation patterns (common false positives)
-  const navigationPatterns = [
-    /\/(logo|header|footer|nav|navbar|menu|suscri|suscript|contact|quienes|about|terms|privacy|help|faq|jobs|carrera|podcast|adverti|publicidad)/i,
-    /\?.*?(utm_|ref|fbclid|gclid)/,  // Campaign/tracking params
-  ];
-  const noNavigation = noAnchors.filter(url => {
-    if (navigationPatterns.some(p => p.test(url))) {
-      discardStats.navigation++;
-      return false;
-    }
-    return true;
-  });
-
-  // Step 5: Remove duplicates (keep first occurrence in DOM order)
+  // Step 3: Remove duplicates (keep first occurrence in DOM order)
   const deduped = [];
   const seen = new Set();
-  noNavigation.forEach(url => {
+  notGarbage.forEach(url => {
     if (!seen.has(url)) {
       seen.add(url);
       deduped.push(url);
     }
   });
-  discardStats.duplicate = noNavigation.length - deduped.length;
 
-  // Step 6: Take first 30 candidates (now likely to be real articles, not nav)
-  const topUrls = deduped.slice(0, 30);
+  // Step 4: Take first DISCOVERY_LIMIT candidates
+  const topUrls = deduped.slice(0, DISCOVERY_LIMIT);
 
-  // Log discovery summary
-  console.log(`[Discovery] Summary:`);
-  console.log(`[Discovery]   Found: ${allUrls.length} links`);
-  console.log(`[Discovery]   Discarded breakdown:`);
-  if (discardStats.homepage > 0) console.log(`[Discovery]     - homepage: ${discardStats.homepage}`);
-  if (discardStats.rss_feed > 0) console.log(`[Discovery]     - rss/feed: ${discardStats.rss_feed}`);
-  if (discardStats.images > 0) console.log(`[Discovery]     - images: ${discardStats.images}`);
-  if (discardStats.javascript_mailto > 0) console.log(`[Discovery]     - javascript/mailto: ${discardStats.javascript_mailto}`);
-  if (discardStats.navigation > 0) console.log(`[Discovery]     - navigation: ${discardStats.navigation}`);
-  if (discardStats.anchor > 0) console.log(`[Discovery]     - anchor links: ${discardStats.anchor}`);
-  if (discardStats.external_domain > 0) console.log(`[Discovery]     - external domain: ${discardStats.external_domain}`);
-  if (discardStats.garbage > 0) console.log(`[Discovery]     - garbage: ${discardStats.garbage}`);
-  if (discardStats.invalid_url > 0) console.log(`[Discovery]     - invalid url: ${discardStats.invalid_url}`);
-  if (discardStats.duplicate > 0) console.log(`[Discovery]     - duplicates: ${discardStats.duplicate}`);
-  console.log(`[Discovery]   Candidates: ${topUrls.length}`);
+  // Log discovery summary with detailed breakdown
+  const externalCount = allUrls.length - sameDomain.length;
+  const garbageFiltered = sameDomain.length - notGarbage.length;
+  const duplicateCount = notGarbage.length - deduped.length;
+
+  console.log(`\n[Discovery] Summary`);
+  console.log(`[Discovery]   Found links ............ ${allUrls.length}`);
+  console.log(`[Discovery]   Same domain ........... ${sameDomain.length}`);
+  if (externalCount > 0) console.log(`[Discovery]   External domain ....... ${externalCount}`);
+  console.log(`[Discovery]   After garbage filter .. ${notGarbage.length}`);
+  if (garbageFiltered > 0) console.log(`[Discovery]   Garbage removed ....... ${garbageFiltered}`);
+  console.log(`[Discovery]   After dedup ........... ${deduped.length}`);
+  if (duplicateCount > 0) console.log(`[Discovery]   Duplicates removed .... ${duplicateCount}`);
+  console.log(`[Discovery]   Final candidates ..... ${topUrls.length}`);
+  console.log(`[Discovery]   Opening .............. ${Math.min(DISCOVERY_LIMIT, topUrls.length)}`);
 
   return topUrls;
 }
@@ -871,6 +833,7 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
 // Extract metadata from multiple URLs with concurrency limit
 async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
   const articles = [];
+  let metadataOk = 0;
   const rejectStats = {
     title_too_short: 0,
     content_too_short: 0,
@@ -894,31 +857,36 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
       const page = await browser.newPage();
       try {
         const metadata = await extractArticleMetadata(page, url);
-        // Map extractor output to article fields (title = cleanTitle)
-        const article = {
-          ...metadata,
-          url,
-          title: metadata.cleanTitle || metadata.rawTitle,
-        };
 
-        if (metadata && validateArticle(article)) {
-          articles.push({
-            title: metadata.title,
-            link: url,
-            description: metadata.description || '',
-            pubDate: metadata.publishedAt || new Date().toISOString(),
-            guid: url
-          });
-        } else if (article._skipReason) {
-          const reason = article._skipReason.split(':')[0];
-          if (rejectStats.hasOwnProperty(reason)) {
-            rejectStats[reason]++;
+        if (metadata) {
+          metadataOk++;
+
+          // Map extractor output to article fields (title = cleanTitle)
+          const article = {
+            ...metadata,
+            url,
+            title: metadata.cleanTitle || metadata.rawTitle,
+          };
+
+          if (validateArticle(article)) {
+            articles.push({
+              title: metadata.title,
+              link: url,
+              description: metadata.description || '',
+              pubDate: metadata.publishedAt || new Date().toISOString(),
+              guid: url
+            });
+          } else if (article._skipReason) {
+            const reason = article._skipReason.split(':')[0];
+            if (rejectStats.hasOwnProperty(reason)) {
+              rejectStats[reason]++;
+            }
           }
-          console.log(`[Extractor] REJECT: ${article._skipReason} | ${url}`);
+        } else {
+          rejectStats.extraction_failed++;
         }
       } catch (e) {
         rejectStats.extraction_failed++;
-        console.warn(`[Extractor] Error processing ${url}: ${e.message}`);
       } finally {
         await page.close();
       }
@@ -933,15 +901,25 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
   await Promise.all(workers);
 
   // Log extraction summary
-  console.log(`\n[Extraction] Summary:`);
-  console.log(`[Extraction]   URLs processed: ${urls.length}`);
-  console.log(`[Extraction]   Articles accepted: ${articles.length}`);
-  console.log(`[Extraction]   Rejected breakdown:`);
-  Object.entries(rejectStats).forEach(([reason, count]) => {
-    if (count > 0) {
-      console.log(`[Extraction]     - ${reason}: ${count}`);
-    }
-  });
+  console.log(`\n[Extraction] Summary`);
+  console.log(`[Extraction]   Opened ............... ${urls.length}`);
+  console.log(`[Extraction]   Metadata OK ......... ${metadataOk}`);
+  console.log(`[Extraction]   Validate OK ......... ${articles.length}`);
+
+  // Log rejections
+  let totalRejected = 0;
+  Object.values(rejectStats).forEach(count => totalRejected += count);
+
+  if (totalRejected > 0) {
+    console.log(`[Extraction]   Rejected breakdown:`);
+    Object.entries(rejectStats).forEach(([reason, count]) => {
+      if (count > 0) {
+        console.log(`[Extraction]     - ${reason}: ${count}`);
+      }
+    });
+  }
+
+  console.log(`[Extraction]   Accepted ............ ${articles.length}`);
 
   return articles;
 }
