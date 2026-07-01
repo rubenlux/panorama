@@ -3135,53 +3135,23 @@ export async function runNewsMonitor() {
     profiler.end('HTTP Fetch');
     console.timeEnd('2. Content Extraction');
 
-    // Research entity matching (knowledge base context)
-    console.time('3. Entities & Trends');
-    profiler.begin('Entity Matching + NER');
-    await matchResearchEntities(allNewIds);
-    // Monitor NER → MONITOR entities → clusters (via EntityWorker)
-    await processEntityExtraction(allNewIds);
+    // ── DECOUPLED EXECUTION (Sprint 3)
+    // Monitor completes after Discovery + Persistence.
+    // Entity, Story, Event, Opportunity workers run independently via setImmediate
 
+    // Research entity matching (knowledge base context)
+    await matchResearchEntities(allNewIds);
     await refreshTrendingTopics();
     await checkAutoResearchTriggers();
-    profiler.end('Entity Matching + NER');
-    console.timeEnd('3. Entities & Trends');
-
-    // Sprint 5.3 — trend clusters
     await markStaleClusters();
-    // [Cost Killer 1] Auto-generation disabled — use POST /trends/:id/generate-summary
-    // summarizePendingClusters().catch(e => console.error('[Monitor] Cluster summarization error:', e.message));
 
-    // Sprint 5.5 — story intelligence
-    console.time('4. Story Intelligence (Stories)');
-    profiler.begin('Story Detection + Clustering');
-    await processStoryDetection(allNewIds);
-    await markStaleStories();
-    profiler.end('Story Detection + Clustering');
-    console.timeEnd('4. Story Intelligence (Stories)');
-
-    // [Cost Killer 2] Algorithmic opportunities — no IA, runs every cycle
-    console.time('5. Opportunities (Algo)');
-    profiler.begin('Opportunity Generation');
+    // Get data needed for async workers
     const { rows: recentForOpps } = await query(`
       SELECT id FROM story_clusters
       WHERE status IN ('active','ready') AND is_recurring = false
         AND last_seen > now() - interval '2 hours'
     `);
-    if (recentForOpps.length > 0) {
-      await processOpportunityGeneration(recentForOpps.map(r => r.id))
-        .catch(e => console.error('[Monitor] Algo opportunities error:', e.message));
-    }
-    profiler.end('Opportunity Generation');
-    console.timeEnd('5. Opportunities (Algo)');
 
-    // Sprint 5.6.1 — editorial opportunity engine
-    // [Cost Killer 1] Auto-generation disabled — use POST /stories/:id/generate-opportunities
-    // generateOpportunitiesForStories().catch(e => console.error('[Monitor] Opportunity generation error:', e.message));
-
-    // Sprint 5.6 — event intelligence
-    console.time('6. Event Intelligence (Events)');
-    profiler.begin('Event Detection');
     const { rows: recentStories } = await query(`
       SELECT id FROM story_clusters
       WHERE status IN ('active','ready','followed')
@@ -3189,16 +3159,45 @@ export async function runNewsMonitor() {
         AND last_seen > now() - interval '2 hours'
     `);
     const recentStoryIds = recentStories.map(r => r.id);
-    const eventStats = await processEventDetection(recentStoryIds);
-    await markStaleEvents();
-    profiler.end('Event Detection');
-    console.timeEnd('6. Event Intelligence (Events)');
-    console.log('\n=== Event Clustering Report ===');
-    console.log(`Stories analyzed:               ${eventStats.storiesAnalyzed}`);
-    console.log(`Stories matched to event:       ${eventStats.storiesMatched}`);
-    console.log(`New events created:             ${eventStats.newEventsCreated}`);
-    console.log(`Single-entity stories skipped:  ${eventStats.singleEntityStoriesSkipped}`);
-    console.log('================================\n');
+
+    // Enqueue workers for independent execution (no await, no blocking)
+    console.log('[Monitor] Enqueueing workers for async execution...');
+
+    // Entity extraction (independent)
+    setImmediate(() => {
+      processEntityExtraction(allNewIds)
+        .catch(e => console.error('[EntityWorker] Failed:', e.message));
+    });
+
+    // Story detection (independent)
+    setImmediate(() => {
+      processStoryDetection(allNewIds, recentStoryIds)
+        .catch(e => console.error('[StoryWorker] Failed:', e.message));
+    });
+
+    // Opportunity generation (independent)
+    if (recentForOpps.length > 0) {
+      setImmediate(() => {
+        processOpportunityGeneration(recentForOpps.map(r => r.id))
+          .catch(e => console.error('[OpportunityWorker] Failed:', e.message));
+      });
+    }
+
+    // Event detection (independent)
+    setImmediate(() => {
+      processEventDetection(recentStoryIds)
+        .then(eventStats => {
+          if (eventStats && eventStats.stats) {
+            console.log('\n=== Event Clustering Report (Async) ===');
+            console.log(`Stories analyzed:               ${eventStats.stats.storiesAnalyzed}`);
+            console.log(`Stories matched to event:       ${eventStats.stats.storiesMatched}`);
+            console.log(`New events created:             ${eventStats.stats.newEventsCreated}`);
+            console.log(`Single-entity stories skipped:  ${eventStats.stats.singleEntityStoriesSkipped}`);
+            console.log('================================\n');
+          }
+        })
+        .catch(e => console.error('[EventWorker] Failed:', e.message));
+    });
 
     console.timeEnd('Full Cycle');
 
