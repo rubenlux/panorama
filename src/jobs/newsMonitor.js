@@ -784,7 +784,6 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
   }
 
   // Step 1: Filter by domain (must belong to media)
-  const sameDomaincounter = 0;
   const sameDomain = allUrls.filter(url => {
     try {
       const urlObj = new URL(url);
@@ -795,7 +794,6 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
   });
 
   // Step 2: Filter by garbage (reject obvious non-articles)
-  const garbageCount = 0;
   const notGarbage = sameDomain.filter(url => !isGarbageUrl(url));
 
   // Step 3: Remove duplicates (keep first occurrence in DOM order)
