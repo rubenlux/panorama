@@ -257,6 +257,9 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
           });
           if (postLink) href = postLink.href.split('?')[0];
 
+          // Collect alternative hrefs for debugging (capture what didn't match the regex)
+          let alternativeHrefs = [];
+
           // Second pass: walk up ancestors only if not found in the element itself
           let cur = el.parentElement;
           for (let depth = 0; depth < 25 && cur; depth++) {
@@ -270,11 +273,21 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
               if (vid) video_url = vid.src;
             }
             if (!href) {
-              const postLink = [...cur.querySelectorAll('a[href]')].find(a => {
+              const allLinks = [...cur.querySelectorAll('a[href]')];
+              const postLink = allLinks.find(a => {
                 const h = a.href || '';
                 return VALID_POST.test(h) && !h.includes('comment_id=');
               });
-              if (postLink) href = postLink.href.split('?')[0];
+              if (postLink) {
+                href = postLink.href.split('?')[0];
+              } else if (depth === 0 && !href && allLinks.length > 0) {
+                // First ancestor search without valid match: record what we found
+                alternativeHrefs = allLinks
+                  .slice(0, 3)
+                  .map(a => a.href?.split('?')[0] || '')
+                  .filter(h => h && h.includes('facebook.com'))
+                  .map(h => h.replace('https://www.facebook.com', ''));
+              }
             }
             if (likesStr === '0') {
               const spans = [...cur.querySelectorAll('span')].map(s => s.innerText?.trim()).filter(Boolean);
@@ -286,7 +299,7 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
           }
 
           const contentType = video_url ? 'video' : href.includes('/reel/') ? 'reel' : 'post';
-          snapshot.push({ key, text, href, thumbnail_url, video_url, likesStr, contentType });
+          snapshot.push({ key, text, href, thumbnail_url, video_url, likesStr, contentType, alternativeHrefs });
         }
         return snapshot;
       };
@@ -344,7 +357,13 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
         let url = item.href;
         if (url && url.startsWith('/')) url = `https://www.facebook.com${url}`;
         // Only keep posts with valid URLs; don't use baseUrl as fallback
-        if (!url) continue;
+        if (!url) {
+          const altDisplay = item.alternativeHrefs?.length > 0
+            ? `found: [${item.alternativeHrefs.join(', ')}]`
+            : 'none found';
+          console.log(`[Facebook] ⚠️  Skipped: no /posts/ /reel/ /videos/ found (${altDisplay}) | "${item.text.substring(0, 70)}…"`);
+          continue;
+        }
 
         // Always use content hash: the DOM walk-up (depth ≤ 25) becomes a common
         // ancestor across multiple post bodies, returning the same sibling post URL
