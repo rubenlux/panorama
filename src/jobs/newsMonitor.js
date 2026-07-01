@@ -217,38 +217,44 @@ function extractMonitorEntities(title) {
 
 // ── Playwright URL discovery ──────────────────────────────────────────────────
 
+// Check if hostname belongs to media (exact match or subdomain)
+function belongsToMedia(hostname, mediaHostname) {
+  if (!mediaHostname) return true; // No media context, accept everything
+
+  const h = hostname.toLowerCase();
+  const m = mediaHostname.toLowerCase();
+
+  // Exact match: viapais.com.ar === viapais.com.ar
+  if (h === m) return true;
+
+  // Subdomain: www.viapais.com.ar, m.viapais.com.ar, amp.viapais.com.ar
+  if (h.endsWith('.' + m)) return true;
+
+  return false;
+}
+
 // URL Candidate Check: Return true if worth opening, false if garbage
 function isCandidateUrl(url, mediaHostname) {
   // Must be valid HTTP(S) URL
   if (!url.startsWith('http')) return false;
 
-  // Social media exclusion: reject known social platforms
-  const socialDomains = ['facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'youtube.com', 'tiktok.com', 'linkedin.com'];
   try {
     const urlObj = new URL(url);
     const hostname = urlObj.hostname.toLowerCase();
 
-    // If URL is from a social platform, reject
-    if (socialDomains.some(social => hostname.includes(social))) {
+    // Verify URL belongs to media domain (automatically rejects social platforms)
+    if (!belongsToMedia(hostname, mediaHostname)) {
       return false;
-    }
-
-    // If mediaHostname provided, verify URL belongs to that media
-    if (mediaHostname) {
-      const mediaDomain = mediaHostname.toLowerCase();
-      // Accept same domain (including www, m, amp variants)
-      if (!hostname.includes(mediaDomain.replace(/^www\./, ''))) {
-        return false;
-      }
     }
   } catch (e) {
     return false; // Invalid URL
   }
 
   // Garbage filters: explicitly reject certain patterns
+  // Conservative: only reject clearly non-article paths
   const badPatterns = [
-    /\/(rss|feed|sitemap|login|search|contacto|privacy|about|terms|autor|author|category|tag|page)\/?$/i,
-    /\?.*?(page|cat|author|tag|search)=/i,
+    /\/(rss|feed|sitemap|login|signin|logout|search|contacto|contact|privacy|about|terms|legal|help|faq|podcast|newsletter|suscripci|subscribe|publicidad|ads|jobs|carrera)\/?$/i,
+    /\?.*?(page|search|q)=/i,  // Pagination and search params only
     /javascript:|mailto:/,
     /\.(jpg|png|webp|pdf|gif|doc|docx)$/i,
   ];
@@ -752,9 +758,11 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
 
   // Extract media hostname from homeUrl for domain verification
   let mediaHostname = '';
+  let origin = '';
   try {
     const urlObj = new URL(homeUrl);
     mediaHostname = urlObj.hostname;
+    origin = urlObj.origin;
   } catch (e) {
     console.warn(`[Discovery] Could not parse homeUrl: ${e.message}`);
   }
@@ -762,15 +770,19 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
   // Filter candidates and track rejection reasons
   const discardStats = {
     rss_feed: 0,
-    social_media: 0,
+    navigation: 0,
     images: 0,
     javascript_mailto: 0,
-    login_privacy_search: 0,
+    garbage: 0,
     external_domain: 0,
-    invalid_url: 0
+    invalid_url: 0,
+    homepage: 0,
+    anchor: 0,
+    duplicate: 0
   };
 
-  const candidates = allUrls.filter(url => {
+  // Step 1: Apply garbage filters
+  const filtered = allUrls.filter(url => {
     if (!isCandidateUrl(url, mediaHostname)) {
       // Categorize the rejection reason
       if (/\.(jpg|png|webp|gif|pdf|doc|docx)$/i.test(url)) {
@@ -779,38 +791,79 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
         discardStats.rss_feed++;
       } else if (/javascript:|mailto:/.test(url)) {
         discardStats.javascript_mailto++;
-      } else if (/\/(login|search|contacto|privacy|about|terms|author|category|tag|page)\/?$/i.test(url)) {
-        discardStats.login_privacy_search++;
-      } else if (/\?.*?(page|cat|author|tag|search)=/i.test(url)) {
-        discardStats.login_privacy_search++;
-      } else if (['facebook.com', 'instagram.com', 'x.com', 'twitter.com', 'youtube.com', 'tiktok.com', 'linkedin.com'].some(social => url.includes(social))) {
-        discardStats.social_media++;
       } else if (!url.startsWith('http')) {
         discardStats.invalid_url++;
-      } else {
+      } else if (!belongsToMedia(new URL(url).hostname, mediaHostname)) {
         discardStats.external_domain++;
+      } else {
+        discardStats.garbage++;
       }
       return false;
     }
     return true;
   });
 
+  // Step 2: Remove homepage (/ only)
+  const noHomepage = filtered.filter(url => {
+    const path = new URL(url).pathname;
+    if (path === '/' || path === '') {
+      discardStats.homepage++;
+      return false;
+    }
+    return true;
+  });
+
+  // Step 3: Remove anchors within page (#section)
+  const noAnchors = noHomepage.filter(url => {
+    if (url.includes('#')) {
+      discardStats.anchor++;
+      return false;
+    }
+    return true;
+  });
+
+  // Step 4: Remove navigation patterns (common false positives)
+  const navigationPatterns = [
+    /\/(logo|header|footer|nav|navbar|menu|suscri|suscript|contact|quienes|about|terms|privacy|help|faq|jobs|carrera|podcast|adverti|publicidad)/i,
+    /\?.*?(utm_|ref|fbclid|gclid)/,  // Campaign/tracking params
+  ];
+  const noNavigation = noAnchors.filter(url => {
+    if (navigationPatterns.some(p => p.test(url))) {
+      discardStats.navigation++;
+      return false;
+    }
+    return true;
+  });
+
+  // Step 5: Remove duplicates (keep first occurrence in DOM order)
+  const deduped = [];
+  const seen = new Set();
+  noNavigation.forEach(url => {
+    if (!seen.has(url)) {
+      seen.add(url);
+      deduped.push(url);
+    }
+  });
+  discardStats.duplicate = noNavigation.length - deduped.length;
+
+  // Step 6: Take first 30 candidates (now likely to be real articles, not nav)
+  const topUrls = deduped.slice(0, 30);
+
   // Log discovery summary
   console.log(`[Discovery] Summary:`);
   console.log(`[Discovery]   Found: ${allUrls.length} links`);
-  console.log(`[Discovery]   Accepted (same domain): ${candidates.length}`);
   console.log(`[Discovery]   Discarded breakdown:`);
-  if (discardStats.social_media > 0) console.log(`[Discovery]     - social media: ${discardStats.social_media}`);
+  if (discardStats.homepage > 0) console.log(`[Discovery]     - homepage: ${discardStats.homepage}`);
   if (discardStats.rss_feed > 0) console.log(`[Discovery]     - rss/feed: ${discardStats.rss_feed}`);
   if (discardStats.images > 0) console.log(`[Discovery]     - images: ${discardStats.images}`);
   if (discardStats.javascript_mailto > 0) console.log(`[Discovery]     - javascript/mailto: ${discardStats.javascript_mailto}`);
-  if (discardStats.login_privacy_search > 0) console.log(`[Discovery]     - login/privacy/search: ${discardStats.login_privacy_search}`);
+  if (discardStats.navigation > 0) console.log(`[Discovery]     - navigation: ${discardStats.navigation}`);
+  if (discardStats.anchor > 0) console.log(`[Discovery]     - anchor links: ${discardStats.anchor}`);
   if (discardStats.external_domain > 0) console.log(`[Discovery]     - external domain: ${discardStats.external_domain}`);
+  if (discardStats.garbage > 0) console.log(`[Discovery]     - garbage: ${discardStats.garbage}`);
   if (discardStats.invalid_url > 0) console.log(`[Discovery]     - invalid url: ${discardStats.invalid_url}`);
-  console.log(`[Discovery]   Processing: ${Math.min(30, candidates.length)}`);
-
-  // Take first 30 in DOM order (no scoring)
-  const topUrls = candidates.slice(0, 30);
+  if (discardStats.duplicate > 0) console.log(`[Discovery]     - duplicates: ${discardStats.duplicate}`);
+  console.log(`[Discovery]   Candidates: ${topUrls.length}`);
 
   return topUrls;
 }
@@ -880,13 +933,13 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
   await Promise.all(workers);
 
   // Log extraction summary
-  console.log(`[Extractor] Summary:`);
-  console.log(`[Extractor]   URLs processed: ${urls.length}`);
-  console.log(`[Extractor]   Articles accepted: ${articles.length}`);
-  console.log(`[Extractor]   Rejected breakdown:`);
+  console.log(`\n[Extraction] Summary:`);
+  console.log(`[Extraction]   URLs processed: ${urls.length}`);
+  console.log(`[Extraction]   Articles accepted: ${articles.length}`);
+  console.log(`[Extraction]   Rejected breakdown:`);
   Object.entries(rejectStats).forEach(([reason, count]) => {
     if (count > 0) {
-      console.log(`[Extractor]     - ${reason}: ${count}`);
+      console.log(`[Extraction]     - ${reason}: ${count}`);
     }
   });
 
