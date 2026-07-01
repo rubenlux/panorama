@@ -1,6 +1,8 @@
 /**
  * Intelligence Module — Complete Public API
  * Re-exports all story, entity, event, and opportunity functions
+ * PHASE 2: Extracting from monolithic newsMonitor.js into modular subfiles
+ * Strangler Pattern: exports from ./stories.js, ./entities.js, ./events.js, ./opportunities.js
  */
 
 // ── Stories & Clustering
