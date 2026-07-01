@@ -3243,3 +3243,19 @@ export async function runNewsMonitor() {
   }
   isNewsRunning = false;
 }
+
+// ── Export functions for workers (Phase 2/3 modularization)
+export {
+  discoverMonitorEntities,
+  matchResearchEntities,
+  upsertTrendCluster,
+  refreshTrendingTopics,
+  summarizePendingClusters,
+  markStaleClusters,
+  checkAutoResearchTriggers,
+  detectStories,
+  detectContaminatedStories,
+  detectEvents,
+  markStaleEvents,
+  generateAlgorithmicOpportunities,
+};
