@@ -1,14 +1,11 @@
 /**
- * Entity Worker — Extract named entities from articles
+ * Entity Worker — Pure function
  *
- * Reutiliza discoverMonitorEntities del newsMonitor original
- * Puede ser invocado por:
- * 1. runNewsMonitor (synchronous, como hoy)
- * 2. Worker independiente (future, async)
+ * No BD queries. No side effects beyond logging.
+ * Receives data, processes it, done.
  */
 
-import { query } from '../../../routes/db.js';
-import { extractMonitorEntities, discoverMonitorEntities } from '../intelligence/index.js';
+import { discoverMonitorEntities } from '../intelligence/index.js';
 
 export async function processEntityExtraction(articleIds) {
   if (!articleIds || articleIds.length === 0) {
@@ -16,9 +13,7 @@ export async function processEntityExtraction(articleIds) {
   }
 
   try {
-    // Call existing function without modification
     await discoverMonitorEntities(articleIds);
-
     return {
       processed: articleIds.length,
       error: null,

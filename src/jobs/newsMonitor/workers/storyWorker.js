@@ -1,24 +1,22 @@
 /**
- * Story Worker — Detect and cluster stories
+ * Story Worker — Pure function
  *
- * Reutiliza detectStories del newsMonitor original
+ * No BD queries. Receives data, processes it.
  */
 
 import { detectStories, detectContaminatedStories } from '../intelligence/index.js';
 
-export async function processStoryDetection(articleIds) {
+export async function processStoryDetection(articleIds, storyIds) {
   if (!articleIds || articleIds.length === 0) {
     return { processed: 0, error: null };
   }
 
   try {
-    // Call existing function without modification
     await detectStories(articleIds);
 
-    // Contamination detection is part of story processing
-    const recentStoryIds = await getRecentStoryIds();
-    if (recentStoryIds.length > 0) {
-      await detectContaminatedStories(recentStoryIds);
+    // Contamination detection if we have recent stories
+    if (storyIds && storyIds.length > 0) {
+      await detectContaminatedStories(storyIds);
     }
 
     return {
@@ -32,15 +30,4 @@ export async function processStoryDetection(articleIds) {
       error: error.message,
     };
   }
-}
-
-async function getRecentStoryIds() {
-  // Get stories from the last 24 hours (same as original monitor)
-  const { query: dbQuery } = await import('../../../routes/db.js');
-  const result = await dbQuery(
-    `SELECT DISTINCT id FROM story_clusters
-     WHERE last_seen > now() - interval '24 hours'
-     ORDER BY last_seen DESC`
-  );
-  return result.rows.map(r => r.id);
 }

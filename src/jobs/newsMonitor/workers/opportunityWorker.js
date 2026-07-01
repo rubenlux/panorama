@@ -1,11 +1,10 @@
 /**
- * Opportunity Worker — Generate editorial opportunities
+ * Opportunity Worker — Pure function
  *
- * Reutiliza generateAlgorithmicOpportunities del newsMonitor original
+ * No BD queries. Receives storyIds, processes it.
  */
 
 import { generateAlgorithmicOpportunities } from '../intelligence/index.js';
-import { query } from '../../../routes/db.js';
 
 export async function processOpportunityGeneration(storyIds) {
   if (!storyIds || storyIds.length === 0) {
@@ -13,7 +12,6 @@ export async function processOpportunityGeneration(storyIds) {
   }
 
   try {
-    // Call existing function without modification
     await generateAlgorithmicOpportunities(storyIds);
 
     return {
@@ -27,14 +25,4 @@ export async function processOpportunityGeneration(storyIds) {
       error: error.message,
     };
   }
-}
-
-async function getRecentStoryIds() {
-  // Get recent story IDs that should have opportunities (same logic as original monitor)
-  const result = await query(
-    `SELECT DISTINCT id FROM story_clusters
-     WHERE last_seen > now() - interval '24 hours'
-     ORDER BY last_seen DESC`
-  );
-  return result.rows.map(r => r.id);
 }

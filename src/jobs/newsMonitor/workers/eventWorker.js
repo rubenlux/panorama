@@ -1,11 +1,10 @@
 /**
- * Event Worker — Detect and cluster events
+ * Event Worker — Pure function
  *
- * Reutiliza detectEvents del newsMonitor original
+ * No BD queries. Receives storyIds, processes it.
  */
 
 import { detectEvents } from '../intelligence/index.js';
-import { query } from '../../../routes/db.js';
 
 export async function processEventDetection(storyIds) {
   if (!storyIds || storyIds.length === 0) {
@@ -13,12 +12,12 @@ export async function processEventDetection(storyIds) {
   }
 
   try {
-    // Call existing function without modification
-    await detectEvents(storyIds);
+    const eventStats = await detectEvents(storyIds);
 
     return {
       processed: storyIds.length,
       error: null,
+      stats: eventStats,
     };
   } catch (error) {
     console.error('[EventWorker] Error:', error.message);
@@ -27,14 +26,4 @@ export async function processEventDetection(storyIds) {
       error: error.message,
     };
   }
-}
-
-async function getRecentStoryIds() {
-  // Get recent story IDs (same logic as original monitor)
-  const result = await query(
-    `SELECT DISTINCT id FROM story_clusters
-     WHERE last_seen > now() - interval '24 hours'
-     ORDER BY last_seen DESC`
-  );
-  return result.rows.map(r => r.id);
 }
