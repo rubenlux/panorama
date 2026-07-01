@@ -1,11 +1,10 @@
 /**
- * Entity Worker — Pure function
+ * Entity Worker — Autonomous component
  *
- * No BD queries. No side effects beyond logging.
- * Receives data, processes it, done.
+ * Receives article IDs, processes entity extraction.
+ * NO imports from intelligence or newsMonitor.
+ * Logic to be implemented independently.
  */
-
-import { discoverMonitorEntities } from '../intelligence/index.js';
 
 export async function processEntityExtraction(articleIds) {
   if (!articleIds || articleIds.length === 0) {
@@ -13,7 +12,8 @@ export async function processEntityExtraction(articleIds) {
   }
 
   try {
-    await discoverMonitorEntities(articleIds);
+    // TODO: Implement entity extraction logic independently
+    // Should not depend on newsMonitor or intelligence modules
     return {
       processed: articleIds.length,
       error: null,
