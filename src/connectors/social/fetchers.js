@@ -16,6 +16,12 @@ export const incrementalStats = {
   reset() { this.facebookSmartStops = 0; this.youtubeSmartStops = 0; }
 };
 
+// Thrown when a scrape finds a login wall instead of content (cookies expired/invalid).
+// Deliberately NOT swallowed by the generic per-fetcher try/catch — it must propagate
+// so socialMonitor.js's error_message capture (already existing, no changes needed there)
+// records it distinctly in social_fetch_logs, surfaced later by GET /social/stats.
+export class SessionExpiredError extends Error {}
+
 let facebookPersistentProfileLock = Promise.resolve();
 
 async function withFacebookPersistentProfileLock(fn) {
@@ -118,10 +124,167 @@ export class SocialFetcherPlaywrightX extends SocialFetcherBase {
 
 export const SocialFetcherX = SocialFetcherPlaywrightX;
 
+// Instagram post nodes are anchored structurally (has `code` + `pk` + `media_type`),
+// NOT by a fixed top-level connection name — the profile grid uses
+// `xdt_api__v1__feed__user_timeline_graphql_connection` while the Reels tab uses
+// `xdt_api__v1__clips__user__connection_v2` (verified live, both shapes hold the
+// same node fields). Same anchor-by-shape principle as Facebook's story walker.
+function _walkInstagramPosts(root) {
+  const posts = [];
+  const seen = new Set();
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const v of n) walk(v); return; }
+    if (typeof n.code === 'string' && typeof n.pk === 'string' && n.media_type !== undefined && !seen.has(n.pk)) {
+      seen.add(n.pk);
+      posts.push({
+        pk: n.pk,
+        code: n.code,
+        product_type: n.product_type || '',
+        media_type: n.media_type,
+        taken_at: n.taken_at || 0,
+        caption: n.caption?.text || '',
+        like_count: n.like_count || 0,
+        comment_count: n.comment_count || 0,
+        view_count: n.view_count || 0,
+        thumbnail: n.image_versions2?.candidates?.[0]?.url || '',
+        video: n.video_versions?.[0]?.url || '',
+      });
+    }
+    for (const v of Object.values(n)) if (v && typeof v === 'object') walk(v);
+  };
+  walk(root);
+  return posts;
+}
+
 export class SocialFetcherPlaywrightInstagram extends SocialFetcherBase {
   async fetchLatest() {
-    console.log(`[Instagram] Fetching via Playwright for ${this.source.handle}...`);
-    return [];
+    const profileUrl = this.source.profile_url;
+    const sourceName = this.source.name;
+    console.log(`[Instagram] Fetching ${sourceName} → ${profileUrl}`);
+
+    const cookiesFile = process.env.IG_COOKIES_FILE || join(process.cwd(), 'instagram_cookies.json');
+
+    const browser = await this._launchBrowser('Instagram');
+    const context = await browser.newContext({
+      viewport: { width: 1280, height: 900 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      locale: 'es-419',
+    });
+    logBrowserLifecycle('CONTEXT_CREATED', 'Instagram');
+
+    if (existsSync(cookiesFile)) {
+      try {
+        const raw = JSON.parse(readFileSync(cookiesFile, 'utf-8'));
+        const normSS = v => ({ no_restriction: 'None', lax: 'Lax', strict: 'Strict' })[v?.toLowerCase()] || 'None';
+        await context.addCookies(raw.map(c => ({
+          name: c.name, value: c.value, domain: c.domain, path: c.path || '/',
+          secure: !!c.secure, httpOnly: !!c.httpOnly, sameSite: normSS(c.sameSite),
+        })));
+      } catch (e) {
+        console.warn(`[Instagram] cookie injection warning: ${e.message}`);
+      }
+    }
+
+    const postMap = new Map(); // pk → post fields, dedup across scrolls/pagination
+    context.on('response', (response) => {
+      if (!response.url().includes('/graphql')) return;
+      response.text()
+        .then(body => {
+          if (!body || body.length < 200) return;
+          let obj;
+          try { obj = JSON.parse(body); } catch { return; }
+          for (const p of _walkInstagramPosts(obj)) {
+            if (!postMap.has(p.pk)) postMap.set(p.pk, p);
+          }
+        })
+        .catch(() => { /* body already consumed / not JSON — ignore */ });
+    });
+
+    const page = await context.newPage();
+    logBrowserLifecycle('PAGE_CREATED', 'Instagram');
+    const posts = [];
+
+    try {
+      await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 40000 })
+        .catch(e => console.warn(`[Instagram] goto warning: ${e.message}`));
+      await new Promise(r => setTimeout(r, 4000));
+
+      let lastHeight = 0;
+      let noGrowthStreak = 0;
+      for (let i = 0; i < 8; i++) {
+        const h = await page.evaluate(() => { window.scrollTo(0, document.body.scrollHeight); return document.body.scrollHeight; });
+        await new Promise(r => setTimeout(r, 2500));
+
+        const grew = h > lastHeight;
+        console.log(`[Instagram] Scroll ${i + 1}: ${postMap.size} posts capturados${grew ? '' : ' (sin crecimiento)'}`);
+        lastHeight = h;
+
+        if (i >= 2) {
+          noGrowthStreak = grew ? 0 : noGrowthStreak + 1;
+          if (noGrowthStreak >= 2) {
+            console.log(`[Instagram] Sin crecimiento 2 scrolls seguidos — deteniendo`);
+            break;
+          }
+        }
+      }
+
+      for (const p of postMap.values()) {
+        const caption = (p.caption || '').trim();
+        if (!caption) {
+          console.log(`[Instagram] ⚠️  Sin caption (pk=${p.pk}) — omitido`);
+          continue;
+        }
+
+        const isReel = p.product_type === 'clips';
+        const url = `https://www.instagram.com/${isReel ? 'reel' : 'p'}/${p.code}/`;
+        const contentType = isReel ? 'reel' : p.media_type === 8 ? 'carousel' : p.media_type === 2 ? 'video' : 'post';
+
+        posts.push({
+          platform: 'instagram',
+          external_id:      `ig${p.pk}`,
+          url,
+          title:            caption.substring(0, 300),
+          content:          caption,
+          thumbnail_url:    p.thumbnail || '',
+          video_url:        p.video || '',
+          views: p.view_count || 0, likes: p.like_count || 0, comments: p.comment_count || 0, shares: 0,
+          engagement_score: p.like_count || 0,
+          published_at:     p.taken_at ? new Date(p.taken_at * 1000).toISOString() : new Date().toISOString(),
+          keywords:         [contentType],
+        });
+      }
+
+      // Zero posts is anomalous for an active profile — check for the login-wall
+      // signature confirmed live (2026-07-02): redirected off the profile path,
+      // a real login form, or the near-empty unauthenticated shell
+      // (bodyLen~900, scrollHeight~966, 0 post links — vs 2400+ when logged in).
+      if (posts.length === 0) {
+        const state = await page.evaluate(() => ({
+          url: location.href,
+          hasLoginForm: !!document.querySelector('input[name="username"], input[name="password"]'),
+          scrollHeight: document.body.scrollHeight,
+          postLinks: document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]').length,
+        })).catch(() => null);
+        if (state && (state.hasLoginForm || /accounts\/login/.test(state.url) || (state.scrollHeight <= 1200 && state.postLinks === 0))) {
+          throw new SessionExpiredError('SESSION_EXPIRED: cookies de Instagram vencidas o inválidas — renovar instagram_cookies.json');
+        }
+      }
+
+    } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
+      console.error(`[Instagram] Error scraping ${sourceName}: ${e.message}`);
+    } finally {
+      logBrowserLifecycle('PAGE_CLOSED', 'Instagram');
+      await page.close().catch(() => {});
+      logBrowserLifecycle('CONTEXT_CLOSED', 'Instagram');
+      await context.close().catch(() => {});
+      logBrowserLifecycle('BROWSER_CLOSED', 'Instagram');
+      await browser.close().catch(() => {});
+    }
+
+    console.log(`[Instagram] Extraídos: ${posts.length} posts de ${sourceName}`);
+    return posts;
   }
 }
 
@@ -304,7 +467,21 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
         });
       }
 
+      // Zero posts is anomalous for an active page — check for the login-wall
+      // signature confirmed live during BUG-001 (2026-07-02): a real login form,
+      // or the near-empty unauthenticated shell (scrollHeight~900 vs 4692+ logged in).
+      if (posts.length === 0) {
+        const state = await page.evaluate(() => ({
+          hasLoginForm: !!document.querySelector('input[name="email"], input[type="password"]'),
+          scrollHeight: document.body.scrollHeight,
+        })).catch(() => null);
+        if (state && (state.hasLoginForm || state.scrollHeight <= 1200)) {
+          throw new SessionExpiredError('SESSION_EXPIRED: cookies de Facebook vencidas o inválidas — renovar facebook_cookies.json');
+        }
+      }
+
     } catch (e) {
+      if (e instanceof SessionExpiredError) throw e;
       console.error(`[Facebook] Error scraping ${sourceName}: ${e.message}`);
     } finally {
       logBrowserLifecycle('PAGE_CLOSED', 'Facebook');

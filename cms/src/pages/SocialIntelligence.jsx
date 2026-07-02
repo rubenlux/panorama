@@ -586,6 +586,28 @@ export default function SocialIntelligence() {
         </div>
       )}
 
+      {/* Session alerts — cookies/credenciales vencidas detectadas en el último intento de scraping */}
+      {stats?.session_alerts?.length > 0 && (
+        <div style={{ marginBottom: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {stats.session_alerts.map(a => (
+            <div key={a.platform} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '10px 16px', borderRadius: 8,
+              background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 13,
+            }}>
+              <span style={{ fontSize: 16 }}>⚠️</span>
+              <span style={{ flex: 1 }}>
+                <strong style={{ textTransform: 'capitalize' }}>{a.platform}</strong>: sesión vencida — no se están descargando posts nuevos desde {new Date(a.since).toLocaleString('es-AR')}. Renovar cookies.
+              </span>
+              <button onClick={() => navigate('/social/sources')}
+                style={{ padding: '4px 12px', borderRadius: 6, background: '#991b1b', color: '#fff', border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12 }}>
+                Ver fuentes
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid #e5e7eb', paddingBottom: 0 }}>
         {TABS.map((t, i) => (

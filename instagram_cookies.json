@@ -1,0 +1,50 @@
+[
+    {
+        "domain": ".instagram.com",
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "sessionid",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "58293553910%3A51sZZjBxaCvBhL%3A29%3AAYh79MkTZ_Yys55pY636zJeLsvlyPUEGxER-jr4QLw"
+    },
+    {
+        "domain": ".instagram.com",
+        "hostOnly": false,
+        "httpOnly": false,
+        "name": "ds_user_id",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "58293553910"
+    },
+    {
+        "domain": ".instagram.com",
+        "hostOnly": false,
+        "httpOnly": false,
+        "name": "csrftoken",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "Gh4ZUBzMiLqRT3ZKdztPMA6O5MpWhLlu"
+    },
+    {
+        "domain": ".instagram.com",
+        "hostOnly": false,
+        "httpOnly": true,
+        "name": "mid",
+        "path": "/",
+        "sameSite": "no_restriction",
+        "secure": true,
+        "session": false,
+        "storeId": null,
+        "value": "ahzQGwALAAELfYRlfdidx8bhtItd"
+    }
+]

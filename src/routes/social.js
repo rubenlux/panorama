@@ -262,7 +262,7 @@ router.post('/sources/:id/check', async (req, res, next) => {
 // Estadísticas generales
 router.get('/stats', async (req, res, next) => {
   try {
-    const [p, s, yt, fb, xq, ig, st, cls, today, gaps, gaps2] = await Promise.all([
+    const [p, s, yt, fb, xq, ig, st, cls, today, gaps, gaps2, sessionState] = await Promise.all([
       query(`SELECT count(*) as total, COALESCE(sum(views), 0) as engagement FROM social_posts WHERE captured_at >= now() - interval '48 hours'`),
       query(`SELECT count(*) as total FROM social_sources WHERE enabled = true`),
       query(`SELECT count(*) as total FROM social_sources WHERE platform = 'youtube'   AND enabled = true`),
@@ -280,10 +280,28 @@ router.get('/stats', async (req, res, next) => {
           count(*) FILTER (WHERE opportunity_score > 0 AND opportunity_score < 40) as baja
         FROM social_clusters WHERE status='active'
       `).catch(() => ({ rows: [{ muy_alta: 0, media: 0, baja: 0 }] })),
+      // Most recent fetch attempt per platform — a SESSION_EXPIRED error on the
+      // latest attempt means cookies need renewal (see BUG-001/instagram fetcher).
+      // A later successful fetch clears the alert automatically (DISTINCT ON picks it up).
+      query(`
+        SELECT DISTINCT ON (platform) platform, success, error_message, started_at
+        FROM social_fetch_logs
+        WHERE platform IN ('facebook', 'instagram')
+        ORDER BY platform, started_at DESC
+      `).catch(() => ({ rows: [] })),
     ]);
+
+    const sessionAlerts = sessionState.rows
+      .filter(r => !r.success && (r.error_message || '').startsWith('SESSION_EXPIRED:'))
+      .map(r => ({
+        platform: r.platform,
+        message: r.error_message,
+        since: r.started_at,
+      }));
 
     const opp = gaps2.rows[0];
     res.json({
+      session_alerts:           sessionAlerts,
       posts_today:              parseInt(today.rows[0].total),
       clusters_active:          parseInt(cls.rows[0].total),
       total_engagement_active:  parseInt(p.rows[0].engagement),
