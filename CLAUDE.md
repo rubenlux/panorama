@@ -376,30 +376,22 @@ Full pipeline: `ensureSchema` → `incrementalStats.reset()` → `startRun('soci
 - Community posts: `ytd-backstage-post-thread-renderer`, no CDN thumbnail (text-only posts).
 - **BANNED_TITLES** (never save): `''`, `'short'`, `'sin título'`, `'sin titulo'`, `'untitled'`, `'más acciones'`, `'mas acciones'`
 
-**Facebook scraper (`SocialFetcherPlaywrightFacebook` in `fetchers.js`) — Sprint 8.8K + 8.8L:**
+**Facebook scraper (`SocialFetcherPlaywrightFacebook` in `fetchers.js`) — BUG-001 rewrite (2026-07-02, commit 053b081e). ⚠️ Reemplaza el scraping DOM anterior (Mode 1/Mode 2, POST_BODY_SEL, walk-up).**
 
-**Mode 1 — Public pages (unauthenticated, `[role="article"]`):**
-- Opens a fresh unauthenticated browser (no cookies)
-- Sprint 8.8K: public layout serves each post as a top-level `[role="article"]` with a timestamp permalink link
-- `[role="article"]` in authenticated layout = comment elements (NOT posts) — this mode avoids that
-- DOM recycling: Facebook removes scrolled-past posts. Extract at each scroll, accumulate in a `Map` keyed by first-line of text. Stop after 2 consecutive scrolls with no new entries.
-- `external_id` = content hash: `fb` + MD5(`${source.id}:${text.slice(0,200)}`).slice(0,14)
-- `_parseFbMetric(str)` handles "1.2K", "5 mil", "2 millones"
+**Fuente ÚNICA = payload GraphQL estructurado (NO el DOM).** Los permalinks de los posts del feed NO existen en el DOM (solo tarjetas de carrusel `hscroll-child`; los `[role="article"]` son comentarios). Verificado observablemente.
 
-**Mode 2 — Login-walled pages (authenticated, GraphQL interception, Sprint 8.8L):**
-- Triggered when: 0 `[role="article"]` after 25s AND body contains "no está disponible" / "not currently available"
-- Opens persistent context (`facebook-profile/` dir) with stored cookies
-- Registers `context.on('response')` BEFORE `page.goto()` to capture all GraphQL feed responses
-- Facebook loads posts via `POST /api/graphql` → responses contain `data.node.timeline_list_feed_units.edges[]`
-- Each `edge.node` (type `Story`) has:
-  - `post_id` → numeric Facebook post ID
-  - `comet_sections.timestamp.story.creation_time` → Unix timestamp
-  - `comet_sections.timestamp.story.url` → clean permalink
-  - `comet_sections.content.story.comet_sections.message(.story).message.text` → post text
-  - `attachments[0].styles.attachment.all_subattachments.nodes[0].media.image.uri` → thumbnail
-  - `reaction_count.count` (found recursively in `comet_sections`) → likes
-- Pagination: `window.scrollTo(0, document.body.scrollHeight)` triggers GraphQL pagination requests. Fixed-pixel `scrollBy` does NOT reach the scroll threshold → must use `scrollHeight`.
-- Cookie bootstrap: first-run reads `facebook_cookies.json` → loads into persistent context → writes `.initialized` marker so subsequent runs skip re-injection.
+**Flujo:**
+- Persistent context (`facebook-profile/`) + **inyección directa de cookies** con `context.addCookies()` leyendo `facebook_cookies.json` DESPUÉS de `launchPersistentContext`. ⚠️ `launchPersistentContext` **IGNORA silenciosamente `storageState`** — por eso hay que inyectar a mano. Sin sesión válida Facebook sirve un muro de login (scrollHeight 900 vs 4692 logueado) con ~1 post de preview.
+- `context.on('response')` registrado ANTES de `goto` captura respuestas `/api/graphql`. `scrollTo(0, document.body.scrollHeight)` (NO `scrollBy` fijo) dispara la paginación del feed.
+- **Segunda fuente**: los `<script>` server-rendered (RelayPrefetchedStreamCache) se parsean con el mismo walker — cubre el batch inicial si la paginación XHR no dispara.
+- Dos helpers a nivel de módulo: `_parseGraphQLBody(body)` (maneja JSON único, prefijo `for(;;);`, o JSONL con `@defer`) y `_walkGraphQLStories(root)`.
+- `_walkGraphQLStories`: ancla en cada objeto con `post_id` numérico (el feed unit `data.node`/`edges[N].node`), extrae del subtree acotado (se detiene al bajar a un `post_id` distinto): url (`/posts|/videos|/reel/`), `message.text` (más largo), `creation_time`, `image.uri`, `reaction_count.count`, `playable_url`.
+- `external_id` = **`fb${post_id}`** (id numérico estable de Facebook — ya NO content-hash MD5).
+- Smart stop: precarga `_knownIds` (últimos 100 external_id); corta cuando 2 scrolls seguidos solo traen posts conocidos. `_parseFbMetric(str)` maneja "1.2K", "5 mil".
+
+**⚠️ REGLA — antes de tocar el scraper, verificar que las cookies NO estén vencidas** (muro de login = mismo síntoma que parser roto = 0 posts). Verificación 20s: contexto limpio + `addCookies` + goto facebook.com → logueado si `title="(N) Facebook"`, `login=false`, `scrollHeight` grande. Renovar: exportar cookies frescas (Cookie-Editor JSON) a `facebook_cookies.json` (críticas: `xs`+`c_user`, van juntas) + borrar `facebook-profile/Default/Network/Cookies`. Detalle memoria: memory/bug_001_facebook_graphql_fix.md.
+
+**⚠️ BUG-002 ABIERTO (asociación título↔URL):** riesgo latente — el parser toma el PRIMER url del subtree (suele ser `attachments[...].url`). Para self-posts == permalink (verificado 90/90 + 19/19 real path, sin divergencias). Pero para posts que COMPARTEN contenido ajeno, `attachment.url` apuntaría a otro contenido. Fix recomendado (no aplicado, falta ejemplo concreto): extraer permalink de `comet_sections.timestamp.story.url`, nunca de `attachments`. Detalle: memory/bug_002_graphql_story_association.md.
 
 **Common:**
 - `SocialFetcherGraphApiFacebook` (wrapper): checks `source.graph_api_supported` first — if `false`, skips API entirely and goes straight to Playwright. On `OAuthException` (code 10), persists `graph_api_supported=false` in DB so all future cycles skip the HTTP round-trip. On success, persists `true`.
@@ -437,10 +429,10 @@ if (source.last_checked && (Date.now() - new Date(source.last_checked).getTime()
 }
 ```
 
-**Facebook smart stop (in Playwright scroll loop):**
-- Loads `_knownIds` = Set of last 100 `external_id` for that source (from DB before `fetchLatest()`)
-- Per scroll step: tracks `seqKnown` counter. At 3 consecutive known posts → `break` + `incrementalStats.facebookSmartStops++`
-- `_knownIds` is a duck-typed property on the `source` object — ephemeral, lives only in the `p-limit` closure. Only 2 references: `socialMonitor.js:687` (write, FB only) and `fetchers.js:276` (read, inside Playwright class). Fallback `|| new Set()` safe.
+**Facebook smart stop (post BUG-001 rewrite):**
+- Loads `_knownIds` = Set of last 100 `external_id` (now `fb${post_id}`) for that source, from DB before `fetchLatest()`
+- Per scroll: if every newly-captured `post_id` this round is already in `_knownIds` for 2 consecutive scrolls → `break` + `incrementalStats.facebookSmartStops++`. (Old DOM version counted 3 consecutive known via content-hash — replaced.)
+- `_knownIds` is a duck-typed property on the `source` object — ephemeral, lives only in the `p-limit` closure. Fallback `|| new Set()` safe.
 
 **YouTube smart stop (in `_fetchVideos`, `_fetchShorts`, `_fetchPosts`):**
 - Receives `lastExternalId` from `fetchLatest()` via `source.last_external_id`
