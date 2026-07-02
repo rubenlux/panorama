@@ -6,7 +6,6 @@
 import { chromium } from 'playwright';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { createHash } from 'crypto';
 import { logBrowserLifecycle } from '../../services/browserLifecycleLogger.js';
 import { query } from '../../routes/db.js';
 
@@ -141,31 +140,6 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
 
     const profileDir  = process.env.FB_PROFILE_DIR  || join(process.cwd(), 'facebook-profile');
     const cookiesFile = process.env.FB_COOKIES_FILE || join(process.cwd(), 'facebook_cookies.json');
-    const stateFile   = join(profileDir, 'state.json');
-
-    // First-run bootstrap: inject cookies once so they persist to disk via storageState.
-    if (!existsSync(stateFile)) {
-      const browser = await chromium.launch({ headless: true });
-      logBrowserLifecycle('BROWSER_CREATED', 'Facebook Bootstrap');
-      const context = await browser.newContext();
-      logBrowserLifecycle('CONTEXT_CREATED', 'Facebook Bootstrap');
-      const page = await context.newPage();
-      logBrowserLifecycle('PAGE_CREATED', 'Facebook Bootstrap');
-      try {
-        if (existsSync(cookiesFile)) {
-          const raw = JSON.parse(readFileSync(cookiesFile, 'utf-8'));
-          const normSS = v => ({ no_restriction: 'None', lax: 'Lax', strict: 'Strict' })[v?.toLowerCase()] || 'None';
-          await context.addCookies(raw.map(c => ({ ...c, sameSite: normSS(c.sameSite) })));
-          await page.goto('https://www.facebook.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => { });
-          await new Promise(r => setTimeout(r, 3000));
-          await context.storageState({ path: stateFile });
-          console.log('[Facebook] Perfil persistente (state.json) inicializado');
-        }
-      } finally {
-        logBrowserLifecycle('BROWSER_CLOSED', 'Facebook Bootstrap');
-        await browser.close();
-      }
-    }
 
     const context = await chromium.launchPersistentContext(profileDir, {
       headless: true,
@@ -173,7 +147,6 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
       locale: 'es-419',
       args: ['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox'],
-      storageState: existsSync(stateFile) ? stateFile : undefined,
     });
     logBrowserLifecycle('BROWSER_CREATED', 'Facebook Persistent');
     // context.browser() returns null for launchPersistentContext — no browser object to watch
@@ -183,165 +156,93 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
 
+    // launchPersistentContext IGNORES the storageState option, so the session must
+    // be established by injecting the cookies directly into the live context. Without
+    // a valid session Facebook serves a login wall with only ~1 public preview post
+    // (verified: logged-out scrollHeight=900 vs logged-in 4692). Cookies are refreshed
+    // from facebook_cookies.json every run so a renewed `xs`/`c_user` takes effect.
+    if (existsSync(cookiesFile)) {
+      try {
+        const raw = JSON.parse(readFileSync(cookiesFile, 'utf-8'));
+        const normSS = v => ({ no_restriction: 'None', lax: 'Lax', strict: 'Strict' })[v?.toLowerCase()] || 'None';
+        await context.addCookies(raw.map(c => {
+          const o = {
+            name: c.name, value: c.value, domain: c.domain, path: c.path || '/',
+            secure: !!c.secure, httpOnly: !!c.httpOnly, sameSite: normSS(c.sameSite),
+          };
+          if (c.expirationDate) o.expires = Math.floor(c.expirationDate);
+          return o;
+        }));
+      } catch (e) {
+        console.warn(`[Facebook] cookie injection warning: ${e.message}`);
+      }
+    }
+
     const page = await context.newPage();
     logBrowserLifecycle('PAGE_CREATED', 'Facebook');
     const posts = [];
+
+    // BUG-001 fix — anchor the parser on Facebook's structured GraphQL feed payload
+    // instead of scraping DOM anchors. Register the response listener BEFORE goto so
+    // the initial feed request is captured. storyMap dedupes by the stable post_id.
+    const storyMap = new Map();          // post_id → { url, message, creation_time, thumbnail, video, likes }
+    const pendingBodies = [];
+    context.on('response', (response) => {
+      const u = response.url();
+      if (!u.includes('/api/graphql')) return;
+      const p = response.text()
+        .then(body => {
+          for (const obj of _parseGraphQLBody(body)) {
+            for (const st of _walkGraphQLStories(obj)) {
+              if (st.post_id && !storyMap.has(st.post_id)) storyMap.set(st.post_id, st);
+            }
+          }
+        })
+        .catch(() => { /* body already consumed / not text — ignore */ });
+      pendingBodies.push(p);
+    });
 
     try {
       await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 40000 })
         .catch(e => console.warn(`[Facebook] goto warning: ${e.message}`));
 
-      // Full Stylex class list confirmed via browser inspector on diarioole and NoticiasFormosa
-      // (two separate pages, 2026-06-13). These 8 classes together uniquely identify post body
-      // containers — sidebar, timestamps, and comment elements use different class combinations.
+      // Wait for the feed shell to render (this also triggers the first /api/graphql feed request).
       const POST_BODY_SEL = 'div.html-div.xdj266r.x14z9mp.xat24cr.x1lziwak.xexx8yu.xyri2b.x18d9i69.x1c1uobl';
       await page.waitForSelector(POST_BODY_SEL, {
         state: 'attached', timeout: 20000,
       }).catch(() => console.warn('[Facebook] No post body selector in DOM after 20s'));
 
-      // Extraction logic reused each scroll step to capture posts before DOM recycling removes them.
-      // Facebook's virtual list removes top elements as you scroll down, so a single querySelectorAll
-      // at the end only sees what's visible at that moment — earlier posts are lost.
-      const EXTRACT_FN = (sel) => {
-        const CHROME = '[role="navigation"],[role="banner"],[role="dialog"],[role="complementary"],[aria-modal="true"],[role="article"]';
-        const VALID_POST = /\/(posts\/\w|reel\/\d|videos\/\d)/;
-
-        const isNoise = (text) => {
-          const lines = text.split('\n');
-          if (lines.filter(l => l.trim().length <= 1).length > lines.length * 0.3) return true;
-          if (/^(Detalles|Siempre abierto|Ver todas las|Fotos\b|Publicaciones\b|Reels\b|Recomendado por)/.test(text)) return true;
-          if (text.includes('\nCentro de suscriptores') || text.includes('\nSiempre abierto')) return true;
-          if (/^\d{3,4}[\s-]\d{3}[\s-]\d{3,4}/.test(text)) return true;
-          if (/^Facebook\nFacebook/.test(text)) return true;
-          if (/^Ver más comentarios/.test(text)) return true;
-          if (/\n\d{1,2}:\d{2}\s*\/\s*\d{1,2}:\d{2}/.test(text)) return true;
-          if (/\n(Me gusta|Responder)\n/.test(text) && text.length < 400) return true;
-          if (/^m\.me/.test(text)) return true;
-          if (/^[a-zA-Z0-9+/]{2,25}\.(com|me|net|ar|org)/.test(text)) return true;
-          if (/^[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑA-Za-z\s]+\.COM\n/.test(text)) return true;
-          if (/\n(Canal|Página|Grupo)\s*·\s*[\d]/.test(text)) return true;
-          // Repetición de "Facebook" sin newline (FacebookFacebookFacebook...)
-          if (/(Facebook){3,}/i.test(text)) return true;
-          // "Compartido con: Público/Amigos/Tus amigos"
-          if (/^Compartido con:/i.test(text)) return true;
-          // Nombre de página + "verificada" (ej: "Clarín verificada")
-          if (/^[\w\s]{1,50}\s+verificad[ao]$/i.test(text.trim())) return true;
-          // Token tracking de Facebook (bloque alfanumérico sin espacios, >25 chars)
-          if (/^[A-Za-z0-9]{25,}(\s[A-Za-z0-9]{15,})*$/.test(text.trim())) return true;
-          // "Página verificada · N seguidores"
-          if (/verificad[ao]\s*·/.test(text)) return true;
-          return false;
-        };
-
-        const snapshot = [];
-        const candidates = [...document.querySelectorAll(sel)]
-          .filter(el => !el.closest(CHROME))
-          .map(el => ({ text: (el.innerText || '').trim(), el }))
-          .filter(({ text }) => text.length >= 30 && !isNoise(text));
-
-        candidates.sort((a, b) => a.text.length - b.text.length);
-
-        for (const { text, el } of candidates) {
-          const key = text.split('\n')[0].trim().slice(0, 70);
-          if (!key) continue;
-
-          let thumbnail_url = '';
-          let video_url = '';
-          let href = '';
-          let likesStr = '0';
-
-          // First pass: search within the post element itself to avoid capturing sibling post URLs
-          let postLink = [...(el.querySelectorAll?.('a[href]') || [])].find(a => {
-            const h = a.href || '';
-            return VALID_POST.test(h) && !h.includes('comment_id=');
-          });
-          if (postLink) href = postLink.href.split('?')[0];
-
-          // Collect alternative hrefs for debugging (capture what didn't match the regex)
-          let alternativeHrefs = [];
-
-          // Second pass: walk up ancestors only if not found in the element itself
-          let cur = el.parentElement;
-          for (let depth = 0; depth < 25 && cur; depth++) {
-            if (!thumbnail_url) {
-              const img = [...cur.querySelectorAll('img[src*="fbcdn"], img[src*="scontent"]')]
-                .find(i => !i.src.includes('emoji.php') && !i.src.includes('rsrc.php'));
-              if (img) thumbnail_url = img.src;
-            }
-            if (!video_url) {
-              const vid = cur.querySelector('video');
-              if (vid) video_url = vid.src;
-            }
-            if (!href) {
-              const allLinks = [...cur.querySelectorAll('a[href]')];
-              const postLink = allLinks.find(a => {
-                const h = a.href || '';
-                return VALID_POST.test(h) && !h.includes('comment_id=');
-              });
-              if (postLink) {
-                href = postLink.href.split('?')[0];
-              } else if (depth === 0 && !href && allLinks.length > 0) {
-                // First ancestor search without valid match: record what we found
-                alternativeHrefs = allLinks
-                  .slice(0, 3)
-                  .map(a => a.href?.split('?')[0] || '')
-                  .filter(h => h && h.includes('facebook.com'))
-                  .map(h => h.replace('https://www.facebook.com', ''));
-              }
-            }
-            if (likesStr === '0') {
-              const spans = [...cur.querySelectorAll('span')].map(s => s.innerText?.trim()).filter(Boolean);
-              const found = spans.find(t => /^\d+[kKmM.,]?$/.test(t.replace(/[,\.]/g, '')) && t !== '0');
-              if (found) likesStr = found;
-            }
-            if (thumbnail_url && href) break;
-            cur = cur.parentElement;
-          }
-
-          const contentType = video_url ? 'video' : href.includes('/reel/') ? 'reel' : 'post';
-          snapshot.push({ key, text, href, thumbnail_url, video_url, likesStr, contentType, alternativeHrefs });
-        }
-        return snapshot;
-      };
-
-      // accumulated across all scroll steps — keyed by first-line dedup key
       const knownIds = this.source._knownIds || new Set();
-      const accumulated = new Map();
       let noGrowthStreak = 0;
+      let seqKnownStreak = 0;
 
       for (let i = 0; i < 8; i++) {
-        await page.evaluate(() => window.scrollBy(0, 900));
-        await new Promise(r => setTimeout(r, 2200));
+        const beforeIds = new Set(storyMap.keys());
 
-        const sizeBefore = accumulated.size;
-        const snapshot = await page.evaluate(EXTRACT_FN, POST_BODY_SEL);
+        // scrollHeight (not a fixed pixel delta) is required to cross Facebook's
+        // pagination threshold so it fires the next /api/graphql feed request.
+        await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+        await new Promise(r => setTimeout(r, 2500));
+        // Let in-flight response handlers settle so storyMap reflects this scroll.
+        await Promise.allSettled(pendingBodies.splice(0));
 
-        // Phase 2 — smart stop: count consecutive known posts in this scroll step
-        let seqKnown = 0;
-        let triggerSmartStop = false;
-        for (const item of snapshot) {
-          if (!accumulated.has(item.key)) accumulated.set(item.key, item);
-          if (knownIds.size > 0) {
-            const eid = `fb${createHash('md5').update(`${this.source.id}:${item.text.slice(0, 200)}`).digest('hex').slice(0, 14)}`;
-            if (knownIds.has(eid)) {
-              seqKnown++;
-              if (seqKnown >= 3) { triggerSmartStop = true; break; }
-            } else {
-              seqKnown = 0;
-            }
+        const newIds = [...storyMap.keys()].filter(id => !beforeIds.has(id));
+        const grew = newIds.length > 0;
+        console.log(`[Facebook] Scroll ${i + 1}: ${storyMap.size} posts capturados (GraphQL)${grew ? ` +${newIds.length}` : ' (sin nuevos)'}`);
+
+        // Smart stop: if every newly captured post this round is already known, stop.
+        if (knownIds.size > 0 && grew && newIds.every(id => knownIds.has(`fb${id}`))) {
+          seqKnownStreak++;
+          if (seqKnownStreak >= 2) {
+            console.log(`[Facebook] Smart stop — solo posts conocidos (scroll ${i + 1})`);
+            incrementalStats.facebookSmartStops++;
+            break;
           }
+        } else {
+          seqKnownStreak = 0;
         }
 
-        const grew = accumulated.size > sizeBefore;
-        console.log(`[Facebook] Scroll ${i + 1}: ${snapshot.length} en DOM, ${accumulated.size} acumulados${grew ? '' : ' (sin nuevos)'}`);
-
-        if (triggerSmartStop) {
-          console.log(`[Facebook] Smart stop — 3 posts conocidos consecutivos (scroll ${i + 1})`);
-          incrementalStats.facebookSmartStops++;
-          break;
-        }
-
-        // Stop when no new unique posts have appeared for 2 consecutive scrolls
+        // Stop when no new posts have appeared for 2 consecutive scrolls.
         if (i >= 2) {
           noGrowthStreak = grew ? 0 : noGrowthStreak + 1;
           if (noGrowthStreak >= 2) {
@@ -351,36 +252,55 @@ export class SocialFetcherPlaywrightFacebook extends SocialFetcherBase {
         }
       }
 
-      const items = [...accumulated.values()];
+      // Final settle for any last responses still parsing.
+      await Promise.allSettled(pendingBodies.splice(0));
 
-      for (const item of items) {
-        let url = item.href;
-        if (url && url.startsWith('/')) url = `https://www.facebook.com${url}`;
-        // Only keep posts with valid URLs; don't use baseUrl as fallback
-        if (!url) {
-          const altDisplay = item.alternativeHrefs?.length > 0
-            ? `found: [${item.alternativeHrefs.join(', ')}]`
-            : 'none found';
-          console.log(`[Facebook] ⚠️  Skipped: no /posts/ /reel/ /videos/ found (${altDisplay}) | "${item.text.substring(0, 70)}…"`);
+      // Second source: the initial feed is server-rendered with post data embedded
+      // in <script> blobs (RelayPrefetchedStreamCache). Parse them with the same
+      // walker so we still capture posts even when pagination XHR doesn't fire.
+      try {
+        const scriptBodies = await page.evaluate(() =>
+          [...document.querySelectorAll('script')]
+            .map(s => s.textContent || '')
+            .filter(t => t.includes('post_id') || t.includes('permalink_url'))
+        );
+        for (const body of scriptBodies) {
+          for (const obj of _parseGraphQLBody(body)) {
+            for (const st of _walkGraphQLStories(obj)) {
+              if (st.post_id && !storyMap.has(st.post_id)) storyMap.set(st.post_id, st);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`[Facebook] embedded script parse warning: ${e.message}`);
+      }
+
+      for (const st of storyMap.values()) {
+        const message = (st.message || '').trim();
+        // Feed posts without a text message can't be clustered downstream — skip them.
+        if (!message) {
+          console.log(`[Facebook] ⚠️  Sin texto (post_id=${st.post_id}) — omitido`);
           continue;
         }
 
-        // Always use content hash: the DOM walk-up (depth ≤ 25) becomes a common
-        // ancestor across multiple post bodies, returning the same sibling post URL
-        // for every post — making URL-derived IDs unreliable.
-        const external_id = `fb${createHash('md5').update(`${this.source.id}:${item.text.slice(0, 200)}`).digest('hex').slice(0, 14)}`;
-        const likes = _parseFbMetric(item.likesStr);
+        let url = st.url;
+        if (url && url.startsWith('/')) url = `https://www.facebook.com${url}`;
+        if (!url) url = `https://www.facebook.com/${st.post_id}`;  // stable fallback from post_id
+
+        const contentType = st.video || /\/videos\//.test(url) ? 'video' : /\/reel\//.test(url) ? 'reel' : 'post';
 
         posts.push({
-          platform: 'facebook', external_id, url,
-          title:            item.text.substring(0, 300),
-          content:          item.text,
-          thumbnail_url:    item.thumbnail_url || '',
-          video_url:        item.video_url || '',
-          views: 0, likes, comments: 0, shares: 0,
-          engagement_score: likes,
-          published_at:     new Date().toISOString(),
-          keywords:         [item.contentType],
+          platform: 'facebook',
+          external_id:      `fb${st.post_id}`,   // stable numeric Facebook post id
+          url,
+          title:            message.substring(0, 300),
+          content:          message,
+          thumbnail_url:    st.thumbnail || '',
+          video_url:        st.video || '',
+          views: 0, likes: st.likes || 0, comments: 0, shares: 0,
+          engagement_score: st.likes || 0,
+          published_at:     st.creation_time ? new Date(st.creation_time * 1000).toISOString() : new Date().toISOString(),
+          keywords:         [contentType],
         });
       }
 
@@ -407,6 +327,74 @@ function _parseFbMetric(str = '') {
   if (s.endsWith('k') || s.includes('mil')) return Math.floor(n * 1000);
   if (s.endsWith('m') || s.includes('millon')) return Math.floor(n * 1_000_000);
   return Math.floor(n);
+}
+
+// BUG-001 — Facebook exposes each feed post's permalink/post_id/message/timestamp
+// only inside /api/graphql responses, NOT in the DOM (verified: DOM shows 2 carousel
+// permalinks vs 39 in the GraphQL payload). These two helpers parse those responses.
+
+// A single /api/graphql response may be one JSON object, a "for(;;);"-prefixed object,
+// or several JSON objects concatenated by newlines (@defer streaming). Return all.
+function _parseGraphQLBody(body) {
+  const objs = [];
+  let text = (body || '').replace(/^for\s*\(;;\);/, '').trim();
+  if (!text) return objs;
+  try { objs.push(JSON.parse(text)); return objs; } catch { /* fall through to JSONL */ }
+  for (const line of text.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try { objs.push(JSON.parse(t)); } catch { /* skip non-JSON chunk */ }
+  }
+  return objs;
+}
+
+// Walk a parsed GraphQL object collecting feed stories. Anchor on any object that
+// owns a numeric `post_id`; extract url/message/timestamp/image/reactions from its
+// own subtree without descending into a nested story (different post_id). Field
+// search is by NAME, not fixed path — resilient to Facebook layout reshuffles.
+function _walkGraphQLStories(root) {
+  const stories = [];
+  const seen = new Set();
+
+  const extractFields = (node, ownPostId) => {
+    const acc = { url: '', message: '', creation_time: 0, thumbnail: '', video: '', likes: 0 };
+    const visit = (n) => {
+      if (!n || typeof n !== 'object') return;
+      if (n !== node && typeof n.post_id === 'string' && /^\d+$/.test(n.post_id) && n.post_id !== ownPostId) return;
+      if (Array.isArray(n)) { for (const v of n) visit(v); return; }
+      for (const [k, v] of Object.entries(n)) {
+        if (!acc.url && typeof v === 'string' && v.includes('facebook.com') && /\/(posts|videos|reel)\//.test(v) && !v.includes('comment_id=')) {
+          if (k === 'url' || k === 'permalink_url' || k === 'wwwURL') acc.url = v.split('?')[0];
+        }
+        if (k === 'message' && v && typeof v === 'object' && typeof v.text === 'string') {
+          if (v.text.length > acc.message.length) acc.message = v.text;
+        }
+        if (k === 'creation_time' && typeof v === 'number' && !acc.creation_time) acc.creation_time = v;
+        if (k === 'reaction_count' && v && typeof v === 'object' && typeof v.count === 'number') {
+          if (v.count > acc.likes) acc.likes = v.count;
+        }
+        if (k === 'image' && v && typeof v === 'object' && typeof v.uri === 'string' && !acc.thumbnail) acc.thumbnail = v.uri;
+        if (!acc.video && typeof v === 'string' && (k === 'playable_url' || k === 'browser_native_hd_url' || k === 'browser_native_sd_url')) acc.video = v;
+        if (v && typeof v === 'object') visit(v);
+      }
+    };
+    visit(node);
+    return acc;
+  };
+
+  const walk = (n) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const v of n) walk(v); return; }
+    if (typeof n.post_id === 'string' && /^\d+$/.test(n.post_id) && !seen.has(n.post_id)) {
+      seen.add(n.post_id);
+      const f = extractFields(n, n.post_id);
+      if (f.url || f.message) stories.push({ post_id: n.post_id, ...f });
+    }
+    for (const v of Object.values(n)) if (v && typeof v === 'object') walk(v);
+  };
+
+  walk(root);
+  return stories;
 }
 
 // Facebook Graph API fetcher — uses FB_PAGE_ACCESS_TOKEN when available.
