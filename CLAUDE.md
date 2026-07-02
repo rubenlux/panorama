@@ -356,7 +356,7 @@ The Social Intelligence module uses headless Playwright scraper (`src/connectors
 - **Architecture Invariant**: One source record in the DB strictly equals one content tab/URL.
 - **YouTube Strategy**: Do NOT auto-derive URLs. A channel's shorts, videos, and community posts must be registered as three separate sources with an explicit `content_type` (`videos`, `shorts`, or `posts`).
 - **Facebook Strategy**: One page = one source with `content_type='posts'` (always). No content_type selector needed in the UI.
-- **Platform status**: YouTube ✓ active, Facebook ✓ active (Sprint 8.7), X/Twitter ⛔ DISABLED (`ENABLE_X_MONITOR=false` in `.env`). Instagram, TikTok — stubs return `[]`. Do NOT activate without explicit user authorization.
+- **Platform status**: YouTube ✓ active, Facebook ✓ active (Sprint 8.7), Instagram ✓ active (2026-07-02), X/Twitter ⛔ DISABLED (`ENABLE_X_MONITOR=false` in `.env`). TikTok — stub returns `[]`. Do NOT activate without explicit user authorization.
 - **Concurrency guards**: `isSocialRunning` (module-level bool) prevents overlapping social cycles. `isNewsRunning` in `newsMonitor.js` prevents overlapping news cycles. Both use identical skip-and-count pattern (`socialSkippedCycles++`).
 
 **Worker (`src/jobs/socialMonitor.js`):**
@@ -397,6 +397,25 @@ Full pipeline: `ensureSchema` → `incrementalStats.reset()` → `startRun('soci
 - `SocialFetcherGraphApiFacebook` (wrapper): checks `source.graph_api_supported` first — if `false`, skips API entirely and goes straight to Playwright. On `OAuthException` (code 10), persists `graph_api_supported=false` in DB so all future cycles skip the HTTP round-trip. On success, persists `true`.
 - All 18 current Facebook sources are marked `graph_api_supported=false` in DB (confirmed via logs — none are owned by the token). The Graph API call is effectively dead-code for Panorama's source list.
 - Facebook is **now included in the automatic worker** (Sprint 10.0). `getFetcher()` returns `SocialFetcherGraphApiFacebook` → hits Playwright directly (via `graph_api_supported=false` fast-path). Freshness windows (15 min) prevent redundant scrapes.
+
+**Instagram scraper (`SocialFetcherPlaywrightInstagram` in `fetchers.js`) — activated 2026-07-02, same session as BUG-001.**
+
+**Fuente ÚNICA = payload GraphQL, anclado por FORMA del nodo (no por nombre de query).** `_walkInstagramPosts(root)` busca cualquier objeto con `code` (string) + `pk` (string) + `media_type` (definido) — verificado en vivo que tanto el perfil normal (`xdt_api__v1__feed__user_timeline_graphql_connection`) como la tab de Reels (`xdt_api__v1__clips__user__connection_v2`) exponen esa misma forma de nodo. Mismo principio que el walker de Facebook.
+
+- Contexto efímero (sin perfil persistente, a diferencia de Facebook) + `context.addCookies()` leyendo `instagram_cookies.json` (mismo patrón que `facebook_cookies.json`; críticas: `sessionid`, `ds_user_id`, `csrftoken`, `mid`).
+- `context.on('response')` registrado antes de `goto`, filtra por `/graphql`. Scroll con `window.scrollTo(0, document.body.scrollHeight)`.
+- Campos del nodo: `code` (slug del permalink), `pk` (id numérico estable), `product_type` (`'clips'`=reel, si no `/p/`), `media_type` (1=foto,2=video,8=carrusel), `taken_at` (unix), `caption.text`, `like_count`, `comment_count`, `view_count`, `image_versions2.candidates[0].url`, `video_versions[0].url`.
+- `external_id` = **`ig${pk}`** (mismo patrón que `fb${post_id}`).
+- **Posts de cuentas hermanas** (ej. `infobaeamerica`/`infobaedeportes` apareciendo en `/infobae/`) son crossposts legítimos — verificado contra el DOM real antes de asumir contaminación. El parser NO filtra por `owner.username === target`.
+- Sin smart-stop por `_knownIds` todavía (Facebook sí lo tiene) — el `ON CONFLICT` en DB deduplica igual, solo es menos eficiente. Extensión futura si hace falta.
+
+**Session-expiry alerting (Facebook + Instagram, 2026-07-02) — evita repetir el error de "parecía el parser, era la sesión" (BUG-001).**
+
+- `SessionExpiredError` (exportada de `fetchers.js`) — deliberadamente NO absorbida por el `catch` genérico de cada fetcher (que sigue tragando cualquier otro error igual que antes). Se lanza SOLO cuando `posts.length === 0` Y la página muestra la firma de muro de login confirmada en vivo: form real de login, o shell casi vacío (`scrollHeight` ~900-966 vs 2400-4692+ logueado). El chequeo posterior al scroll (no antes) evita falsos positivos en sesiones válidas que cargan lento.
+- Se propaga sin cambios a través del `try/catch` por-fuente ya existente en `socialMonitor.js` (línea ~812) → cae en `social_fetch_logs.error_message` con el prefijo `SESSION_EXPIRED:`.
+- `GET /social/stats` agrega `session_alerts[]` — `DISTINCT ON (platform)` sobre el fetch log más reciente de facebook/instagram; se limpia solo en cuanto un fetch vuelve a tener éxito.
+- CMS `SocialIntelligence.jsx` — banner rojo por cada alerta activa, arriba de las tabs, con botón a `/social/sources`.
+- Renovación de cookies: mismo runbook que Facebook — Cookie-Editor JSON → reemplazar el archivo → (Instagram no usa perfil persistente, no hace falta borrar caché de cookies).
 
 **X/Twitter scraper (`SocialFetcherX` in `fetchers.js`) — Sprint X:**
 - **Primary**: Playwright + X session cookies → intercepts internal GraphQL `UserTweets` API. Same pattern as Facebook mode 2.
