@@ -1,0 +1,61 @@
+{
+  "timestamp": "2026-07-01T21:15:27.090Z",
+  "duration_ms": 172800,
+  "cpu_user_ms": "17797",
+  "peak_memory_mb": "74.7",
+  "chromium": {
+    "browsers": 1,
+    "contexts": 0,
+    "pages": 1
+  },
+  "articles": {
+    "found": 791,
+    "valid": 791,
+    "throughput_per_sec": "4.58"
+  },
+  "components": [
+    {
+      "name": "Entity Matching + NER",
+      "wall_ms": 69556,
+      "cpu_ms": "5922",
+      "pct_time": "40.3",
+      "pct_cpu": "33.3"
+    },
+    {
+      "name": "RSS + Playwright Discovery",
+      "wall_ms": 48208,
+      "cpu_ms": "7000",
+      "pct_time": "27.9",
+      "pct_cpu": "39.3"
+    },
+    {
+      "name": "Story Detection + Clustering",
+      "wall_ms": 15670,
+      "cpu_ms": "1734",
+      "pct_time": "9.1",
+      "pct_cpu": "9.7"
+    },
+    {
+      "name": "HTTP Fetch",
+      "wall_ms": 14762,
+      "cpu_ms": "578",
+      "pct_time": "8.5",
+      "pct_cpu": "3.2"
+    },
+    {
+      "name": "Event Detection",
+      "wall_ms": 14480,
+      "cpu_ms": "1844",
+      "pct_time": "8.4",
+      "pct_cpu": "10.4"
+    },
+    {
+      "name": "Opportunity Generation",
+      "wall_ms": 6992,
+      "cpu_ms": "485",
+      "pct_time": "4.0",
+      "pct_cpu": "2.7"
+    }
+  ],
+  "source_timings": {}
+}

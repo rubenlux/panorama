@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-07-02T14:14:00.020Z",
+  "duration_ms": 50410,
+  "cpu_user_ms": "5140",
+  "peak_memory_mb": "82.1",
+  "chromium": {
+    "browsers": 3,
+    "contexts": 0,
+    "pages": 3
+  },
+  "articles": {
+    "found": 19,
+    "valid": 19,
+    "throughput_per_sec": "0.38"
+  },
+  "components": [
+    {
+      "name": "RSS + Playwright Discovery",
+      "wall_ms": 32531,
+      "cpu_ms": "3532",
+      "pct_time": "64.5",
+      "pct_cpu": "68.7"
+    },
+    {
+      "name": "HTTP Fetch",
+      "wall_ms": 17721,
+      "cpu_ms": "1593",
+      "pct_time": "35.2",
+      "pct_cpu": "31.0"
+    }
+  ],
+  "source_timings": {}
+}
