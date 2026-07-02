@@ -351,7 +351,7 @@ export async function recalcClusterMetrics(clusterIds) {
                 AND sp.title NOT ILIKE 'compartido con:%'
                 AND sp.title NOT ILIKE '%cuenta verificada%'
                 AND sp.title NOT ILIKE '%cuenta verificado%'
-                AND sp.title NOT ~ '^[A-Za-z0-9]{25,}'
+                AND sp.title !~ '^[A-Za-z0-9]{25,}'
                 THEN 0
               WHEN sp.title NOT ILIKE '%facebookfacebook%'
                 AND LENGTH(sp.title) < 200
