@@ -12,6 +12,14 @@
     "worker": "nodemon -r dotenv/config src/worker.js",
     "dev:all": "concurrently \"npm run dev\" \"npm run cms\" \"npm run worker\""
   },
+  "nodemonConfig": {
+    "ignore": [
+      "logs/*",
+      "facebook-profile/*",
+      "cms/*",
+      "web/*"
+    ]
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
