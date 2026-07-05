@@ -881,6 +881,16 @@ router.get('/health', requireAuth, async (req, res, next) => {
       FROM tracked_sources
     `).catch(() => ({ rows: [{ total: 0, active: 0, inactive: 0, checked_last_hour: 0, checked_last_day: 0 }] }));
 
+    // Sources with repeated discovery failures (EMPTY/ERROR/TIMEOUT/BLOCKED) —
+    // flagged for human review, never an automatic strategy switch.
+    const REPEATED_FAILURE_THRESHOLD = 5;
+    const { rows: repeatedFailureSources } = await query(`
+      SELECT name, discovery_type, last_discovery_status, last_discovery_error, consecutive_discovery_failures
+      FROM rss_sources
+      WHERE enabled = true AND consecutive_discovery_failures >= $1
+      ORDER BY consecutive_discovery_failures DESC
+    `, [REPEATED_FAILURE_THRESHOLD]).catch(() => ({ rows: [] }));
+
     // Backlog estimate
     const { rows: [backlog] } = await query(`
       SELECT
@@ -913,6 +923,13 @@ router.get('/health', requireAuth, async (req, res, next) => {
       alerts.push({ type: 'transcript_coverage_low', severity: 'warning', message: `Cobertura de transcripts: ${coveragePct.toFixed(0)}%` });
     if (srcStats?.total > 0 && (srcStats.active / srcStats.total) < 0.8)
       alerts.push({ type: 'rss_sources_low', severity: 'warning', message: `Fuentes RSS activas: ${srcStats.active}/${srcStats.total}` });
+    for (const s of repeatedFailureSources) {
+      alerts.push({
+        type: 'source_repeated_failure',
+        severity: 'warning',
+        message: `"${s.name}" (${s.discovery_type}): ${s.consecutive_discovery_failures} ciclos consecutivos en ${s.last_discovery_status}${s.last_discovery_error ? ' — ' + s.last_discovery_error : ''}`,
+      });
+    }
 
     res.json({
       worker: {

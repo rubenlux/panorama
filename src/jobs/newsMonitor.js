@@ -1100,7 +1100,8 @@ async function discoverArticlesForSource(source) {
            last_discovery_error = $2,
            last_discovery_duration_ms = $3,
            last_articles_found = $4,
-           last_discovery_at = NOW()
+           last_discovery_at = NOW(),
+           consecutive_discovery_failures = CASE WHEN $1::varchar = 'OK' THEN 0 ELSE consecutive_discovery_failures + 1 END
        WHERE id = $5`,
       [status, errorMessage, durationMs, articles.length, source.id]
     );
@@ -1928,6 +1929,10 @@ async function ensureClusteringSchema2() {
 async function ensureFreshnessSchema() {
   await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS freshness_score FLOAT DEFAULT 1.0`).catch(() => {});
   await query(`ALTER TABLE event_clusters ADD COLUMN IF NOT EXISTS freshness_score FLOAT DEFAULT 1.0`).catch(() => {});
+}
+
+async function ensureDiscoveryFailureColumn() {
+  await query(`ALTER TABLE rss_sources ADD COLUMN IF NOT EXISTS consecutive_discovery_failures INTEGER DEFAULT 0`).catch(() => {});
 }
 
 // Freshness Sprint — recalculates time-decay multipliers for stories and events.
@@ -3124,6 +3129,7 @@ export async function runNewsMonitor() {
   await ensureAlgorithmicSummaryColumn();
   await ensureClusteringSchema2();
   await ensureFreshnessSchema();
+  await ensureDiscoveryFailureColumn();
 
   const runId = await startRun('news_monitor');
   let sourcesProcessed = 0;
