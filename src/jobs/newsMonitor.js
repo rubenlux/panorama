@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { createHash } from 'crypto';
+import { gunzipSync } from 'zlib';
 import { query } from '../routes/db.js';
 import { AiService } from '../services/AiService.js';
 import { fetchArticleContentForMonitor, playwrightMetrics } from '../services/ArticleFetcher.js';
@@ -60,6 +61,35 @@ function parseRssItems(xml) {
       description: extractTag(raw, 'description').replace(/<[^>]*>/g, '').trim().slice(0, 500),
       pubDate:     extractTag(raw, 'pubDate') || extractTag(raw, 'dc:date'),
       guid:        extractTag(raw, 'guid'),
+    });
+  }
+  return items;
+}
+
+// Extract an attribute value from the first matching tag (for self-closing
+// tags like Atom's `<link href="..." />`, which extractTag can't handle
+// since it requires a closing `</tag>`).
+function extractAttr(xml, tag, attr) {
+  const re = new RegExp(`<${tag}\\b[^>]*\\b${attr}=["']([^"']*)["'][^>]*/?>`, 'i');
+  const m = xml.match(re);
+  return m ? decodeHtmlEntities(m[1]) : '';
+}
+
+// Parse Atom feed items (<entry> tags). Atom's <link> is self-closing with
+// an href attribute, unlike RSS where <link> wraps the URL as text content.
+function parseAtomItems(xml) {
+  const items = [];
+  const re = /<entry>([\s\S]*?)<\/entry>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const raw = m[1];
+    const link = extractAttr(raw, 'link', 'href') || extractTag(raw, 'id');
+    items.push({
+      title:       extractTag(raw, 'title').replace(/\s+/g, ' ').trim(),
+      link,
+      description: extractTag(raw, 'summary').replace(/<[^>]*>/g, '').trim().slice(0, 500),
+      pubDate:     extractTag(raw, 'published') || extractTag(raw, 'updated'),
+      guid:        extractTag(raw, 'id') || link,
     });
   }
   return items;
@@ -129,6 +159,19 @@ async function fetchFeedXml(url) {
   // If Content-Type is HTML (not XML), return null to trigger Playwright fallback
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('text/html')) return null;
+
+  // Some sitemaps are served as raw .gz files with Content-Type: application/x-gzip
+  // and no Content-Encoding header — node-fetch only auto-decompresses when
+  // Content-Encoding signals transport compression, so this case needs an
+  // explicit gunzip (confirmed live: Yahoo serves its news-sitemap this way).
+  if (ct.includes('gzip') || url.endsWith('.gz')) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    try {
+      return gunzipSync(buf).toString('utf-8');
+    } catch {
+      return null;
+    }
+  }
 
   return res.text();
 }
@@ -3058,6 +3101,7 @@ export async function runNewsMonitor() {
     initializeFactory({
       fetchFeedXml,
       parseRssItems,
+      parseAtomItems,
       parseNewsSitemapItems,
       parseSitemapIndexUrls,
       detectFeedFormat,

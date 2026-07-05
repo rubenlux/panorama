@@ -49,12 +49,13 @@ class DiscoveryStrategy {
 }
 
 // Importable from newsMonitor - these are defined there
-let fetchFeedXml, parseRssItems, parseNewsSitemapItems, parseSitemapIndexUrls, detectFeedFormat, discoverArticlesViaPlaywright;
+let fetchFeedXml, parseRssItems, parseAtomItems, parseNewsSitemapItems, parseSitemapIndexUrls, detectFeedFormat, discoverArticlesViaPlaywright;
 
 // Import functions from newsMonitor (passed during factory initialization)
-export function initializeFactory({ fetchFeedXml: ffx, parseRssItems: pri, parseNewsSitemapItems: pnsi, parseSitemapIndexUrls: psiu, detectFeedFormat: dff, discoverArticlesViaPlaywright: davp }) {
+export function initializeFactory({ fetchFeedXml: ffx, parseRssItems: pri, parseAtomItems: pai, parseNewsSitemapItems: pnsi, parseSitemapIndexUrls: psiu, detectFeedFormat: dff, discoverArticlesViaPlaywright: davp }) {
   fetchFeedXml = ffx;
   parseRssItems = pri;
+  parseAtomItems = pai;
   parseNewsSitemapItems = pnsi;
   parseSitemapIndexUrls = psiu;
   detectFeedFormat = dff;
@@ -82,7 +83,14 @@ class RssDiscovery extends DiscoveryStrategy {
     if (format === 'news-sitemap') {
       articles.push(...parseNewsSitemapItems(xml));
     } else if (format === 'sitemap-index') {
-      const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+      // Sitemap-index order isn't standardized: some sources list oldest-first
+      // (so the last entries are newest), others newest-first (e.g. Yahoo's
+      // rolling + daily-descending index, confirmed live: slice(-3) was grabbing
+      // month-old daily archives that no longer carry news: markup). Taking the
+      // first 3 is safe for both cases — verified against Reuters (paginated,
+      // first and last chunks are equally fresh) and Yahoo (first entry is the
+      // current rolling sitemap with same-day articles).
+      const childUrls = parseSitemapIndexUrls(xml).slice(0, 3);
       for (const childUrl of childUrls) {
         try {
           const childXml = await fetchFeedXml(childUrl);
@@ -94,6 +102,8 @@ class RssDiscovery extends DiscoveryStrategy {
         } catch {}
         if (articles.length >= 60) break;
       }
+    } else if (format === 'atom') {
+      articles.push(...parseAtomItems(xml));
     } else {
       articles.push(...parseRssItems(xml));
     }
@@ -123,7 +133,14 @@ class SitemapDiscovery extends DiscoveryStrategy {
     if (format === 'news-sitemap') {
       articles.push(...parseNewsSitemapItems(xml));
     } else if (format === 'sitemap-index') {
-      const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+      // Sitemap-index order isn't standardized: some sources list oldest-first
+      // (so the last entries are newest), others newest-first (e.g. Yahoo's
+      // rolling + daily-descending index, confirmed live: slice(-3) was grabbing
+      // month-old daily archives that no longer carry news: markup). Taking the
+      // first 3 is safe for both cases — verified against Reuters (paginated,
+      // first and last chunks are equally fresh) and Yahoo (first entry is the
+      // current rolling sitemap with same-day articles).
+      const childUrls = parseSitemapIndexUrls(xml).slice(0, 3);
       for (const childUrl of childUrls) {
         try {
           const childXml = await fetchFeedXml(childUrl);
