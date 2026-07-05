@@ -314,7 +314,7 @@ function isGarbageUrl(url) {
   const garbageSegments = ['rss', 'feed', 'sitemap', 'login', 'signin', 'logout', 'search',
                            'contacto', 'contact', 'privacy', 'about', 'terms', 'legal',
                            'help', 'faq', 'suscripci', 'subscribe', 'ads', 'jobs', 'carrera',
-                           'category', 'tag', 'author', 'page', 'archivo'];
+                           'category', 'categorias', 'tag', 'author', 'page', 'archivo'];
 
   if (pathSegments.some(seg => garbageSegments.includes(seg.toLowerCase()))) {
     return true;
@@ -953,7 +953,7 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
 
           if (validateArticle(article)) {
             articles.push({
-              title: metadata.title,
+              title: article.title,
               link: url,
               description: metadata.description || '',
               pubDate: metadata.publishedAt || new Date().toISOString(),
