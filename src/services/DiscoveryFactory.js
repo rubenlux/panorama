@@ -49,14 +49,15 @@ class DiscoveryStrategy {
 }
 
 // Importable from newsMonitor - these are defined there
-let fetchFeedXml, parseRssItems, parseAtomItems, parseNewsSitemapItems, parseSitemapIndexUrls, detectFeedFormat, discoverArticlesViaPlaywright;
+let fetchFeedXml, parseRssItems, parseAtomItems, parseNewsSitemapItems, parseUrlsetItems, parseSitemapIndexUrls, detectFeedFormat, discoverArticlesViaPlaywright;
 
 // Import functions from newsMonitor (passed during factory initialization)
-export function initializeFactory({ fetchFeedXml: ffx, parseRssItems: pri, parseAtomItems: pai, parseNewsSitemapItems: pnsi, parseSitemapIndexUrls: psiu, detectFeedFormat: dff, discoverArticlesViaPlaywright: davp }) {
+export function initializeFactory({ fetchFeedXml: ffx, parseRssItems: pri, parseAtomItems: pai, parseNewsSitemapItems: pnsi, parseUrlsetItems: pui, parseSitemapIndexUrls: psiu, detectFeedFormat: dff, discoverArticlesViaPlaywright: davp }) {
   fetchFeedXml = ffx;
   parseRssItems = pri;
   parseAtomItems = pai;
   parseNewsSitemapItems = pnsi;
+  parseUrlsetItems = pui;
   parseSitemapIndexUrls = psiu;
   detectFeedFormat = dff;
   discoverArticlesViaPlaywright = davp;
@@ -98,6 +99,8 @@ class RssDiscovery extends DiscoveryStrategy {
           const childFmt = detectFeedFormat(childXml);
           articles.push(...(childFmt === 'news-sitemap'
             ? parseNewsSitemapItems(childXml)
+            : childFmt === 'urlset'
+            ? parseUrlsetItems(childXml)
             : parseRssItems(childXml)));
         } catch {}
         if (articles.length >= 60) break;
@@ -148,6 +151,8 @@ class SitemapDiscovery extends DiscoveryStrategy {
           const childFmt = detectFeedFormat(childXml);
           articles.push(...(childFmt === 'news-sitemap'
             ? parseNewsSitemapItems(childXml)
+            : childFmt === 'urlset'
+            ? parseUrlsetItems(childXml)
             : parseRssItems(childXml)));
         } catch {}
         if (articles.length >= 60) break;

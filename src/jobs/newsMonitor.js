@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { gunzipSync } from 'zlib';
 import { query } from '../routes/db.js';
 import { AiService } from '../services/AiService.js';
-import { fetchArticleContentForMonitor, playwrightMetrics } from '../services/ArticleFetcher.js';
+import { fetchArticleContentForMonitor, fetchArticleContent, playwrightMetrics } from '../services/ArticleFetcher.js';
 import { startRun, finishRun } from './workerUtils.js';
 import { browserAudit } from '../services/browserLifecycleLogger.js';
 import { MonitorProfiler } from './monitorProfiler.js';
@@ -110,6 +110,23 @@ function parseNewsSitemapItems(xml) {
     const pubDate = extractTag(block, 'publication_date') || extractTag(block, 'lastmod');
     if (!title) continue;
     items.push({ title, link: loc, description: '', pubDate, guid: loc });
+  }
+  return items;
+}
+
+// Plain sitemap (no news: namespace, no <title>) — just <loc>+<lastmod>.
+// title is left empty; processSource() backfills it from the article HTML
+// since Discovery has no title to offer for this format.
+function parseUrlsetItems(xml) {
+  const items = [];
+  const urlRe = /<url>([\s\S]*?)<\/url>/g;
+  let m;
+  while ((m = urlRe.exec(xml)) !== null) {
+    const block = m[1];
+    const loc   = extractTag(block, 'loc');
+    if (!loc || !loc.startsWith('http')) continue;
+    const pubDate = extractTag(block, 'lastmod');
+    items.push({ title: '', link: loc, description: '', pubDate, guid: loc });
   }
   return items;
 }
@@ -1119,9 +1136,35 @@ async function processSource(source) {
     const isTraceSource = source.name === 'Guau Formosa';
     if (isTraceSource) console.log(`\n[TRACE] Insertando ${items.length} items...\n`);
 
+    // Some sitemap formats (e.g. Guau Formosa's urlset children) carry only
+    // <loc>+<lastmod>, no title — Discovery has nothing to offer, so the title
+    // is backfilled from the real article page instead of dropping the URL.
+    // Capped per source per cycle (sequential fetches) to avoid hammering a
+    // single small site; already-stored URLs are skipped before spending a
+    // fetch so the budget goes to genuinely new items each cycle.
+    const TITLE_BACKFILL_LIMIT = 15;
+    let titleBackfillsUsed = 0;
+    const titlelessUrls = items.filter(i => i.link && !i.title).map(i => hashUrl(i.link));
+    let backfillExistingHashes = new Set();
+    if (titlelessUrls.length > 0) {
+      const { rows } = await query(`SELECT hash FROM monitored_articles WHERE hash = ANY($1::text[])`, [titlelessUrls]);
+      backfillExistingHashes = new Set(rows.map(r => r.hash));
+    }
+
     for (const item of items) {
       const url = item.link;
-      if (!url || !item.title) continue;
+      if (!url) continue;
+
+      if (!item.title) {
+        if (backfillExistingHashes.has(hashUrl(url))) continue;
+        if (titleBackfillsUsed >= TITLE_BACKFILL_LIMIT) continue;
+        titleBackfillsUsed++;
+        try {
+          const fetched = await fetchArticleContent(url);
+          if (fetched?.title) item.title = fetched.title;
+        } catch {}
+      }
+      if (!item.title) continue;
 
       let pubDate = null;
       if (item.pubDate) {
@@ -3103,6 +3146,7 @@ export async function runNewsMonitor() {
       parseRssItems,
       parseAtomItems,
       parseNewsSitemapItems,
+      parseUrlsetItems,
       parseSitemapIndexUrls,
       detectFeedFormat,
       discoverArticlesViaPlaywright
