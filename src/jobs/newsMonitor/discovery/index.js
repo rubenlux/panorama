@@ -7,7 +7,9 @@
 export {
   decodeHtmlEntities,
   extractTag,
+  extractAttr,
   parseRssItems,
+  parseAtomItems,
   parseNewsSitemapItems,
   parseSitemapIndexUrls,
 } from './parsers.js';

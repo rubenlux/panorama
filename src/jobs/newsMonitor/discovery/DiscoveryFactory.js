@@ -13,6 +13,7 @@
 import {
   fetchFeedXml,
   parseRssItems,
+  parseAtomItems,
   parseNewsSitemapItems,
   parseSitemapIndexUrls,
   detectFeedFormat,
@@ -95,6 +96,8 @@ class RssDiscovery extends DiscoveryStrategy {
         } catch {}
         if (articles.length >= 60) break;
       }
+    } else if (format === 'atom') {
+      articles.push(...parseAtomItems(xml));
     } else {
       articles.push(...parseRssItems(xml));
     }
