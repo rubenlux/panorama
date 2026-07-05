@@ -84,7 +84,14 @@ class RssDiscovery extends DiscoveryStrategy {
     if (format === 'news-sitemap') {
       articles.push(...parseNewsSitemapItems(xml));
     } else if (format === 'sitemap-index') {
-      const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+      // Sitemap-index order isn't standardized: some sources list oldest-first
+      // (so the last entries are newest), others newest-first (e.g. Yahoo's
+      // rolling + daily-descending index, confirmed live: slice(-3) was grabbing
+      // month-old daily archives that no longer carry news: markup). Taking the
+      // first 3 is safe for both cases — verified against Reuters (paginated,
+      // first and last chunks are equally fresh) and Yahoo (first entry is the
+      // current rolling sitemap with same-day articles).
+      const childUrls = parseSitemapIndexUrls(xml).slice(0, 3);
       for (const childUrl of childUrls) {
         try {
           const childXml = await fetchFeedXml(childUrl);
@@ -127,7 +134,14 @@ class SitemapDiscovery extends DiscoveryStrategy {
     if (format === 'news-sitemap') {
       articles.push(...parseNewsSitemapItems(xml));
     } else if (format === 'sitemap-index') {
-      const childUrls = parseSitemapIndexUrls(xml).slice(-3).reverse();
+      // Sitemap-index order isn't standardized: some sources list oldest-first
+      // (so the last entries are newest), others newest-first (e.g. Yahoo's
+      // rolling + daily-descending index, confirmed live: slice(-3) was grabbing
+      // month-old daily archives that no longer carry news: markup). Taking the
+      // first 3 is safe for both cases — verified against Reuters (paginated,
+      // first and last chunks are equally fresh) and Yahoo (first entry is the
+      // current rolling sitemap with same-day articles).
+      const childUrls = parseSitemapIndexUrls(xml).slice(0, 3);
       for (const childUrl of childUrls) {
         try {
           const childXml = await fetchFeedXml(childUrl);

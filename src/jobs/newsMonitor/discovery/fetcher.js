@@ -3,6 +3,7 @@
  */
 
 import fetch from 'node-fetch';
+import { gunzipSync } from 'zlib';
 
 /**
  * Detect feed format from XML content
@@ -35,6 +36,19 @@ async function fetchFeedXml(url) {
   // If Content-Type is HTML (not XML), return null to trigger Playwright fallback
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('text/html')) return null;
+
+  // Some sitemaps are served as raw .gz files with Content-Type: application/x-gzip
+  // and no Content-Encoding header — node-fetch only auto-decompresses when
+  // Content-Encoding signals transport compression, so this case needs an
+  // explicit gunzip (confirmed live: Yahoo serves its news-sitemap this way).
+  if (ct.includes('gzip') || url.endsWith('.gz')) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    try {
+      return gunzipSync(buf).toString('utf-8');
+    } catch {
+      return null;
+    }
+  }
 
   return res.text();
 }
