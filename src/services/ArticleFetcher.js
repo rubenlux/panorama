@@ -17,7 +17,7 @@
  *   Does NOT use the article_content_cache — content stored in monitored_articles.
  */
 
-import { chromium } from 'playwright';
+import { browserPool } from '../jobs/newsMonitor/playwright/BrowserPool.js';
 import fetch from 'node-fetch';
 import { query } from '../routes/db.js';
 import { browserAudit } from './browserLifecycleLogger.js';
@@ -147,7 +147,7 @@ async function fetchWithPlaywright(url) {
   try {
     playwrightMetrics.pagesOpened++;
     playwrightMetrics.browsersLaunched++;
-    browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    browser = await browserPool.acquire();
     browserAudit.browserOpen('Article/Playwright');
     const context = await browser.newContext({
       extraHTTPHeaders: { 'Accept-Language': 'es-AR,es;q=0.9' },
@@ -166,7 +166,7 @@ async function fetchWithPlaywright(url) {
   } finally {
     if (browser) {
       browserAudit.browserClose('Article/Playwright');
-      await browser.close().catch(() => {});
+      browserPool.release(browser);
     }
   }
 }

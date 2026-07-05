@@ -223,9 +223,10 @@ async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
   const isTraceSource = source.name === 'Guau Formosa';
 
+  let browser;
+  const { browserPool } = await import('../playwright/BrowserPool.js');
   try {
-    const { chromium } = await import('playwright');
-    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
+    browser = await browserPool.acquire();
     const page = await browser.newPage();
 
     // Determine homepage URL
@@ -248,7 +249,6 @@ async function discoverArticlesViaPlaywright(source) {
     }
 
     if (topUrls.length === 0) {
-      await browser.close();
       return [];
     }
 
@@ -264,11 +264,12 @@ async function discoverArticlesViaPlaywright(source) {
       });
     }
 
-    await browser.close();
     return articles;
   } catch (err) {
     console.error(`[Playwright Discovery] Error for ${source.name}: ${err.message}`);
     return [];
+  } finally {
+    if (browser) browserPool.release(browser);
   }
 }
 

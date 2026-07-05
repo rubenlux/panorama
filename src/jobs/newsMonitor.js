@@ -8,6 +8,7 @@ import { browserAudit } from '../services/browserLifecycleLogger.js';
 import { MonitorProfiler } from './monitorProfiler.js';
 import { DiscoveryFactory, initializeFactory } from '../services/DiscoveryFactory.js';
 import { processEntityExtraction, processStoryDetection, processEventDetection, processOpportunityGeneration } from './newsMonitor/workers/index.js';
+import { browserPool } from './newsMonitor/playwright/BrowserPool.js';
 
 const ai = new AiService();
 
@@ -3234,6 +3235,17 @@ export async function runNewsMonitor() {
     console.log(`News Monitor duration:          ${Date.now() - cycleStart}ms`);
     console.log(`Ciclos omitidos por lock:       ${newsSkippedCycles}`);
     console.log('=== Perf Profile: Cycle End ===\n');
+
+    // BrowserPool stats (Sprint 4)
+    const bp = browserPool.stats();
+    console.log('==============================');
+    console.log('BrowserPool');
+    console.log(`Created: ${bp.created}`);
+    console.log(`Peak: ${bp.peak}`);
+    console.log(`Reused: ${bp.reused}`);
+    console.log(`Waiting: ${bp.waiting}`);
+    console.log(`Idle: ${bp.idle}`);
+    console.log('==============================');
 
     await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed, items_found: itemsFound });
 

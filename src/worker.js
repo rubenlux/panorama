@@ -8,6 +8,7 @@ import { trackedSourceMonitor } from "./jobs/trackedSourceMonitor.js";
 import { pool } from "./routes/db.js";
 import { ensureObservabilitySchema, logEvent } from "./jobs/workerUtils.js";
 import { closeBrowser } from "./connectors/playwright.js";
+import { browserPool } from "./jobs/newsMonitor/playwright/BrowserPool.js";
 
 console.log("Starting Panorama Worker...");
 
@@ -73,6 +74,7 @@ process.on('SIGINT', async () => {
     console.log("🛑 Worker stopping...");
     await logEvent('worker_stopped', 'system', { pid: process.pid }).catch(() => {});
     await closeBrowser().catch(() => {});
+    await browserPool.closeAll().catch(() => {});
     pool.end();
     process.exit();
 });
