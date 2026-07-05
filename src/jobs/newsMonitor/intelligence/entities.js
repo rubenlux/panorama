@@ -1,8 +1,10 @@
 /**
  * Intelligence — Entity Extraction
- * Pure NER functions for title entity extraction
- * No database or AI dependencies
+ * Pure NER functions for title entity extraction, plus persistence for
+ * MONITOR-origin entities (knowledge_entities + article_entity_matches).
  */
+
+import { query } from '../../../routes/db.js';
 
 /**
  * MONITOR_STOPWORDS — Spanish/English articles, prepositions, pronouns, generic topic words
@@ -104,4 +106,44 @@ export function extractMonitorEntities(title) {
   flush();
 
   return [...new Set(results)].slice(0, 6);
+}
+
+/**
+ * discoverMonitorEntities — Extract entities from article titles and persist them.
+ * Upserts knowledge_entities (origin='MONITOR') and links via article_entity_matches,
+ * which detectStories() reads to populate story_entities (required for detectEvents()
+ * to have any entities to match on — see BUG-005).
+ *
+ * @param {string[]} newArticleIds — monitored_articles UUIDs
+ */
+export async function discoverMonitorEntities(newArticleIds) {
+  if (!newArticleIds || newArticleIds.length === 0) return;
+
+  const { rows: articles } = await query(
+    `SELECT id, title, source_id FROM monitored_articles WHERE id = ANY($1::uuid[])`,
+    [newArticleIds]
+  );
+
+  for (const article of articles) {
+    const names = extractMonitorEntities(article.title);
+    for (const name of names) {
+      const { rows } = await query(
+        `INSERT INTO knowledge_entities (name, entity_type, entity_origin, first_seen_at, last_seen_at, mention_count)
+         VALUES ($1, 'unknown', 'MONITOR', now(), now(), 1)
+         ON CONFLICT (lower(name), entity_type, entity_origin) DO UPDATE
+           SET mention_count = knowledge_entities.mention_count + 1,
+               last_seen_at  = now(),
+               updated_at    = now()
+         RETURNING id`,
+        [name]
+      );
+      if (rows[0]) {
+        const entityId = rows[0].id;
+        await query(
+          `INSERT INTO article_entity_matches (article_id, entity_id) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+          [article.id, entityId]
+        );
+      }
+    }
+  }
 }

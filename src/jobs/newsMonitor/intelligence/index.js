@@ -41,6 +41,7 @@ export {
 // ── Entities & NER
 export {
   extractMonitorEntities,
+  discoverMonitorEntities,
   MONITOR_STOPWORDS,
 } from './entities.js';
 
