@@ -210,11 +210,13 @@ export async function fetchArticleContent(url) {
 // method: 'fetch' | 'playwright' | 'paywall'
 // Records observability data (crawl_session, crawl_attempts, domain_profiles) if articleId provided
 
-export async function fetchArticleContentForMonitor(url, articleId = null) {
+export async function fetchArticleContentForMonitor(url, articleId = null, profiler = null) {
   let domain = 'unknown';
   try {
     domain = new URL(url).hostname.replace(/^www\./, '');
   } catch {}
+
+  const httpToken = profiler?.begin('Article HTTP Extraction');
 
   const startTime = Date.now();
   let sessionId = null;
@@ -323,17 +325,20 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
           durationMs: Date.now() - startTime,
         }).catch(() => {});
       }
+      profiler?.end(httpToken, { itemsIn: 1, itemsOut: 0 });
       return { content: null, word_count: 0, method: 'paywall' };
     }
 
     if (result && result.word_count >= MIN_WORDS_FETCH) {
       console.log(`[FETCH] SUCCESS (${result.word_count} words) → returning 'fetch'`);
+      profiler?.end(httpToken, { itemsIn: 1, itemsOut: 1 });
       return { content: result.content, word_count: result.word_count, method: 'fetch' };
     }
     console.log(`[FETCH] Insufficient content (${result?.word_count || 0} words < ${MIN_WORDS_FETCH}) → trying Playwright`);
   } else {
     console.log(`[FETCH] HTTP failed or no HTML → trying Playwright`);
   }
+  profiler?.end(httpToken, { itemsIn: 1, itemsOut: 0 });
 
   // Level 3: Playwright (always attempted if fetch insufficient or failed)
   console.log(`[PLAYWRIGHT] Starting attempt...`);
@@ -342,6 +347,12 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
   let pwReason = 'unknown';
   let pwDuration = 0;
   let pwResult = null;
+
+  const pwToken = profiler?.begin('Article Playwright Fallback');
+  if (profiler) {
+    profiler.playwright.articleFallbackCalls++;
+    profiler.playwright.pagesCreated++; // fetchWithPlaywright always opens exactly one page
+  }
 
   try {
     console.log(`[PLAYWRIGHT] Calling fetchWithPlaywright(${url.slice(0, 60)}...)`);
@@ -384,6 +395,7 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
 
   if (pwResult && !pwResult.paywall && pwResult.word_count >= MIN_WORDS_FETCH) {
     console.log(`[FINAL] PLAYWRIGHT SUCCESS: ${pwResult.word_count} words → returning 'playwright'`);
+    profiler?.end(pwToken, { itemsIn: 1, itemsOut: 1 });
     return { content: pwResult.content, word_count: pwResult.word_count, method: 'playwright' };
   }
   if (pwResult?.paywall) {
@@ -400,12 +412,14 @@ export async function fetchArticleContentForMonitor(url, articleId = null) {
         durationMs: Date.now() - pwStartTime,
       }).catch(() => {});
     }
+    profiler?.end(pwToken, { itemsIn: 1, itemsOut: 0 });
     return { content: null, word_count: 0, method: 'paywall' };
   }
 
   // BOTH HTTP and Playwright failed or insufficient
   console.log(`[FINAL] BOTH FAILED → returning null (rss_only)`);
   console.log(`[FINAL] HTTP: ${fetchStatus}/${fetchReason}, Playwright: ${pwStatus}/${pwReason}, Duration: ${Date.now() - startTime}ms`);
+  profiler?.end(pwToken, { itemsIn: 1, itemsOut: 0, error: true });
   return null; // rss_only — caller handles this
 }
 

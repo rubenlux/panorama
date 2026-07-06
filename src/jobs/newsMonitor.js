@@ -15,6 +15,13 @@ const ai = new AiService();
 
 let isNewsRunning = false;
 let newsSkippedCycles = 0;
+// Profiler v2 (Worker Profiling V2 audit): module-level reference so the
+// deep call chain (processSource -> discoverArticlesForSource -> Discovery
+// strategies -> discoverArticlesViaPlaywright/extractArticlesWithConcurrency)
+// can record measurements without threading a parameter through every
+// signature. Safe because runNewsMonitor() never runs concurrently with
+// itself (isNewsRunning guard) — only one cycle's profiler is ever "current".
+let currentProfiler = null;
 
 const TRENDING_WINDOW_MIN    = 30;
 const AUTO_RESEARCH_MENTIONS = 5;
@@ -938,6 +945,7 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
       if (!url) break;
 
       const page = await browser.newPage();
+      if (currentProfiler) currentProfiler.playwright.pagesCreated++;
       try {
         const metadata = await extractArticleMetadata(page, url);
 
@@ -1009,11 +1017,13 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
 
 async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
+  if (currentProfiler) currentProfiler.playwright.homepageDiscoveryCalls++;
 
   try {
     const { chromium } = await import('playwright');
     const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
     const page = await browser.newPage();
+    if (currentProfiler) currentProfiler.playwright.pagesCreated++;
 
     // Determine homepage URL
     let homeUrl = source.home_url || source.rss_url?.replace(/\/rss.*/, '').replace(/\/feed.*/, '');
@@ -1106,16 +1116,35 @@ async function processSource(source) {
 
   try {
     // Use discovery strategy (Sprint 2): single switch statement, no fallbacks
+    // Profiler v2: the bucket name isn't known until the call returns (an
+    // RSS-dispatch source can resolve to plain RSS/Atom or to a sitemap
+    // format), so timing is captured manually and attributed after the fact
+    // — see MonitorProfiler.begin()'s token shape.
+    const discoveryT0 = Date.now();
+    const discoveryC0 = process.cpuUsage();
     const discovery = await discoverArticlesForSource(source);
     items = discovery.articles;
     discoveryStatus = discovery.status;
     format = discovery.format;
+
+    const discoveryComponent =
+      source.discovery_type === 'PLAYWRIGHT' ? 'Playwright Homepage Discovery'
+      : ['sitemap-index', 'news-sitemap', 'urlset'].includes(format) ? 'Sitemap Discovery/Fetch'
+      : 'RSS Discovery/Fetch'; // default bucket: plain rss/atom, and EMPTY/ERROR/TIMEOUT/BLOCKED with no detected format
+    currentProfiler?.begin(discoveryComponent);
+    currentProfiler?.end(
+      { name: discoveryComponent, t0: discoveryT0, c0: discoveryC0 },
+      { itemsIn: 1, itemsOut: items.length, error: !['OK', 'EMPTY'].includes(discoveryStatus) }
+    );
 
     if (discoveryStatus === 'OK' || discoveryStatus === 'EMPTY') {
       console.log(`[Monitor] "${source.name}" (${source.discovery_type}): ${items.length} items found`);
     } else {
       console.log(`[Monitor] "${source.name}" discovery failed: ${discoveryStatus} - ${discovery.errorMessage || 'unknown error'}`);
     }
+
+    const persistenceT0 = Date.now();
+    const persistenceC0 = process.cpuUsage();
 
     // Insert discovered items into DB
     // Some sitemap formats (e.g. Guau Formosa's urlset children) carry only
@@ -1173,6 +1202,13 @@ async function processSource(source) {
         [source.id, format]
       );
     }
+
+    currentProfiler?.begin('Persistence');
+    currentProfiler?.end(
+      { name: 'Persistence', t0: persistenceT0, c0: persistenceC0 },
+      { itemsIn: items.length, itemsOut: newIds.length }
+    );
+
     if (items.length > 0)
       console.log(`[Monitor] "${source.name}" (${format}): ${items.length} items → ${newIds.length} new`);
   } catch (e) {
@@ -1388,8 +1424,10 @@ async function fetchPendingArticleContent() {
 
   for (const article of pending) {
     try {
-      const result = await fetchArticleContentForMonitor(article.url, article.id);
+      const result = await fetchArticleContentForMonitor(article.url, article.id, currentProfiler);
 
+      const persistT0 = Date.now();
+      const persistC0 = process.cpuUsage();
       if (result?.method === 'paywall') {
         await query(
           `UPDATE monitored_articles SET extraction_method='paywall', extracted_at=now() WHERE id=$1`,
@@ -1412,6 +1450,8 @@ async function fetchPendingArticleContent() {
         );
         failed++;
       }
+      currentProfiler?.begin('Persistence');
+      currentProfiler?.end({ name: 'Persistence', t0: persistT0, c0: persistC0 }, { itemsIn: 1, itemsOut: 1 });
     } catch (e) {
       console.error(`[Monitor] Content fetch failed for ${article.url}:`, e.message);
       await query(
@@ -1437,6 +1477,8 @@ export async function runNewsMonitor() {
   const cycleStart = Date.now();
   const profiler = new MonitorProfiler();
   profiler.start();
+  currentProfiler = profiler; // see module-level declaration for why this is safe
+  const bpStatsBefore = browserPool.stats();
   browserAudit.resetPeaks();
 
   // Respect pause flag — lets the CMS pause AI consumption without stopping the process
@@ -1471,7 +1513,6 @@ export async function runNewsMonitor() {
 
   try {
     console.time('1. Feed (Sources + Fetching)');
-    profiler.begin('RSS + Playwright Discovery');
 
     // Initialize DiscoveryFactory with helper functions
     initializeFactory({
@@ -1493,7 +1534,6 @@ export async function runNewsMonitor() {
     `);
 
     if (sources.length === 0) {
-      profiler.end('RSS + Playwright Discovery');
       console.timeEnd('1. Feed (Sources + Fetching)');
       console.timeEnd('Full Cycle');
       await finishRun(runId, { status: 'success' });
@@ -1509,7 +1549,6 @@ export async function runNewsMonitor() {
     }
 
     itemsFound = allNewIds.length;
-    profiler.end('RSS + Playwright Discovery');
     console.timeEnd('1. Feed (Sources + Fetching)');
 
     if (allNewIds.length === 0) {
@@ -1529,6 +1568,22 @@ export async function runNewsMonitor() {
       console.log('=== Perf Profile: Cycle End ===\n');
       browserAudit.report('NewsMonitor');
 
+      // Profiler v2: this early-return path skips the intelligence blocks
+      // entirely, but Discovery (and any Persistence from title-backfilled
+      // items) still ran and accumulated real measurements — report them
+      // instead of discarding them, matching the fully-instrumented path.
+      const bpStatsAfterEmpty = browserPool.stats();
+      const bpDeltaEmpty = MonitorProfiler.diffBrowserPoolStats(bpStatsBefore, bpStatsAfterEmpty);
+      profiler.playwright.browserAcquires = bpDeltaEmpty.created;
+      profiler.playwright.browserReuses = bpDeltaEmpty.reused;
+      profiler.setMetrics({
+        browsers: playwrightMetrics.browsersLaunched,
+        pages: playwrightMetrics.pagesOpened,
+        articlesFound: itemsFound,
+        articlesValid: itemsFound,
+      });
+      profiler.report();
+
       await finishRun(runId, { status: 'success', sources_processed: sourcesProcessed });
       isNewsRunning = false;
       return;
@@ -1538,9 +1593,7 @@ export async function runNewsMonitor() {
 
     // Sprint 5.8 — fetch full article content in background (does not block intelligence pipeline)
     console.time('2. Content Extraction');
-    profiler.begin('HTTP Fetch');
     await fetchPendingArticleContent().catch(e => console.error('[Monitor] Content fetch error:', e.message));
-    profiler.end('HTTP Fetch');
     console.timeEnd('2. Content Extraction');
 
     // ── DECOUPLED EXECUTION (Sprint 3)
@@ -1548,10 +1601,12 @@ export async function runNewsMonitor() {
     // Entity, Story, Event, Opportunity workers run independently via setImmediate
 
     // Research entity matching (knowledge base context)
+    const maintenanceToken = profiler.begin('Freshness / Maintenance');
     await matchResearchEntities(allNewIds);
     await refreshTrendingTopics();
     await checkAutoResearchTriggers();
     await markStaleClusters();
+    profiler.end(maintenanceToken, { itemsIn: allNewIds.length, itemsOut: allNewIds.length });
 
     // Get data needed for async workers
     const { rows: recentForOpps } = await query(`
@@ -1571,28 +1626,80 @@ export async function runNewsMonitor() {
     // Enqueue workers for independent execution (no await, no blocking)
     console.log('[Monitor] Enqueueing workers for async execution...');
 
+    // Profiler v2: these 4 workers run via setImmediate, after this function
+    // returns and after profiler.report() below already fired — so their
+    // timing can't be part of that report. Each records its own timing into
+    // the SAME profiler instance (closure-captured, not the module-level
+    // currentProfiler, so a later cycle reassigning currentProfiler can't
+    // affect this one); once every dispatched worker has finished, a
+    // separate "Async Workers Profile" is logged. Items-out is measured as
+    // a before/after row-count delta on each worker's own output table
+    // (disjoint tables, safe under concurrent execution) except Event
+    // Detection, which already returns real stats.
+    const expectedAsyncWorkers = 3 + (recentForOpps.length > 0 ? 1 : 0);
+    let completedAsyncWorkers = 0;
+    const asyncComponentNames = ['Entity Extraction', 'Story Detection + Contamination', 'Event Detection'];
+    if (recentForOpps.length > 0) asyncComponentNames.push('Opportunity Generation');
+    const maybeReportAsyncPhase = () => {
+      completedAsyncWorkers++;
+      if (completedAsyncWorkers >= expectedAsyncWorkers) {
+        profiler.reportAsyncPhase(asyncComponentNames);
+      }
+    };
+
     // Entity extraction (independent)
-    setImmediate(() => {
-      processEntityExtraction(allNewIds)
-        .catch(e => console.error('[EntityWorker] Failed:', e.message));
+    setImmediate(async () => {
+      const token = profiler.begin('Entity Extraction');
+      const { rows: [before] } = await query(`SELECT count(*) FROM article_entity_matches`).catch(() => ({ rows: [{ count: 0 }] }));
+      let errored = false;
+      try {
+        await processEntityExtraction(allNewIds);
+      } catch (e) {
+        errored = true;
+        console.error('[EntityWorker] Failed:', e.message);
+      }
+      const { rows: [after] } = await query(`SELECT count(*) FROM article_entity_matches`).catch(() => ({ rows: [{ count: before.count }] }));
+      profiler.end(token, { itemsIn: allNewIds.length, itemsOut: Number(after.count) - Number(before.count), error: errored });
+      maybeReportAsyncPhase();
     });
 
     // Story detection (independent)
-    setImmediate(() => {
-      processStoryDetection(allNewIds, recentStoryIds)
-        .catch(e => console.error('[StoryWorker] Failed:', e.message));
+    setImmediate(async () => {
+      const token = profiler.begin('Story Detection + Contamination');
+      const { rows: [before] } = await query(`SELECT count(*) FROM story_clusters`).catch(() => ({ rows: [{ count: 0 }] }));
+      let errored = false;
+      try {
+        await processStoryDetection(allNewIds, recentStoryIds);
+      } catch (e) {
+        errored = true;
+        console.error('[StoryWorker] Failed:', e.message);
+      }
+      const { rows: [after] } = await query(`SELECT count(*) FROM story_clusters`).catch(() => ({ rows: [{ count: before.count }] }));
+      profiler.end(token, { itemsIn: allNewIds.length, itemsOut: Number(after.count) - Number(before.count), error: errored });
+      maybeReportAsyncPhase();
     });
 
     // Opportunity generation (independent)
     if (recentForOpps.length > 0) {
-      setImmediate(() => {
-        processOpportunityGeneration(recentForOpps.map(r => r.id))
-          .catch(e => console.error('[OpportunityWorker] Failed:', e.message));
+      setImmediate(async () => {
+        const token = profiler.begin('Opportunity Generation');
+        const { rows: [before] } = await query(`SELECT count(*) FROM story_opportunities`).catch(() => ({ rows: [{ count: 0 }] }));
+        let errored = false;
+        try {
+          await processOpportunityGeneration(recentForOpps.map(r => r.id));
+        } catch (e) {
+          errored = true;
+          console.error('[OpportunityWorker] Failed:', e.message);
+        }
+        const { rows: [after] } = await query(`SELECT count(*) FROM story_opportunities`).catch(() => ({ rows: [{ count: before.count }] }));
+        profiler.end(token, { itemsIn: recentForOpps.length, itemsOut: Number(after.count) - Number(before.count), error: errored });
+        maybeReportAsyncPhase();
       });
     }
 
     // Event detection (independent)
     setImmediate(() => {
+      const token = profiler.begin('Event Detection');
       processEventDetection(recentStoryIds)
         .then(eventStats => {
           if (eventStats && eventStats.stats) {
@@ -1603,11 +1710,27 @@ export async function runNewsMonitor() {
             console.log(`Single-entity stories skipped:  ${eventStats.stats.singleEntityStoriesSkipped}`);
             console.log('================================\n');
           }
+          profiler.end(token, {
+            itemsIn: recentStoryIds.length,
+            itemsOut: eventStats?.stats?.newEventsCreated || 0,
+          });
         })
-        .catch(e => console.error('[EventWorker] Failed:', e.message));
+        .catch(e => {
+          console.error('[EventWorker] Failed:', e.message);
+          profiler.end(token, { itemsIn: recentStoryIds.length, itemsOut: 0, error: true });
+        })
+        .finally(maybeReportAsyncPhase);
     });
 
     console.timeEnd('Full Cycle');
+
+    // BrowserPool is a module-level singleton whose counters are cumulative,
+    // not per-cycle — diff the before/after snapshot to get this cycle's
+    // share. Read-only; BrowserPool itself is untouched.
+    const bpStatsAfterSync = browserPool.stats();
+    const bpDelta = MonitorProfiler.diffBrowserPoolStats(bpStatsBefore, bpStatsAfterSync);
+    profiler.playwright.browserAcquires = bpDelta.created;
+    profiler.playwright.browserReuses = bpDelta.reused;
 
     // Add metrics before reporting
     profiler.setMetrics({
