@@ -206,7 +206,6 @@ export default function MediaMonitor() {
   const [articlesTotal, setArticlesTotal]     = useState(0);
   const [articlesHasMore, setArticlesHasMore] = useState(false);
   const [articlesLoadingMore, setArticlesLoadingMore] = useState(false);
-  const [trending, setTrending] = useState([]);
   const [stories, setStories]               = useState([]);
   const [storiesTotal, setStoriesTotal]     = useState(0);
   const [storiesHasMore, setStoriesHasMore] = useState(false);
@@ -238,7 +237,6 @@ export default function MediaMonitor() {
   const [oppBusy,      setOppBusy]      = useState({});
   const [addForm, setAddForm]   = useState({ name: '', type: 'news', rss_url: '', homepage: '' });
   const [addOpen, setAddOpen]   = useState(false);
-  const [researchingId, setResearchingId] = useState(null);
   const [verifying,  setVerifying]  = useState(null);
   const [approving,  setApproving]  = useState(null);
   const [monPaused,     setMonPaused]     = useState(false);
@@ -368,10 +366,6 @@ export default function MediaMonitor() {
     loadArticles();
   }, [loadArticles]);
 
-  const loadTrending = useCallback(async () => {
-    try { const d = await apiJson('/monitor/trending', { auth: true }); setTrending(d.items || []); } catch {}
-  }, []);
-
   const loadStories = useCallback(async () => {
     try {
       const d = await getStories({ minArticles: 2, limit: STORIES_PER_PAGE, hours: storiesHoursRef.current, sort: storiesSortRef.current });
@@ -500,10 +494,10 @@ export default function MediaMonitor() {
   }, [loadOpps]);
 
   useEffect(() => {
-    loadStats(); loadSources(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
+    loadStats(); loadSources(); loadArticles(); loadStories(); loadEvents(); loadOpps();
     loadHealth(); loadWorkerRuns(); loadSystemEvents();
     refreshRef.current = setInterval(() => {
-      loadStats(); loadArticles(); loadTrending(); loadStories(); loadEvents(); loadOpps();
+      loadStats(); loadArticles(); loadStories(); loadEvents(); loadOpps();
       loadHealth(); loadWorkerRuns();
     }, 30_000);
     return () => clearInterval(refreshRef.current);
@@ -554,22 +548,6 @@ export default function MediaMonitor() {
       setSources(prev => prev.map(s => s.id === id ? source : s));
     } catch (err) { alert('Error aprobando: ' + err.message); }
     finally { setApproving(null); }
-  }
-
-  async function handleResearch(item) {
-    setResearchingId(item.entity_id);
-    try {
-      await apiJson('/monitor/research', {
-        method: 'POST', auth: true,
-        body: { entity_name: item.entity_name, entity_id: item.entity_id },
-      });
-      loadTrending();
-      navigate('/research');
-    } catch (err) {
-      alert('Error: ' + err.message);
-    } finally {
-      setResearchingId(null);
-    }
   }
 
   async function handleFollowStory(id) {
@@ -637,9 +615,6 @@ export default function MediaMonitor() {
     } catch (e) { alert('Error al analizar evento: ' + e.message); }
     finally { setEventBusy(p => ({ ...p, [id]: null })); }
   }
-
-  // Legacy: used only for header stat chip; editorial opps replace the tab
-  const opportunities = trending.filter(t => t.source_count >= 3 && t.mention_count >= 5);
 
   // Stats for sources tab
   const srcStats = {
@@ -1837,51 +1812,6 @@ function StoryCard({ story: s, busy, onDetail, onFollow, onDossier }) {
         <button onClick={onDossier} disabled={!!busy} style={{ flex: 1, padding: '7px 10px', borderRadius: 8, border: 'none', background: '#6366f1', color: 'white', fontSize: 12, fontWeight: 700, cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .6 : 1 }}>
           {busy === 'dossier' ? 'Creando…' : '📋 Crear dossier'}
         </button>
-      </div>
-    </div>
-  );
-}
-
-function TrendingCard({ item, onResearch, researchingId, highlight }) {
-  const color = ENTITY_TYPE_COLOR[item.entity_type] || '#374151';
-  const busy  = researchingId === item.entity_id;
-  return (
-    <div style={{
-      background: 'white', borderRadius: 14, padding: '16px 18px',
-      border:     `1px solid ${highlight ? '#fca5a5' : '#e5e7eb'}`,
-      boxShadow:  highlight ? '0 0 0 3px rgba(239,68,68,.08)' : 'none',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
-        <div>
-          <div style={{ fontWeight: 700, fontSize: 16, color: '#111827', marginBottom: 4 }}>{item.entity_name}</div>
-          <span style={{ fontSize: 11, fontWeight: 600, color, background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{item.entity_type}</span>
-        </div>
-        <div style={{ textAlign: 'right', flexShrink: 0 }}>
-          <div style={{ fontSize: 28, fontWeight: 900, color: highlight ? '#ef4444' : '#6366f1', lineHeight: 1 }}>{item.mention_count}</div>
-          <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>menciones</div>
-        </div>
-      </div>
-      {item.entity_description && (
-        <div style={{ fontSize: 12, color: '#6b7280', lineHeight: 1.5, marginBottom: 10, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-          {item.entity_description}
-        </div>
-      )}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <div style={{ fontSize: 11, color: '#9ca3af', display: 'flex', gap: 10 }}>
-          <span>📍 {item.source_count} {item.source_count === 1 ? 'fuente' : 'fuentes'}</span>
-          <span>🕐 {timeAgo(item.last_seen_at)}</span>
-        </div>
-        {!item.auto_researched ? (
-          <button onClick={() => onResearch(item)} disabled={busy} style={{
-            padding: '6px 12px', borderRadius: 8, border: 'none', cursor: busy ? 'not-allowed' : 'pointer',
-            background: highlight ? '#ef4444' : '#6366f1',
-            color: 'white', fontSize: 12, fontWeight: 700, opacity: busy ? .6 : 1,
-          }}>
-            {busy ? 'Creando…' : '🔬 Investigar'}
-          </button>
-        ) : (
-          <span style={{ fontSize: 11, color: '#10b981', fontWeight: 600 }}>✓ Investigado</span>
-        )}
       </div>
     </div>
   );
