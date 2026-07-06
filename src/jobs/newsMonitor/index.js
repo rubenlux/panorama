@@ -1,23 +1,19 @@
 /**
  * newsMonitor/index.js - Main orchestrator for news monitoring
  *
- * PHASE 2 IN PROGRESS:
- * - ✅ Intelligence module extracted (stories, entities, events, opportunities)
- * - ✅ Persistence & Scheduler module structure created (Phase 3 implementation)
- * - ⏳ Still exporting runNewsMonitor from monolithic newsMonitor.js
- * - ⏳ Will be replaced by orchestrator.js in Phase 2 finalization
- *
- * Architecture: Strangler Pattern
- * New code uses ./intelligence/index.js, ./persistence/index.js, ./scheduler/index.js
- * Old code still works via ../newsMonitor.js (3245 lines, unchanged)
- * Behavior: 100% identical to Phase 1
+ * Strangler migration status (Consolidation Sprint, 2026-07-06):
+ * - Intelligence module (stories, entities, events, opportunities) is the
+ *   live implementation, reached via ./workers/*.js -> ./intelligence/index.js.
+ * - discovery/, extraction/, persistence/, scheduler/, metrics/, shared.js,
+ *   constants.js, and discovery.js were removed — none had any importer
+ *   outside their own dead subtree (verified: static imports, dynamic
+ *   import(), scripts/, and package.json all checked before deletion).
+ * - runNewsMonitor() itself still lives in the monolithic ../newsMonitor.js,
+ *   which also still contains ~1500 lines of inline logic superseded by
+ *   intelligence/ (separate cleanup, not yet done as of this commit).
  */
 
-// Main export: orchestrator function (currently from original file)
-// Will migrate to ./orchestrator.js once all modules extracted
 export { runNewsMonitor } from '../newsMonitor.js';
 
-// Re-export module groups for convenience
+// Re-export the one module group that's actually live.
 export * from './intelligence/index.js';
-export * from './persistence/index.js';
-export * from './scheduler/index.js';
