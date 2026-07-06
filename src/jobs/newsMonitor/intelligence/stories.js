@@ -32,12 +32,37 @@ export const STORY_ENTITY_GATE_MIN_STORY = 3; // min story entities to activate 
 export const STORY_ENTITY_GATE_MIN_ARTICLE = 1; // min article entities to activate gate
 
 // Aggressive stopwords for keyword-similarity matching — NOT for NER
+// Merged from the (dead) newsMonitor.js copy, which had evolved further —
+// this copy was missing both later base-list additions and FIX 1 below.
 export const STORY_STOPWORDS = new Set([
   'como','hoy','ayer','para','sobre','ante','bajo','desde','hacia','hasta','tras','entre',
+  'por','con','sin','después','durante',
   'dice','dijo','señaló','afirmó','confirmó','anunció','aseguró','reveló','explicó',
-  'según','informó','contó','mostró','realizó','dio','pidió','se','es','ya',
-  'han','fue','sido','haber','estaba','sería','será','está','están',
-  'para','por','con','sin','ante','bajo','después','durante','encontró',
+  'según','informó','contó','mostró','realizó','dio','pidió','encontró',
+  'se','es','ya','han','fue','sido','haber','estaba','sería','será','está','están',
+  'hace','hizo','debe','puede','tiene','tuvo','sera','seria',
+  'nuevo','nueva','nuevos','nuevas','primer','primera','primero','últimas','último',
+  'gran','grande','grandes','solo','sólo','también','además','muy','bien','mal',
+  'todo','toda','todos','todas','esto','eso','este','esta','estos','estas',
+  'lunes','martes','miercoles','jueves','viernes','sabado','domingo',
+  'enero','febrero','marzo','abril','mayo','junio','julio','agosto',
+  'septiembre','octubre','noviembre','diciembre',
+  'semana','semanas','mes','meses','años','hora','horas','minuto','minutos',
+  'cual','cuales','quien','quienes','cuando','donde','cuanto',
+  'caso','casos','forma','formas','tipo','tipos','parte','partes','lugar',
+  'the','also','from','this','that','with','have','will','been','were',
+  'what','when','where','which','they','their','about','after','before',
+  // High-frequency Argentine news words that don't define a story
+  'pesos','dolares','porcentaje','inflacion','economia',
+  // FIX 1 (2026-06-19) — Tournament context words: identify domain (World Cup,
+  // Copa) but cannot distinguish between different facts within the same
+  // tournament (e.g. "Argentina gana" vs "Brasil eliminado" sharing 'mundial'
+  // → false Jaccard match). Named entities ("Copa América") are matched via
+  // NER/Gate 2, not Gate 3 keywords. This was documented as fixed in CLAUDE.md
+  // but only ever landed in the dead newsMonitor.js copy of this constant —
+  // detectStories() here never saw it.
+  'copa','mundial','torneo','campeonato','fixture','grupo','fase',
+  'final','semifinal','cuartos','octavos','16avos','32avos',
 ]);
 
 // Templated/recurring content that should never create editorial stories
