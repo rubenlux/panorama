@@ -921,7 +921,9 @@ async function discoverArticleUrlsFromHomepage(page, homeUrl) {
 }
 
 // Extract metadata from multiple URLs with concurrency limit
-async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
+// `context` is a Playwright BrowserContext (isolated per-source), not a Browser —
+// pages open within it so they share cookies/storage scoped to this source only.
+async function extractArticlesWithConcurrency(context, urls, workerCount = 5) {
   const articles = [];
   let metadataOk = 0;
   const rejectStats = {
@@ -944,7 +946,7 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
       const url = queue.shift();
       if (!url) break;
 
-      const page = await browser.newPage();
+      const page = await context.newPage();
       if (currentProfiler) currentProfiler.playwright.pagesCreated++;
       try {
         const metadata = await extractArticleMetadata(page, url);
@@ -1019,10 +1021,18 @@ async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
   if (currentProfiler) currentProfiler.playwright.homepageDiscoveryCalls++;
 
+  // Shares the same BrowserPool as ArticleFetcher's Playwright fallback
+  // instead of launching a dedicated Chromium per call (found during Worker
+  // Profiling V2: this was the only Playwright path bypassing the pool
+  // entirely). One acquire() per source, one isolated context for the
+  // homepage scan + all metadata-extraction pages, released in finally so
+  // an exception never leaks a leased browser.
+  let browser = null;
+  let context = null;
   try {
-    const { chromium } = await import('playwright');
-    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
-    const page = await browser.newPage();
+    browser = await browserPool.acquire();
+    context = await browser.newContext();
+    const page = await context.newPage();
     if (currentProfiler) currentProfiler.playwright.pagesCreated++;
 
     // Determine homepage URL
@@ -1037,20 +1047,21 @@ async function discoverArticlesViaPlaywright(source) {
     console.log(`[Playwright Discovery] Found ${topUrls.length} candidate URLs from ${source.name}`);
 
     if (topUrls.length === 0) {
-      await browser.close();
       return [];
     }
 
     // STEP 2: Extract metadata from top URLs with concurrency
     console.log(`[Playwright Discovery] Extracting metadata from ${topUrls.length} URLs`);
-    const articles = await extractArticlesWithConcurrency(browser, topUrls.slice(0, 20), 5);
+    const articles = await extractArticlesWithConcurrency(context, topUrls.slice(0, 20), 5);
     console.log(`[Playwright Discovery] Extracted ${articles.length} valid articles from ${source.name}`);
 
-    await browser.close();
     return articles;
   } catch (err) {
     console.error(`[Playwright Discovery] Error for ${source.name}: ${err.message}`);
     return [];
+  } finally {
+    if (context) await context.close().catch(() => {});
+    if (browser) browserPool.release(browser);
   }
 }
 
