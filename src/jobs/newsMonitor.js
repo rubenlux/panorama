@@ -1009,7 +1009,6 @@ async function extractArticlesWithConcurrency(browser, urls, workerCount = 5) {
 
 async function discoverArticlesViaPlaywright(source) {
   console.log(`[Playwright Discovery] Starting for: ${source.name}`);
-  const isTraceSource = source.name === 'Guau Formosa';
 
   try {
     const { chromium } = await import('playwright');
@@ -1027,14 +1026,6 @@ async function discoverArticlesViaPlaywright(source) {
     const topUrls = await discoverArticleUrlsFromHomepage(page, homeUrl);
     console.log(`[Playwright Discovery] Found ${topUrls.length} candidate URLs from ${source.name}`);
 
-    if (isTraceSource) {
-      console.log(`\n[TRACE] URLs descubiertas (${topUrls.length}):`);
-      topUrls.slice(0, 25).forEach((url, i) => {
-        console.log(`  ${i+1}. ${url}`);
-      });
-      if (topUrls.length > 25) console.log(`  ... y ${topUrls.length - 25} más`);
-    }
-
     if (topUrls.length === 0) {
       await browser.close();
       return [];
@@ -1044,13 +1035,6 @@ async function discoverArticlesViaPlaywright(source) {
     console.log(`[Playwright Discovery] Extracting metadata from ${topUrls.length} URLs`);
     const articles = await extractArticlesWithConcurrency(browser, topUrls.slice(0, 20), 5);
     console.log(`[Playwright Discovery] Extracted ${articles.length} valid articles from ${source.name}`);
-
-    if (isTraceSource) {
-      console.log(`\n[TRACE] Artículos aceptados (${articles.length}):`);
-      articles.forEach((art, i) => {
-        console.log(`  ${i+1}. "${art.title.substring(0, 50)}..." (${art.wordCount} words)`);
-      });
-    }
 
     await browser.close();
     return articles;
@@ -1134,9 +1118,6 @@ async function processSource(source) {
     }
 
     // Insert discovered items into DB
-    const isTraceSource = source.name === 'Guau Formosa';
-    if (isTraceSource) console.log(`\n[TRACE] Insertando ${items.length} items...\n`);
-
     // Some sitemap formats (e.g. Guau Formosa's urlset children) carry only
     // <loc>+<lastmod>, no title — Discovery has nothing to offer, so the title
     // is backfilled from the real article page instead of dropping the URL.
@@ -1183,22 +1164,7 @@ async function processSource(source) {
       );
       if (rows[0]) {
         newIds.push(rows[0].id);
-        if (isTraceSource) {
-          console.log(`  ✅ INSERT: ${rows[0].id.substring(0, 8)}... "${item.title.substring(0, 40)}..."`);
-        }
-      } else {
-        if (isTraceSource) {
-          console.log(`  ⚠️  DUPLICATE: "${item.title.substring(0, 40)}..."`);
-        }
       }
-    }
-
-    if (isTraceSource) {
-      console.log(`\n[TRACE] IDs realmente insertados (${newIds.length}):`);
-      newIds.forEach((id, i) => {
-        console.log(`  ${i+1}. ${id}`);
-      });
-      console.log();
     }
 
     if (format) {
@@ -1418,14 +1384,6 @@ async function fetchPendingArticleContent() {
   if (pending.length === 0) return;
   console.log(`[Monitor] Fetching content for ${pending.length} articles…`);
 
-  // [AUDIT] Log pending articles
-  console.log(`\n[AUDIT] fetchPendingArticleContent() procesando (${pending.length} artículos):`);
-  pending.slice(0, 10).forEach(a => {
-    const marker = a.id === 'd36fc24b-d390-4998-8d70-9781d8510066' ? ' ← TRACE ARTICLE' : '';
-    console.log(`  ${a.id.substring(0, 8)}... ${a.url.substring(0, 50)}${marker}`);
-  });
-  if (pending.length > 10) console.log(`  ... y ${pending.length - 10} más`);
-
   let fetched = 0, playwright = 0, paywall = 0, failed = 0;
 
   for (const article of pending) {
@@ -1577,20 +1535,6 @@ export async function runNewsMonitor() {
     }
 
     console.log(`[Monitor] ${allNewIds.length} new articles from ${sources.length} sources`);
-
-    // [AUDIT] Log allNewIds
-    if (allNewIds.length > 0) {
-      console.log(`\n[AUDIT] allNewIds (${allNewIds.length} artículos):`);
-      const { rows: newArticles } = await query(
-        `SELECT id, title FROM monitored_articles WHERE id = ANY($1::uuid[]) ORDER BY detected_at DESC LIMIT 10`,
-        [allNewIds]
-      );
-      newArticles.forEach(a => {
-        const marker = a.id === 'd36fc24b-d390-4998-8d70-9781d8510066' ? ' ← TRACE ARTICLE' : '';
-        console.log(`  ${a.id.substring(0, 8)}... "${a.title.substring(0, 40)}..."${marker}`);
-      });
-      if (allNewIds.length > 10) console.log(`  ... y ${allNewIds.length - 10} más`);
-    }
 
     // Sprint 5.8 — fetch full article content in background (does not block intelligence pipeline)
     console.time('2. Content Extraction');

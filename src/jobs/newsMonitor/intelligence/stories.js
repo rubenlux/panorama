@@ -410,19 +410,6 @@ export async function ensureFreshnessSchema() {
 export async function detectStories(newArticleIds) {
   if (newArticleIds.length === 0) return;
 
-  // [AUDIT] Log what detectStories receives
-  console.log(`\n[AUDIT] detectStories() recibió ${newArticleIds.length} artículos`);
-  const { rows: auditArticles } = await query(
-    `SELECT id, title, extraction_method, content_words FROM monitored_articles WHERE id = ANY($1::uuid[]) LIMIT 10`,
-    [newArticleIds]
-  );
-  auditArticles.forEach(a => {
-    const marker = a.id === 'd36fc24b-d390-4998-8d70-9781d8510066' ? ' ← TRACE ARTICLE' : '';
-    const state = `[${a.extraction_method || 'NULL'}, ${a.content_words || 0} words]`;
-    console.log(`  ${a.id.substring(0, 8)}... ${state} "${a.title.substring(0, 40)}..."${marker}`);
-  });
-  if (newArticleIds.length > 10) console.log(`  ... y ${newArticleIds.length - 10} más`);
-
   const { rows: articles } = await query(
     `SELECT id, title, source_id, detected_at FROM monitored_articles WHERE id = ANY($1::uuid[])`,
     [newArticleIds]
