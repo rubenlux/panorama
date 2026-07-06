@@ -123,12 +123,13 @@ Documented in Spanish in `SISTEMA_PUBLICIDAD.md`. Key concepts:
 - `POST /editorial-workflow/dossiers/:id/angles/refresh` — regenerar ángulos editoriales
 - `POST /editorial-workflow/dossiers/:id/draft` — generar borrador de artículo
 
-**Motor Algorítmico (`src/jobs/newsMonitor.js`) — se ejecuta cada ciclo:**
-- `generateAlgorithmicOpportunities(storyIds)` — genera oportunidades sin IA usando `detectStoryCategory()` + `getCategoryOpportunityTemplates()`.
-- `buildAlgorithmicSummary(story, entities)` — resumen tipo "N artículos de M fuentes informan sobre X."
-- `detectStoryCategory(title, storyType, entities)` — **v2 (June 25):** context-aware classification. Retorna `{category, confidence, matched_rules}`. Detects SPORTS_CONTEXT (clubes, competiciones, mercado) + ENTERTAINMENT_CONTEXT (personas públicas). Si sports context detectado, reduce health/economy/international scores. Si entertainment context detectado, prioriza entertainment sobre sports (ej: "Andrea del Boca" → entertainment, not sports). Dynamic PRECEDENCE: entertainment comes first when `hasEntertainmentContext=true`. `storyType=sports/politics` remains override. **Result:** Lozano case fixed (4 fragmented → 1 consolidated), Boca stories 60%→80% sports classification.
-- `getCategoryOpportunityTemplates(story, category, sourceList)` — 3-4 templates por categoría (LIVE_COVERAGE, NEWS, ANALYSIS, EXPLAINER, SEO con scores diferenciados) + 2 reglas cross-category (ventana de exclusiva / cobertura concentrada).
-- `ensureAlgorithmicSummaryColumn()` + `ensureOpportunityTriggerColumn()` — idempotent ALTER TABLE al arrancar.
+**Motor Algorítmico (`src/jobs/newsMonitor/intelligence/opportunities.js` + `stories.js`) — se ejecuta cada ciclo vía `workers/*.js`:**
+- ⚠️ **Arquitectura (2026-07-06):** estas funciones vivían duplicadas en `src/jobs/newsMonitor.js` (el monolito) — esa copia era código muerto, nunca alcanzado desde `runNewsMonitor()`. Se borró en la Consolidation Sprint (ver sección más abajo). La ÚNICA implementación real está en `intelligence/`, llamada desde `src/jobs/newsMonitor/workers/{opportunityWorker,storyWorker}.js`, despachados vía `setImmediate` desde `runNewsMonitor()`. Si vas a tocar esta lógica, es acá — no en el archivo monolítico.
+- `generateAlgorithmicOpportunities(storyIds)` (`intelligence/opportunities.js`) — genera oportunidades sin IA usando `detectStoryCategory()` + `getCategoryOpportunityTemplates()`.
+- `buildAlgorithmicSummary(story, entities)` (`intelligence/stories.js`) — resumen tipo "N artículos de M fuentes informan sobre X."
+- `detectStoryCategory(title, storyType, entities)` (`intelligence/stories.js`) — **v2 (June 25):** context-aware classification. Retorna `{category, confidence, matched_rules}`. Detects SPORTS_CONTEXT (clubes, competiciones, mercado) + ENTERTAINMENT_CONTEXT (personas públicas). Si sports context detectado, reduce health/economy/international scores. Si entertainment context detectado, prioriza entertainment sobre sports (ej: "Andrea del Boca" → entertainment, not sports). Dynamic PRECEDENCE: entertainment comes first when `hasEntertainmentContext=true`. `storyType=sports/politics` remains override. **Result:** Lozano case fixed (4 fragmented → 1 consolidated), Boca stories 60%→80% sports classification.
+- `getCategoryOpportunityTemplates(story, category, sourceList)` (`intelligence/opportunities.js`) — 3-4 templates por categoría (LIVE_COVERAGE, NEWS, ANALYSIS, EXPLAINER, SEO con scores diferenciados) + 2 reglas cross-category (ventana de exclusiva / cobertura concentrada).
+- `ensureAlgorithmicSummaryColumn()` + `ensureOpportunityTriggerColumn()` — estas SÍ quedan en `src/jobs/newsMonitor.js` (llamadas directamente en el preamble de `runNewsMonitor()`), idempotent ALTER TABLE al arrancar. Duplicadas también (inertes) en `intelligence/stories.js` — no las borres de ahí sin revisar, son las que documentan el rationale.
 - `importance_score` — `LEAST(10, GREATEST(1, (LEAST(source_count*2.5, 5.0) + LEAST(article_count*0.5, 3.0) + coverage_bonus)::integer))` — 100% SQL.
 - `coverage_status` — derivado de `articles_last_1h` + `source_count`: `breaking` | `growing` | `cooling` | `monitoring` — 100% SQL.
 
@@ -191,11 +192,11 @@ Documented in Spanish in `SISTEMA_PUBLICIDAD.md`. Key concepts:
 - Handlers resetan la lista y llaman a load: `setStories([]); setStoriesTotal(0); loadStories()`
 - Pattern `useRef` para acceso desde `setInterval` sin stale closure
 
-**Bug fix — Schema chicken-and-egg (`src/jobs/newsMonitor.js`):**
+**Bug fix — Schema chicken-and-egg (preamble vive en `src/jobs/newsMonitor.js`, `detectStories()` vive en `intelligence/stories.js`):**
 - `detectStories()` usa `sc.detected_category` (columna de Clustering 2.0)
 - `ensureClusteringSchema2()` solo se llamaba dentro de `generateAlgorithmicOpportunities()` que corre DESPUÉS de `detectStories()` — causaba error en cada ciclo con artículos nuevos
 - Fix: todos los `ensure*Schema()` se movieron al inicio de `runNewsMonitor()` como preamble, antes de `startRun()`
-- Preamble: `ensureOpportunityTriggerColumn()` → `ensureAlgorithmicSummaryColumn()` → `ensureClusteringSchema2()` → `ensureFreshnessSchema()`
+- Preamble (en `newsMonitor.js`): `ensureOpportunityTriggerColumn()` → `ensureAlgorithmicSummaryColumn()` → `ensureClusteringSchema2()` → `ensureFreshnessSchema()` → `ensureDiscoveryFailureColumn()` (Sprint alertas, ver más abajo)
 
 **UI — SocialOpportunities (`cms/src/pages/SocialOpportunities.jsx`):**
 - `handleAnalyzeInline(post)` — llama `POST /social/posts/:id/analyze` directo sin abrir modal
@@ -237,10 +238,10 @@ Columns en `story_cluster_articles`: `category_match`, `category_score`, `entity
 - `story_cluster_articles.category_match BOOLEAN DEFAULT TRUE` — false si el artículo fue forzado a una historia de categoría distinta (solo en backfill; en nuevo clustering esto no pasa)
 - `story_cluster_articles.{category,entity,keyword}_score FLOAT` — trazabilidad del match
 
-**Funciones en `src/jobs/newsMonitor.js`:**
-- `detectStories(newArticleIds)` — clustering principal, lines ~595–870
-- `detectContaminatedStories(storyIds)` — post-process, lines ~876–903
-- `ensureClusteringSchema2()` — idempotent ALTER TABLE, llamado en el PREAMBLE de `runNewsMonitor()` (antes era solo en `generateAlgorithmicOpportunities()` — bug fix: necesitaba correr antes de `detectStories()`)
+**Funciones — ⚠️ viven en `src/jobs/newsMonitor/intelligence/stories.js`, NO en el monolito (ver Consolidation Sprint):**
+- `detectStories(newArticleIds)` — clustering principal
+- `detectContaminatedStories(storyIds)` — post-process
+- `ensureClusteringSchema2()` — esta SÍ vive en `src/jobs/newsMonitor.js`, idempotent ALTER TABLE, llamado en el PREAMBLE de `runNewsMonitor()` (antes era solo en `generateAlgorithmicOpportunities()` — bug fix: necesitaba correr antes de `detectStories()`)
 
 **Rebuild script (`scripts/migrate_story_clustering_2.mjs`):**
 1. Schema — añade columnas nuevas (idempotente)
@@ -255,11 +256,11 @@ Columns en `story_cluster_articles`: `category_match`, `category_score`, `entity
 - `STORY_MATCH_THRESHOLD = 0.20` — Jaccard mínimo para el gate 3 (keyword)
 - `STORY_WINDOW_HOURS = 24` — ventana para historias activas
 
-### Story/Event Intelligence — Forensic Fixes (2026-06-19)
+### Story/Event Intelligence — Forensic Fixes (2026-06-19, corrected 2026-07-06)
 
-Three root-cause fixes applied to `src/jobs/newsMonitor.js` after regression audit (tournament context cross-clustering).
+Three root-cause fixes, originally applied to `src/jobs/newsMonitor.js` after a regression audit (tournament context cross-clustering). ⚠️ **FIX 1 below was documented as shipped but wasn't — see the 2026-07-06 correction.**
 
-**FIX 1 — STORY_STOPWORDS: tournament context words** (Gate 3 keyword filter, line ~539)
+**FIX 1 — STORY_STOPWORDS: tournament context words** (Gate 3 keyword filter — now in `src/jobs/newsMonitor/intelligence/stories.js`)
 Added to prevent intra-tournament Jaccard inflation (e.g. "Argentina gana" vs "Brasil eliminado" sharing 'mundial' → 1/2 = 0.50 ≥ 0.20 → false cluster):
 ```js
 'copa','mundial','torneo','campeonato','fixture','grupo','fase',
@@ -267,7 +268,9 @@ Added to prevent intra-tournament Jaccard inflation (e.g. "Argentina gana" vs "B
 ```
 Named entities like "Copa Libertadores" or "Copa América" still pass Gate 2 via NER → `knowledge_entities` (Gate 3 filters lowercased keywords, Gate 2 uses entities — separate pipelines).
 
-**FIX 2 — MONITOR_STOPWORDS: ALL-CAPS title normalization** (NER entity extraction, line ~195)
+**⚠️ Correction (2026-07-06):** this fix was written into the monolithic `newsMonitor.js`'s copy of `STORY_STOPWORDS` back in June — but `detectStories()` in that file was dead code even then (never called from `runNewsMonitor()`). The LIVE `detectStories()` reads `STORY_STOPWORDS` from `intelligence/stories.js`, which had an independently-drifted, smaller list missing these tournament words entirely. The World Cup contamination bug was never actually fixed in production until commit `8f59d482` merged both lists into the live file. Validated against real Mundial 2026 articles at the time. **Lesson: a fix is only real if it lands in the file the running code actually imports — verify the import graph, not the file that looks most complete.**
+
+**FIX 2 — MONITOR_STOPWORDS: ALL-CAPS title normalization** (NER entity extraction, now in `src/jobs/newsMonitor/intelligence/entities.js`)
 ALL-CAPS titles (common in Facebook posts) bypassed `MONITOR_STOPWORDS` entirely because the set uses Title-case keys ('De','Los','El') but comparison used the raw all-caps word ('DE','LOS','EL').
 ```js
 // BEFORE (bug):
@@ -276,9 +279,9 @@ const isNotStopword = !MONITOR_STOPWORDS.has(bare);
 const normalizedBare = bare[0].toUpperCase() + bare.slice(1).toLowerCase();
 const isNotStopword  = !MONITOR_STOPWORDS.has(normalizedBare);
 ```
-Effect: 'DE FINAL' no longer extracted as a NER entity. Verb contamination remains (e.g. 'ESTADOS UNIDOS GANÓ' still accumulates 'GANÓ' since verbs aren't in MONITOR_STOPWORDS — separate problem).
+Effect: 'DE FINAL' no longer extracted as a NER entity. Verb contamination remains (e.g. 'ESTADOS UNIDOS GANÓ' still accumulates 'GANÓ' since verbs aren't in MONITOR_STOPWORDS — separate problem). This one WAS correctly in the live file (confirmed during the 2026-07-06 audit).
 
-**FIX 3 — `detectEvents()`: removed cascade entity accumulation** (line ~1751)
+**FIX 3 — `detectEvents()`: removed cascade entity accumulation** (now in `src/jobs/newsMonitor/intelligence/events.js`)
 `storyEntities.forEach(e => ev.entities.add(e))` was accumulating in-memory event entities each cycle, widening Jaccard matches for later stories — same bug Story Clustering 2.0 fixed at story level.
 ```js
 // REMOVED: storyEntities.forEach(e => ev.entities.add(e));
@@ -288,7 +291,42 @@ ev.storyIds.add(String(story.id));
 ```
 
 **Pre-existing finding (NOT fixed — separate decision):**
-`detectEvents()` matching loop (line ~1737) has no minimum-entity guard for incoming stories — only for creating new events (line 1759 checks `storyEntities.size >= 2`). A story with 1 entity (e.g. {'mundial'}) can match a 2-entity event at Jaccard 0.50 ≥ EVENT_ENTITY_THRESHOLD (0.35). Potential fix: `if (storyEntities.size < 2) continue;` before the matching loop to mirror the new-event guard.
+`detectEvents()`'s matching loop has no minimum-entity guard for incoming stories — only for creating new events (`storyEntities.size >= 2`). A story with 1 entity (e.g. {'mundial'}) can match a 2-entity event at Jaccard 0.50 ≥ EVENT_ENTITY_THRESHOLD (0.35). Potential fix: `if (storyEntities.size < 2) continue;` before the matching loop to mirror the new-event guard.
+
+### Architecture Consolidation Sprint (2026-07-06) — ⚠️ READ BEFORE ASSUMING newsMonitor.js IS THE SOURCE OF TRUTH
+
+A code audit found the exact same "dead duplicate" pattern in **both directions** across the Phase 2 strangler migration:
+- `src/jobs/newsMonitor/discovery/` (extracted module) was fully orphaned — nothing imported it. The monolith's own inline discovery functions were live.
+- `src/jobs/newsMonitor/intelligence/{stories,events,opportunities,entities}.js` (extracted module) is what's actually LIVE, reached via `workers/*.js`. The monolith's ~1,631 lines of inline `detectStories`/`detectEvents`/`generateAlgorithmicOpportunities`/etc. were the dead copy — including a stale `STORY_STOPWORDS` that made FIX 1 above look shipped when it wasn't (see correction note).
+
+**Net result of the cleanup (7 independent, validated commits — `8f59d482` → `afa9edb7`):**
+- `src/jobs/newsMonitor.js`: 3,351 → ~1,720 lines. Now genuinely just the orchestrator (`runNewsMonitor()`) + discovery/extraction/persistence glue. All story/event/entity/opportunity logic lives ONLY in `intelligence/`.
+- Deleted entirely (zero importers, verified via static + dynamic imports, scripts, package.json before removal): `newsMonitor/discovery/`, `discovery.js`, `extraction/`, `persistence/`, `scheduler/`, `metrics/`, `shared.js`, `constants.js` (18 files) — plus 10 orphaned `src/services/*.js` files from an abandoned earlier OpenClaw prototype (`ContextBuilder.js` + `StoryService/EventService/CoverageService/SocialService/OpportunitiesService.js`, `SocialFetcher.js`, `OpenClawService.js`, `PanoramaBuilder.js`, `NarrativeBuilder.js`). **Correction to that audit: `PerformanceTracker.js` was flagged as dead but is actually live** (imported by `socialMonitor.js` for per-platform perf tracking) — verify importers yourself before trusting an audit's dead-code list.
+- 4 silent `.catch(() => {})` failures replaced with reasoned recoverable/propagate semantics in `intelligence/opportunities.js` (algorithmic summary UPDATE, algorithmic/AI opportunity INSERTs — all recoverable, log+continue; stale-pending DELETE — NOT recoverable in place, now propagates so a failed cleanup doesn't get followed by a duplicate insert) and `routes/analytics.js` (`POST /analytics/track` now returns a real 400 on malformed payload instead of always `{ok:true}`; DB failures still return `{ok:true}` — it's a fire-and-forget pixel beacon, a real visitor shouldn't see a broken read — but now log at `console.error` with `{recorded:false}` instead of a misleading `legacy_error` field).
+- Removed hardcoded debug scaffolding (`isTraceSource = source.name === 'Guau Formosa'`, a hardcoded article UUID trace marker that ran an extra unindexed `SELECT` every cycle).
+- Added `.env.example` (33 real env vars found via grep across `src/` + `mcp-server/`; only 6 were documented before).
+- Dead `TrendingCard` removed from `cms/src/pages/MediaMonitor.jsx` — it wasn't rendered, but `loadTrending()` still fired a real `/monitor/trending` network call every 30s for nothing.
+
+**Known open item, NOT fixed (out of this sprint's scope):** `src/routes/openclaw.js`'s `GET /openclaw/debug` endpoint calls `ContextBuilder.buildWhatsHappening()`/`buildEntityContext()` without ever importing `ContextBuilder` — already broken before the cleanup (would throw `ReferenceError`, silently caught by a surrounding try/catch that logs "Context error" and returns empty context). Fix or delete the endpoint in a small separate PR.
+
+### Discovery Layer — Per-Source Fixes (2026-07-05/06)
+
+Six sources were failing (P0 audit); fixed one at a time, each validated against the real live source before commit, per user's explicit "no fallback chain — fix each root cause" decision:
+
+- **Diario Formosa** — feed was Atom, not RSS; `RssDiscovery` had no Atom branch, silently fell through to the RSS `<item>` parser (0 matches). Added `parseAtomItems`/`extractAttr`. Commit `46cff8f7` → `7e13d5f4` (first landed in the orphaned `discovery/` module, reapplied to live code once that was discovered).
+- **Yahoo Noticias** — sitemap served as raw `.gz` with `Content-Type: application/x-gzip`, no `Content-Encoding` header, so node-fetch never auto-decompressed it. Also: the sitemap-index lists children newest-first, but the code took `.slice(-3)` assuming oldest-first — grabbed month-old archives with no `news:` markup. Fixed both (`gunzipSync` + `.slice(0, 3)`). Commit `d5fa4048` → `7e13d5f4`.
+- **Guau Formosa** — sitemap children are plain `urlset` (`<loc>`+`<lastmod>` only, no title) — no parser existed for that shape, fell through to the RSS `<item>` parser (0 matches). Added `parseUrlsetItems` (title left empty) + a title backfill in `processSource()` that fetches the real article page when Discovery has no title, capped at 15 sequential fetches/cycle with a DB pre-check so the budget goes to genuinely new URLs each cycle. Commit `150587cb`.
+- **La Mañana** — their own `sitemap.xml`/`sitemap_index.xml`/`wp-sitemap.xml` all 302-redirect to `error.php` (server-side breakage, confirmed live). Reclassified `discovery_type` to `PLAYWRIGHT`. Validating that surfaced two more bugs in `discoverArticlesViaPlaywright`/`extractArticlesWithConcurrency` (never exercised before — no source used PLAYWRIGHT type until this): `isGarbageUrl()`'s segment list only had English `'category'`, not Spanish `'categorias'`, so 17 nav/category links filled the entire `slice(0,20)` extraction window before any real article was reached; and `extractArticlesWithConcurrency` pushed `title: metadata.title` instead of `title: article.title` (the field that's actually set), so every article that passed validation was silently pushed with `title: undefined`. Commit `30b333f9`.
+- **Vía País, Noticias Formosa** — both blocked by Cloudflare Managed Challenge (`Server: cloudflare`, `Cf-Mitigated: challenge`, CSP referencing `challenges.cloudflare.com` — confirmed live for both). **Do NOT assume Playwright bypasses this** — already tested, still gets the "Just a moment..." challenge. Left as-is per explicit user decision (not interested in these two outlets) — do not spend time on them without new instruction.
+- **Operational improvement:** `rss_sources.consecutive_discovery_failures` (new column) increments on EMPTY/ERROR/TIMEOUT/BLOCKED, resets on OK. `GET /monitor/health` surfaces a `source_repeated_failure` alert once a source crosses 5 consecutive failures — for human review only, deliberately NOT an automatic strategy switch (keeps discovery dispatch deterministic, no fallback chain). Commit `ea1dfedc`.
+
+### Worker Profiling V2 (2026-07-06) — real per-component measurement
+
+The old profiler had two labels covering the whole pipeline: `'RSS + Playwright Discovery'` wrapped ALL 38 sources regardless of RSS/Sitemap/Playwright dispatch, and `'HTTP Fetch'` wrapped article content-fetching as one block despite it internally trying HTTP then falling back to Playwright. Entity/Story/Event/Opportunity workers (dispatched via `setImmediate`, run after the report already printed) had zero instrumentation — invisible by construction.
+
+`src/jobs/monitorProfiler.js` rewritten to accumulate (not overwrite) across repeated `begin()`/`end()` calls per cycle, tracking calls/wall/cpu-user/cpu-system/items_in/items_out/errors per component, plus dedicated Playwright counters (`browser_acquires`, `browser_reuses`, `pages_created`, `homepage_discovery_calls`, `article_fallback_calls`). Instrumented 11 real boundaries across `newsMonitor.js` and `ArticleFetcher.js`. Found during validation: `discoverArticlesViaPlaywright()` launches its own dedicated `chromium.launch()`, bypassing `BrowserPool` entirely — `BrowserPool`'s stats only ever reflected the article-fallback path, not homepage discovery.
+
+**Measured result (3 real production cycles, 38-source config unchanged): Playwright Homepage Discovery (the one source using `discovery_type=PLAYWRIGHT`, currently La Mañana) is the dominant cost** — ~1,860ms per article produced (30,625ms wall for 15 articles in one cycle), 48-61% of that cycle's real CPU, versus 13.6ms/item for RSS Discovery/Fetch or 287.9ms/item for Article HTTP Extraction. This is the next thing to optimize if News Monitor performance work resumes — no optimization was implemented as part of this profiling pass (instrumentation-only, per explicit scope).
 
 ### News Monitor — Critical distinction
 
