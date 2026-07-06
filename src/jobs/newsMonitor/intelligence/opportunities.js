@@ -363,12 +363,15 @@ export async function generateAlgorithmicOpportunities(storyIds) {
     const sourceList = Array.isArray(story.sources) ? story.sources : [];
     const entityList = Array.isArray(story.entities) ? story.entities.filter(Boolean) : [];
 
-    // Generate and persist algorithmic summary
+    // Generate and persist algorithmic summary. Recoverable: the WHERE clause
+    // re-matches this story next cycle as long as algorithmic_summary stays
+    // NULL, so a failure here just delays the summary — it must not abort
+    // the rest of this story's opportunity generation below.
     const algoSummary = buildAlgorithmicSummary(story, entityList);
     await query(
       `UPDATE story_clusters SET algorithmic_summary = $1 WHERE id = $2 AND (algorithmic_summary IS NULL OR summary IS NULL)`,
       [algoSummary, story.id]
-    ).catch(() => {});
+    ).catch(e => console.error(`[Opportunities] Failed to set algorithmic_summary for story ${story.id}:`, e.message));
 
     if ((story.existing_algo_opps || 0) > 0) continue;
 
@@ -380,6 +383,11 @@ export async function generateAlgorithmicOpportunities(storyIds) {
       const composite = parseFloat(
         (opp.editorial * 0.4 + opp.traffic * 0.3 + opp.seo * 0.2 + opp.urgency * 0.1).toFixed(2)
       );
+      // Recoverable: existing_algo_opps (checked above) only skips this story
+      // once a pending algorithmic opportunity actually exists, so a failed
+      // insert here means next cycle retries the whole template batch for
+      // this story. One template failing must not stop the other templates
+      // in oppsToInsert, nor the remaining stories in this batch.
       await query(`
         INSERT INTO story_opportunities
           (story_cluster_id, title, description, opportunity_type,
@@ -388,7 +396,7 @@ export async function generateAlgorithmicOpportunities(storyIds) {
       `, [
         story.id, opp.title, opp.desc, opp.type,
         opp.traffic, opp.seo, opp.urgency, opp.editorial, composite,
-      ]).catch(() => {});
+      ]).catch(e => console.error(`[Opportunities] Failed to insert algorithmic opportunity "${opp.title}" for story ${story.id}:`, e.message));
     }
   }
 }
@@ -467,11 +475,16 @@ export async function generateOpportunitiesForStories() {
         story, articlesRes.rows, entitiesRes.rows
       );
 
-      // Clear stale pending opportunities before inserting fresh batch
+      // Clear stale pending opportunities before inserting fresh batch.
+      // NOT recoverable in place: if this fails, the insert loop below must
+      // not run for this story — proceeding would insert a fresh batch
+      // alongside the stale one instead of replacing it, compounding into
+      // duplicate/stale accumulation. Let it propagate to the per-story
+      // catch below, which already logs and moves on to the next story.
       await query(
         `DELETE FROM story_opportunities WHERE story_cluster_id = $1 AND status = 'pending'`,
         [story.id]
-      ).catch(() => {});
+      );
 
       // Persist opportunities
       for (const opp of (opps || [])) {
@@ -483,6 +496,11 @@ export async function generateOpportunitiesForStories() {
           opp.seo_score || 65,
           opp.urgency_score || 50
         );
+        // Recoverable per-opportunity: each AI-generated opportunity is an
+        // independent row, so one failing to insert must not stop the rest
+        // of this story's batch (the stale-pending DELETE above already ran,
+        // so skipping silently here would just mean fewer opportunities for
+        // this story, not duplicates or corruption — safe to log and continue).
         await query(`
           INSERT INTO story_opportunities
             (story_cluster_id, title, description, opportunity_type,
@@ -492,7 +510,7 @@ export async function generateOpportunitiesForStories() {
           story.id, opp.title, opp.description || '', oppType,
           opp.traffic_score || 60, opp.seo_score || 65,
           opp.urgency_score || 50, opp.editorial_score || 70, composite,
-        ]).catch(() => {});
+        ]).catch(e => console.error(`[Opportunities] Failed to insert AI opportunity "${opp.title}" for story ${story.id}:`, e.message));
       }
 
       console.log(`[Monitor] ${opps.length} opportunities generated for story "${story.title}"`);

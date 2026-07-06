@@ -12,10 +12,20 @@ const trackSchema = z.object({
 });
 
 router.post("/track", async (req, res, next) => {
-    try {
-        console.log("[Analytics Debug] Incoming:", req.body);
-        const { article_id, type, session_id, metadata } = trackSchema.parse(req.body);
+    console.log("[Analytics Debug] Incoming:", req.body);
 
+    // Malformed payload is a real client bug (broken integration), not a
+    // transient beacon failure — worth a real 400 so it's visible and fixable,
+    // unlike the DB-failure case below which must stay silent to the client.
+    let parsed;
+    try {
+        parsed = trackSchema.parse(req.body);
+    } catch (e) {
+        return res.status(400).json({ error: "INVALID_PAYLOAD", message: e.message });
+    }
+    const { article_id, type, session_id, metadata } = parsed;
+
+    try {
         // 1. Log Raw Event (The "Brain" Memory)
         await query(`
             INSERT INTO events (article_id, type, session_id, metadata)
@@ -61,14 +71,15 @@ router.post("/track", async (req, res, next) => {
         res.json({ ok: true });
 
     } catch (e) {
-        // ERROR FIREWALL:
-        // We catch EVERYTHING here to prevent Legacy Analytics from breaking the client
-        // or showing red console errors during the transition to Pixel.
-
-        console.warn("[Analytics Legacy Breakdown]:", e.message);
-
-        // Return 200 OK to keep client happy
-        return res.json({ ok: true, legacy_error: e.message });
+        // This is a fire-and-forget analytics beacon: a DB failure here isn't
+        // something the client (a real visitor reading an article) can act on,
+        // and surfacing it would break the reading experience for no benefit —
+        // so the response still says ok:true. But it must not be invisible to
+        // operators either: log at error severity (not warn) so it actually
+        // surfaces in monitoring, and be honest in the payload that nothing
+        // was recorded, instead of the misleading "legacy_error" field name.
+        console.error("[Analytics] DB write failed:", e.message);
+        return res.json({ ok: true, recorded: false });
     }
 });
 
