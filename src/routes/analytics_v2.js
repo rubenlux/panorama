@@ -3,6 +3,21 @@ import { query } from "./db.js";
 
 const router = Router();
 
+// SPEC 014 — hostnames this site is served from, normalized (lowercase, no
+// "www.", no port). Referrers matching one of these are internal navigation,
+// never an external acquisition source — always includes localhost/127.0.0.1
+// since local/dev testing traffic already lives in the same pixel_events
+// table as real traffic. Configurable via PUBLIC_SITE_HOSTNAMES (comma-
+// separated) for when the site has a real production domain.
+const OWN_HOSTNAMES = (() => {
+    const fromEnv = (process.env.PUBLIC_SITE_HOSTNAMES || "")
+        .split(",")
+        .map((h) => h.trim().toLowerCase())
+        .filter(Boolean)
+        .map((h) => h.replace(/^www\./, "").replace(/:\d+$/, ""));
+    return Array.from(new Set(["localhost", "127.0.0.1", ...fromEnv]));
+})();
+
 /**
  * GET /analytics/v2/editorial/overview
  * Real-time KPIs for the Editorial Dashboard (Including SEO Gold)
@@ -146,21 +161,37 @@ router.get("/editorial/insights/categories", async (req, res) => {
  */
 router.get("/editorial/insights/traffic", async (req, res) => {
     try {
+        // SPEC 014 fix: referrers whose normalized hostname is our own (see
+        // OWN_HOSTNAMES) are internal navigation, not an acquisition source —
+        // previously localhost/the site's own domain showed up as "Referral".
         const result = await query(`
-            SELECT 
-                COALESCE(NULLIF(substring(payload->>'referrer' from '(?:.*://)?([^/]*)'), ''), 'Direct') as domain,
-                CASE 
-                    WHEN payload->>'referrer' ILIKE '%google%' THEN 'Search'
-                    WHEN payload->>'referrer' ILIKE '%facebook%' OR payload->>'referrer' ILIKE '%t.co%' OR payload->>'referrer' ILIKE '%instagram%' THEN 'Social'
-                    WHEN payload->>'referrer' IS NULL OR payload->>'referrer' = '' THEN 'Direct'
+            WITH raw AS (
+                SELECT
+                    COALESCE(NULLIF(substring(payload->>'referrer' from '(?:.*://)?([^/]*)'), ''), '') as raw_domain,
+                    payload->>'referrer' as referrer,
+                    payload->>'utm_source' as utm_source
+                FROM pixel_events
+                WHERE event = 'page_view' AND created_at > NOW() - INTERVAL '30 DAYS'
+            ), classified AS (
+                SELECT
+                    regexp_replace(regexp_replace(lower(raw_domain), '^www\\.', ''), ':\\d+$', '') as normalized_domain,
+                    raw_domain, referrer, utm_source
+                FROM raw
+            )
+            SELECT
+                CASE WHEN normalized_domain = ANY($1::text[]) OR raw_domain = '' THEN 'Direct' ELSE raw_domain END as domain,
+                CASE
+                    WHEN normalized_domain = ANY($1::text[]) THEN 'Direct'
+                    WHEN referrer ILIKE '%google%' THEN 'Search'
+                    WHEN referrer ILIKE '%facebook%' OR referrer ILIKE '%t.co%' OR referrer ILIKE '%instagram%' THEN 'Social'
+                    WHEN referrer IS NULL OR referrer = '' THEN 'Direct'
                     ELSE 'Referral'
                 END as category,
-                payload->>'utm_source' as utm_source,
+                utm_source,
                 COUNT(*) as views
-            FROM pixel_events 
-            WHERE event = 'page_view' AND created_at > NOW() - INTERVAL '30 DAYS'
+            FROM classified
             GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 10
-        `);
+        `, [OWN_HOSTNAMES]);
         res.json({ data: result.rows });
     } catch (e) {
         console.error("[Analytics Traffic Error]", e);
@@ -239,16 +270,28 @@ router.get("/editorial/insights/journey", async (req, res) => {
  */
 router.get("/editorial/insights/flow", async (req, res) => {
     try {
+        // Same own-hostname exclusion as insights/traffic — an internal
+        // navigation should never render as its own "source" node in the flow.
         const result = await query(`
-            SELECT 
-                COALESCE(NULLIF(substring(payload->>'referrer' from '(?:.*://)?([^/]*)'), ''), 'Direct') as source,
+            WITH raw AS (
+                SELECT
+                    COALESCE(NULLIF(substring(payload->>'referrer' from '(?:.*://)?([^/]*)'), ''), '') as raw_domain,
+                    url
+                FROM pixel_events
+                WHERE event = 'page_view'
+                  AND created_at > NOW() - INTERVAL '30 DAYS'
+                  AND article_id IS NOT NULL
+            )
+            SELECT
+                CASE
+                    WHEN regexp_replace(regexp_replace(lower(raw_domain), '^www\\.', ''), ':\\d+$', '') = ANY($1::text[]) OR raw_domain = ''
+                    THEN 'Direct'
+                    ELSE raw_domain
+                END as source,
                 url as target, COUNT(*) as value
-            FROM pixel_events 
-            WHERE event = 'page_view' 
-              AND created_at > NOW() - INTERVAL '30 DAYS'
-              AND (payload->>'article_id' IS NOT NULL OR payload->>'content_id' IS NOT NULL)
+            FROM raw
             GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15
-        `);
+        `, [OWN_HOSTNAMES]);
 
         const nodes = [];
         const links = [];
@@ -409,11 +452,17 @@ router.get("/editorial/article/:id", async (req, res) => {
                 WHERE event = 'exit_intent' AND (payload->>'article_id' = $1 OR payload->>'content_id' = $1)
             `, [id]),
 
-            // 7. Internal Navigation (Continuity)
+            // 7. Internal Navigation (Continuity) — SPEC 014: exclude '#', empty,
+            // and NULL destinations at the query layer. web/src/utils/pixel.js
+            // no longer captures these (Paso 2), but the third-party embed
+            // (src/templates/pixel-client.js, Track C) isn't touched by that
+            // fix, so defense-in-depth here matters regardless of client hygiene.
             query(`
                 SELECT payload->>'target_url' as url, COUNT(*) as count
                 FROM pixel_events
-                WHERE event = 'internal_link_click' AND (payload->>'article_id' = $1 OR payload->>'content_id' = $1)
+                WHERE event = 'internal_link_click' AND article_id = $1::uuid
+                  AND payload->>'target_url' IS NOT NULL
+                  AND payload->>'target_url' NOT IN ('', '#')
                 GROUP BY 1 ORDER BY 2 DESC LIMIT 3
             `, [id]),
 
