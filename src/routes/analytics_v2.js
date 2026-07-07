@@ -438,18 +438,36 @@ router.get("/editorial/article/:id", async (req, res) => {
                 GROUP BY 1
             `, [id]),
 
-            // 5. Total Read Time (Heartbeat sum)
+            // 5. Reading Time — SPEC 014: SUM per session first (heartbeat ticks
+            // are per-session, not per-visitor — summing before aggregating
+            // avoids a visitor with 2 tabs/sessions open double-counting), then
+            // derive total/avg/median. Same 24h window as eligible_views/funnel
+            // (previously this had no time filter at all).
             query(`
-                SELECT SUM((payload->>'seconds')::int) as total_seconds
-                FROM pixel_events
-                WHERE event = 'time_on_content' AND (payload->>'article_id' = $1 OR payload->>'content_id' = $1)
+                WITH per_session AS (
+                    SELECT session_id, SUM((payload->>'seconds')::int) AS session_seconds
+                    FROM pixel_events
+                    WHERE event = 'time_on_content' AND article_id = $1::uuid
+                      AND created_at > NOW() - INTERVAL '24 HOURS'
+                    GROUP BY session_id
+                )
+                SELECT
+                    COALESCE(SUM(session_seconds), 0) AS total_engaged_time,
+                    COALESCE(AVG(session_seconds), 0) AS avg_engaged_time,
+                    COALESCE(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY session_seconds), 0) AS median_engaged_time
+                FROM per_session
             `, [id]),
 
-            // 6. Exit Intent Count
+            // 6. Exit Intent — SPEC 014: distinct sessions, not raw events. A
+            // session can fire exit_intent more than once was possible pre-Paso-2
+            // (listener leak); even after that fix, counting sessions is the
+            // semantically correct measure of "how many visits showed an exit
+            // signal", not "how many times a mouse left the viewport".
             query(`
-                SELECT COUNT(*) as count
+                SELECT COUNT(DISTINCT session_id) as count
                 FROM pixel_events
-                WHERE event = 'exit_intent' AND (payload->>'article_id' = $1 OR payload->>'content_id' = $1)
+                WHERE event = 'exit_intent' AND article_id = $1::uuid
+                  AND created_at > NOW() - INTERVAL '24 HOURS'
             `, [id]),
 
             // 7. Internal Navigation (Continuity) — SPEC 014: exclude '#', empty,
@@ -495,7 +513,12 @@ router.get("/editorial/article/:id", async (req, res) => {
             scroll_funnel: scrollFunnel,
             engagement: engagement.rows,
             seo_gold: {
-                reading_time_seconds: parseInt(timeData.rows[0]?.total_seconds || 0),
+                // reading_time_seconds kept for backwards compatibility with any
+                // other consumer; equals total_engaged_time.
+                reading_time_seconds: Math.round(timeData.rows[0]?.total_engaged_time || 0),
+                total_engaged_time: Math.round(timeData.rows[0]?.total_engaged_time || 0),
+                avg_engaged_time: Math.round(timeData.rows[0]?.avg_engaged_time || 0),
+                median_engaged_time: Math.round(timeData.rows[0]?.median_engaged_time || 0),
                 exit_intent_count: parseInt(exitIntent.rows[0]?.count || 0),
                 avg_load_time: Math.round(performance.rows[0]?.avg_load || 0),
                 internal_links: continuity.rows

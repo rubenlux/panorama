@@ -27,7 +27,9 @@ export default function ArticleAnalytics() {
     if (!data) return <div style={{ padding: 40, color: "#ef4444" }}>No se encontraron datos para este artículo.</div>;
 
     const { meta, views_series, eligible_views, scroll_funnel, engagement, seo_gold } = data;
-    const { reading_time_seconds, exit_intent_count } = seo_gold || { reading_time_seconds: 0, exit_intent_count: 0 };
+    const {
+        total_engaged_time = 0, avg_engaged_time = 0, median_engaged_time = 0, exit_intent_count = 0,
+    } = seo_gold || {};
 
     // --- Data Processing for Charts ---
     const chartData = views_series.map(v => ({
@@ -80,8 +82,8 @@ export default function ArticleAnalytics() {
                 <Card title="Vistas Totales (24h)" value={totalViews.toLocaleString()} icon="👁️" color="#3b82f6" />
                 <Card
                     title="Tiempo de Lectura Real"
-                    value={`${Math.floor(reading_time_seconds / 60)}m ${reading_time_seconds % 60}s`}
-                    sub="Atención activa acumulada"
+                    value={`${Math.floor(avg_engaged_time / 60)}m ${avg_engaged_time % 60}s`}
+                    sub={`Promedio por sesión · mediana ${Math.floor(median_engaged_time / 60)}m ${median_engaged_time % 60}s · total ${Math.floor(total_engaged_time / 60)}m`}
                     icon="⏱️"
                     color="#10b981"
                 />
@@ -95,7 +97,7 @@ export default function ArticleAnalytics() {
                 <Card
                     title="Intención de Salida"
                     value={exit_intent_count}
-                    sub="Abandonos prematuros"
+                    sub="Sesiones con señal de salida (no confirma abandono)"
                     icon="🚪"
                     color="#ef4444"
                 />
