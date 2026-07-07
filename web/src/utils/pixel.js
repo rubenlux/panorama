@@ -162,31 +162,45 @@ class PixelService {
 
     /**
      * Exit Intent Detection
+     * articleId is captured in the closure (not read from mutable this.context)
+     * so a listener created for one article can never misattribute to another.
      */
-    initExitIntent() {
-        const handler = (e) => {
+    initExitIntent(articleId) {
+        this.stopExitIntent(); // Cleanup first — never stack listeners across mounts
+        this._exitIntentHandler = (e) => {
             if (e.clientY < 0) {
-                this.track('exit_intent', { type: 'mouse_leave_top' });
-                document.removeEventListener('mouseleave', handler);
+                this.track('exit_intent', { type: 'mouse_leave_top', article_id: articleId });
+                this.stopExitIntent();
             }
         };
-        document.addEventListener('mouseleave', handler);
+        document.addEventListener('mouseleave', this._exitIntentHandler);
+    }
+
+    stopExitIntent() {
+        if (this._exitIntentHandler) {
+            document.removeEventListener('mouseleave', this._exitIntentHandler);
+            this._exitIntentHandler = null;
+        }
     }
 
     /**
      * Internal Link Navigation Tracking
+     * Real hostname comparison (not substring) and skips '#'/empty/unparseable hrefs.
      */
     captureNavLinks() {
         document.addEventListener('click', (e) => {
             const link = e.target.closest('a');
-            if (link && link.href) {
-                const isInternal = link.href.includes(window.location.hostname);
-                if (isInternal) {
-                    this.track('internal_link_click', {
-                        target_url: link.href,
-                        text: link.innerText.substring(0, 50)
-                    });
-                }
+            if (!link || !link.href || link.getAttribute('href') === '#') return;
+
+            let linkUrl;
+            try { linkUrl = new URL(link.href); } catch { return; }
+
+            const isInternal = linkUrl.hostname === window.location.hostname;
+            if (isInternal) {
+                this.track('internal_link_click', {
+                    target_url: link.href,
+                    text: link.innerText.substring(0, 50)
+                });
             }
         });
     }
@@ -214,10 +228,18 @@ class PixelService {
     // --- Identity Methods ---
     _loadIdentity() {
         let vid = localStorage.getItem("pixel_vid");
+
+        // Migrate from the older visitor-id generation before minting a new one
+        // (single source of truth — was previously duplicated in SmartAdBanner.jsx).
+        if (!vid) {
+            const legacyVid = localStorage.getItem("news_visitor_id");
+            if (legacyVid) vid = legacyVid;
+        }
+
         if (!vid) {
             vid = this._generateUUID();
-            localStorage.setItem("pixel_vid", vid);
         }
+        localStorage.setItem("pixel_vid", vid);
         this.visitorId = vid;
         this._checkSession(true);
     }

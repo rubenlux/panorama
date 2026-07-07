@@ -13,16 +13,10 @@ export default function SmartAdBanner({ position }) {
     useEffect(() => {
         const fetchAd = async () => {
             // 1. Get Visitor ID for targeting - Sync with Pixel System
-            let visitorId = localStorage.getItem('pixel_vid');
-
-            // Fallback to old key if pixel_vid doesn't exist yet
-            if (!visitorId) {
-                visitorId = localStorage.getItem('news_visitor_id');
-                if (visitorId) {
-                    // Migrate to new key
-                    localStorage.setItem('pixel_vid', visitorId);
-                }
-            }
+            // Key migration (news_visitor_id -> pixel_vid) lives in
+            // PixelService._loadIdentity() now — single source of truth.
+            Pixel.init();
+            const visitorId = localStorage.getItem('pixel_vid');
 
             try {
                 const res = await apiJson(`/ads/serve?position=${position}&visitor_id=${visitorId || 'anonymous'}`);

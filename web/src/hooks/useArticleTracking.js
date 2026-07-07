@@ -32,9 +32,11 @@ export function useArticleTracking(article, isPreview = false, slug = null) {
         });
 
         // 2. Track Initial View
+        // page_view is NOT tracked here — App.jsx's location-effect already fires
+        // it on every route change (including this one). Firing it again here
+        // double-counted every article view (SPEC 014 finding). content_view is
+        // the article-specific, already-deduped view signal.
         if (!hasViewed.current) {
-            Pixel.track("page_view");
-            // Track content_view for ad targeting (with category)
             Pixel.track("content_view", {
                 content_type: "article",
                 content_id: articleId
@@ -43,9 +45,9 @@ export function useArticleTracking(article, isPreview = false, slug = null) {
         }
 
         // 3. Behavioral Sensors (Points 1, 2, 3, 4, 5)
-        Pixel.startHeartbeat(articleId);     // Point 1: Heartbeat
-        Pixel.initScrollTracking(articleId); // Point 2: Scroll
-        Pixel.initExitIntent();              // Point 4: Exit Intent
+        Pixel.startHeartbeat(articleId);      // Point 1: Heartbeat
+        Pixel.initScrollTracking(articleId);  // Point 2: Scroll
+        Pixel.initExitIntent(articleId);      // Point 4: Exit Intent
 
         // Measure from Navigation Start to this render
         Pixel.trackContentLoaded(articleId, navStartTime.current);
@@ -54,6 +56,7 @@ export function useArticleTracking(article, isPreview = false, slug = null) {
         return () => {
             Pixel.stopHeartbeat();
             Pixel.stopScrollTracking();
+            Pixel.stopExitIntent();
         };
     }, [article?.id, isPreview]);
 

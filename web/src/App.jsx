@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Routes, Route, useLocation } from 'react-router-dom';
 import { Pixel } from './utils/pixel';
 import { SettingsProvider } from './context/SettingsContext';
@@ -73,10 +73,17 @@ function App() {
   const location = useLocation();
   const [searchOpen, setSearchOpen] = useState(false);
   const [subscribeOpen, setSubscribeOpen] = useState(false);
+  const trackedLocationKey = useRef(null);
 
   useEffect(() => {
     Pixel.init();
-    Pixel.track('page_view');
+    // Guard against StrictMode's dev-only double effect invocation — without
+    // this, every route change fired page_view twice in local testing
+    // (content_view is naturally guarded by hasViewed.current; this wasn't).
+    if (trackedLocationKey.current !== location.key) {
+      Pixel.track('page_view');
+      trackedLocationKey.current = location.key;
+    }
   }, [location]);
 
   useEffect(() => { 
