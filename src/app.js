@@ -15,7 +15,6 @@ import articlesRoutes from "./routes/articles.js";
 import categoriesRoutes from "./routes/categories.js";
 import usersRoutes from "./routes/users.js";
 import statsRoutes from "./routes/stats.js";
-import analyticsRoutes from "./routes/analytics.js";
 import subscribersRoutes from "./routes/subscribers.js";
 import adsRoutes from "./routes/ads.js";
 import pixelRoutes from "./routes/pixel.js";
@@ -71,7 +70,12 @@ export function createApp() {
   app.use("/categories", categoriesRoutes);
   app.use("/users", usersRoutes);
   app.use("/stats", statsRoutes);
-  app.use("/analytics", analyticsRoutes);
+  // SPEC 014 Paso 7: POST /analytics/track (legacy, Track B) unmounted — 0
+  // confirmed frontend callers, superseded by /pixel/events + /analytics/v2.
+  // src/routes/analytics.js is left in place (unmounted, not deleted) and
+  // article_stats/events are NOT dropped yet — same staged-removal caution,
+  // both wait for a validated separate follow-up commit. See
+  // memory/pixel_telemetry_audit_2026_07_06.md.
   app.use("/subscribers", subscribersRoutes);
   app.use("/ads", adsRoutes);
   app.use("/pixel", pixelRoutes);

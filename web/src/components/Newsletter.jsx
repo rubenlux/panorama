@@ -17,7 +17,11 @@ export default function Newsletter() {
                 body: { email }
             });
             setStatus('success');
-            Pixel.track('engagement', { type: 'newsletter_signup', email_hash: btoa(email) }); // basic obfuscation
+            // SPEC 014: email_hash used to send btoa(email) — reversible Base64,
+            // not a hash, so the email leaked in cleartext into pixel_events.
+            // The real signup already posts the email to /marketing/subscribe;
+            // this analytics event only needs to know a signup happened.
+            Pixel.track('engagement', { type: 'newsletter_signup' });
             setEmail('');
         } catch (err) {
             setStatus('error');

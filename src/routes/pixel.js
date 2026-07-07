@@ -90,8 +90,6 @@ router.post("/events", async (req, res) => {
         // Handle both single event and array of events (batching)
         const rawEvents = Array.isArray(body.events) ? body.events : (Array.isArray(body) ? body : [body]);
 
-        fs.appendFileSync("pixel_debug.log", `[${new Date().toISOString()}] Incoming Request: ${rawEvents.length} events\n`);
-
         // 2. Prepare Data
         // Get IP for hashing (Forwarded for proxies)
         const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || "";

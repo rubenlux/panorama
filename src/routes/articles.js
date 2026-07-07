@@ -354,9 +354,6 @@ router.post(
         }
       }
 
-      // Initialize Stats
-      await query(`INSERT INTO article_stats (article_id) VALUES ($1)`, [article.id]);
-
       // Insert SEO if present
       if (data.seo) {
         await query(
