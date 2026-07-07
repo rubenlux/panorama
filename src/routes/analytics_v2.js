@@ -277,19 +277,45 @@ router.get("/editorial/insights/flow", async (req, res) => {
  */
 router.get("/editorial/insights/engagement", async (req, res) => {
     try {
-        const [scroll, exits, shares, comments] = await Promise.all([
+        const [funnel, exits, shares, comments] = await Promise.all([
+            // Site-wide Reading Funnel — same session-cohort + shared-window fix
+            // as the per-article endpoint (see /editorial/article/:id). Previously
+            // this was a raw per-threshold histogram with no cohort at all.
             query(`
-                SELECT payload->>'percent' as depth, COUNT(*) as count
-                FROM pixel_events WHERE event = 'scroll_depth' AND created_at > NOW() - INTERVAL '24 HOURS'
-                GROUP BY 1 ORDER BY 1::int ASC
+                WITH eligible_sessions AS (
+                    SELECT DISTINCT session_id
+                    FROM pixel_events
+                    WHERE event = 'content_view' AND created_at > NOW() - INTERVAL '24 HOURS'
+                ),
+                session_max_scroll AS (
+                    SELECT session_id, MAX((payload->>'percent')::int) AS max_pct
+                    FROM pixel_events
+                    WHERE event = 'scroll_depth' AND created_at > NOW() - INTERVAL '24 HOURS'
+                      AND session_id IN (SELECT session_id FROM eligible_sessions)
+                    GROUP BY session_id
+                )
+                SELECT
+                    COUNT(*) FILTER (WHERE max_pct >= 25)  AS d25,
+                    COUNT(*) FILTER (WHERE max_pct >= 50)  AS d50,
+                    COUNT(*) FILTER (WHERE max_pct >= 75)  AS d75,
+                    COUNT(*) FILTER (WHERE max_pct >= 100) AS d100
+                FROM session_max_scroll
             `),
             query(`SELECT COUNT(*) as count FROM pixel_events WHERE event = 'exit_intent' AND created_at > NOW() - INTERVAL '24 HOURS'`),
             query(`SELECT COUNT(*) as count FROM pixel_events WHERE event = 'share_click' AND created_at > NOW() - INTERVAL '24 HOURS'`),
             query(`SELECT COUNT(*) as count FROM pixel_events WHERE event = 'comment_submit' AND created_at > NOW() - INTERVAL '24 HOURS'`)
         ]);
 
+        const f = funnel.rows[0] || { d25: 0, d50: 0, d75: 0, d100: 0 };
+        const scrollFunnel = [
+            { depth: '25', count: parseInt(f.d25 || 0) },
+            { depth: '50', count: parseInt(f.d50 || 0) },
+            { depth: '75', count: parseInt(f.d75 || 0) },
+            { depth: '100', count: parseInt(f.d100 || 0) },
+        ];
+
         res.json({
-            scroll_funnel: scroll.rows,
+            scroll_funnel: scrollFunnel,
             kpis: {
                 total_exits: parseInt(exits.rows[0].count),
                 total_shares: parseInt(shares.rows[0].count),
@@ -309,25 +335,55 @@ router.get("/editorial/insights/engagement", async (req, res) => {
 router.get("/editorial/article/:id", async (req, res) => {
     const { id } = req.params;
     try {
-        const [article, views, scroll, engagement, timeData, exitIntent, continuity, performance] = await Promise.all([
+        const [article, views, eligibleAndFunnel, engagement, timeData, exitIntent, continuity, performance] = await Promise.all([
             // 1. Article Metadata
             query(`SELECT id, title, slug, published_at, author_id FROM articles WHERE id = $1`, [id]),
 
-            // 2. Views (Time Series)
+            // 2. Views (Time Series) — hourly page_view chart, kept as-is for
+            // the "Tráfico por Hora" line chart. NOT the funnel's denominator
+            // (see eligibleAndFunnel below) — page_view is a site-wide route
+            // signal, not an article-view cohort.
             query(`
                 SELECT date_trunc('hour', created_at) as time_bucket, COUNT(*) as views
                 FROM pixel_events
-                WHERE event = 'page_view' AND (payload->>'article_id' = $1 OR payload->>'content_id' = $1)
+                WHERE event = 'page_view' AND article_id = $1::uuid
                 AND created_at > NOW() - INTERVAL '24 HOURS'
                 GROUP BY 1 ORDER BY 1 ASC
             `, [id]),
 
-            // 3. Scroll Depth Funnel
+            // 3. Eligible views + Scroll Depth Funnel — SPEC 014 fix.
+            // eligible_views = distinct sessions with a content_view (the real
+            // article-view cohort), same 24h window as the funnel itself
+            // (previously scroll_funnel had NO time filter while views_series
+            // had 24h — that mismatch is exactly why the funnel could exceed
+            // 100% or show negative drop-off). Each bucket counts sessions
+            // whose MAX(percent) reached that threshold, not raw per-threshold
+            // event counts — guarantees scroll_100<=scroll_75<=...<=eligible_views
+            // by construction regardless of client firing order. Restricting
+            // to session_ids already in eligible_sessions keeps the funnel from
+            // ever exceeding its own denominator.
             query(`
-                SELECT payload->>'percent' as depth, COUNT(*) as count
-                FROM pixel_events
-                WHERE event = 'scroll_depth' AND (payload->>'article_id' = $1 OR payload->>'content_id' = $1)
-                GROUP BY 1 ORDER BY 1::int ASC
+                WITH eligible_sessions AS (
+                    SELECT DISTINCT session_id
+                    FROM pixel_events
+                    WHERE event = 'content_view' AND article_id = $1::uuid
+                      AND created_at > NOW() - INTERVAL '24 HOURS'
+                ),
+                session_max_scroll AS (
+                    SELECT session_id, MAX((payload->>'percent')::int) AS max_pct
+                    FROM pixel_events
+                    WHERE event = 'scroll_depth' AND article_id = $1::uuid
+                      AND created_at > NOW() - INTERVAL '24 HOURS'
+                      AND session_id IN (SELECT session_id FROM eligible_sessions)
+                    GROUP BY session_id
+                )
+                SELECT
+                    (SELECT COUNT(*) FROM eligible_sessions) AS eligible_views,
+                    COUNT(*) FILTER (WHERE max_pct >= 25)  AS d25,
+                    COUNT(*) FILTER (WHERE max_pct >= 50)  AS d50,
+                    COUNT(*) FILTER (WHERE max_pct >= 75)  AS d75,
+                    COUNT(*) FILTER (WHERE max_pct >= 100) AS d100
+                FROM session_max_scroll
             `, [id]),
 
             // 4. Engagement Breakdown
@@ -374,10 +430,20 @@ router.get("/editorial/article/:id", async (req, res) => {
 
         if (article.rows.length === 0) return res.status(404).json({ error: "Article not found" });
 
+        const funnelRow = eligibleAndFunnel.rows[0] || { eligible_views: 0, d25: 0, d50: 0, d75: 0, d100: 0 };
+        const eligibleViews = parseInt(funnelRow.eligible_views || 0);
+        const scrollFunnel = [
+            { depth: '25', count: parseInt(funnelRow.d25 || 0) },
+            { depth: '50', count: parseInt(funnelRow.d50 || 0) },
+            { depth: '75', count: parseInt(funnelRow.d75 || 0) },
+            { depth: '100', count: parseInt(funnelRow.d100 || 0) },
+        ];
+
         res.json({
             meta: article.rows[0],
             views_series: views.rows,
-            scroll_funnel: scroll.rows,
+            eligible_views: eligibleViews,
+            scroll_funnel: scrollFunnel,
             engagement: engagement.rows,
             seo_gold: {
                 reading_time_seconds: parseInt(timeData.rows[0]?.total_seconds || 0),

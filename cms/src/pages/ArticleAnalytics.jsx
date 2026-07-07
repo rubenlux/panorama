@@ -26,7 +26,7 @@ export default function ArticleAnalytics() {
     if (loading) return <div style={{ padding: 40, color: "#64748b" }}>Cargando análisis...</div>;
     if (!data) return <div style={{ padding: 40, color: "#ef4444" }}>No se encontraron datos para este artículo.</div>;
 
-    const { meta, views_series, scroll_funnel, engagement, seo_gold } = data;
+    const { meta, views_series, eligible_views, scroll_funnel, engagement, seo_gold } = data;
     const { reading_time_seconds, exit_intent_count } = seo_gold || { reading_time_seconds: 0, exit_intent_count: 0 };
 
     // --- Data Processing for Charts ---
@@ -35,19 +35,25 @@ export default function ArticleAnalytics() {
         views: parseInt(v.views)
     }));
 
-    // Funnel Logic
+    // Funnel Logic — denominator is eligible_views (distinct sessions with a
+    // content_view), NOT raw page_view count. page_view is a site-wide route
+    // signal (fires on every page, including non-articles); content_view is
+    // the article-specific, already-deduped view signal (SPEC 014 fix).
     const getCount = (depth) => {
         const item = scroll_funnel.find(s => parseInt(s.depth) === depth);
         return item ? parseInt(item.count) : 0;
     };
 
     const steps = [25, 50, 75, 100];
-    const totalViews = views_series.reduce((sum, v) => sum + parseInt(v.views), 0);
+    const totalViews = eligible_views || 0;
 
     const funnelMetrics = steps.map((depth, i) => {
         const count = getCount(depth);
         const prevCount = i === 0 ? totalViews : getCount(steps[i - 1]);
-        const dropOffCount = prevCount - count;
+        // Defensive clamp — the corrected SQL (MAX-per-session, shared time
+        // window, restricted to eligible sessions) should never produce a
+        // negative drop-off, but this guards the UI regardless.
+        const dropOffCount = Math.max(0, prevCount - count);
         const dropOffRate = prevCount ? ((dropOffCount / prevCount) * 100).toFixed(1) : 0;
         return { depth, count, dropOffRate, dropOffCount };
     });
