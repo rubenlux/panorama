@@ -10,7 +10,10 @@
     "db:init": "node init_db.js && node seed.js",
     "cms": "cd cms && npm run dev",
     "worker": "nodemon -r dotenv/config src/worker.js",
-    "dev:all": "concurrently \"npm run dev\" \"npm run cms\" \"npm run worker\""
+    "dev:all": "concurrently \"npm run dev\" \"npm run cms\" \"npm run worker\"",
+    "bootstrap": "node scripts/bootstrap.js",
+    "import-sources": "node scripts/import_sources.js",
+    "backup": "node scripts/backup.js"
   },
   "nodemonConfig": {
     "ignore": [

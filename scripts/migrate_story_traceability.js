@@ -12,15 +12,8 @@ import { query } from '../src/routes/db.js';
 async function run() {
   console.log('[migrate_story_traceability] Starting…');
 
-  // ── Traceability columns on story_cluster_articles ───────────────────────────
-  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS matching_reason    TEXT`);
-  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS shared_keywords    JSONB   DEFAULT '[]'`);
-  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS shared_entities    JSONB   DEFAULT '[]'`);
-  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS title_similarity   NUMERIC`);
-  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS keyword_similarity NUMERIC`);
-  await query(`ALTER TABLE story_cluster_articles ADD COLUMN IF NOT EXISTS entity_similarity  NUMERIC`);
-
-  console.log('[migrate_story_traceability] Added traceability columns to story_cluster_articles');
+  // DDL was split into scripts/create_story_traceability_columns.js
+  console.log('[migrate_story_traceability] (DDL part skipped — handled by create_story_traceability_columns.js)');
 
   // Mark all pre-existing links as 'legacy' — no breakdown available
   const { rowCount: legacyUpdated } = await query(`

@@ -178,8 +178,8 @@ export async function updateDomainProfile(domain, {
        SET total_attempts = total_attempts + 1,
            ${statusName === 'SUCCESS' ? `${successCol} = ${successCol} + 1` : `${failedCol} = ${failedCol} + 1`},
            last_attempt_at = NOW(),
-           last_failure_reason = CASE WHEN $3 IS NOT NULL THEN $3 ELSE last_failure_reason END,
-           last_failure_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE last_failure_at END,
+           last_failure_reason = CASE WHEN $3::text IS NOT NULL THEN $3::text ELSE last_failure_reason END,
+           last_failure_at = CASE WHEN $3::text IS NOT NULL THEN NOW() ELSE last_failure_at END,
            consecutive_failures = CASE WHEN $2 = 'SUCCESS' THEN 0 ELSE consecutive_failures + 1 END
        WHERE domain = $1`,
       [domain, statusName, failureReason]

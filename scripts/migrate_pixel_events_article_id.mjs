@@ -43,9 +43,7 @@ async function main() {
     console.log(`   ${field}: ${total.rows[0].count} non-null, ${uuidShaped.rows[0].count} UUID-shaped, ${matchesReal.rows[0].count} match a real article`);
   }
 
-  console.log('\n2. Adding article_id column (idempotent)…');
-  await query(`ALTER TABLE pixel_events ADD COLUMN IF NOT EXISTS article_id UUID`);
-  console.log('   ✓ Done');
+  console.log('\n2. (DDL part skipped — handled by add_pixel_article_id_column.js)');
 
   console.log('\n3. Backfilling — article_id takes precedence over content_id (matches existing OR-pattern order), only well-formed UUIDs are cast…');
   const result = await query(`

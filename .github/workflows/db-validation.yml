@@ -1,0 +1,75 @@
+name: Database Schema Validation CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  validate-schema:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: bootstrap_test_xK9mQ2pL
+          POSTGRES_DB: newsdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20'
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: |
+        npm ci || npm install
+
+    - name: Setup environment file
+      run: cp .env.example .env
+
+    - name: Run bootstrap (Load schema baseline & seed data)
+      env:
+        DATABASE_URL: postgresql://postgres:bootstrap_test_xK9mQ2pL@localhost:5432/newsdb
+      run: |
+        npm run bootstrap
+
+    - name: Verify table and view count
+      env:
+        PGPASSWORD: bootstrap_test_xK9mQ2pL
+      run: |
+        # Check tables
+        TABLES_COUNT=$(psql -h localhost -U postgres -d newsdb -t -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public';")
+        echo "Public tables count: $TABLES_COUNT"
+        if [ "${TABLES_COUNT//[[:space:]]/}" != "72" ]; then
+          echo "ERROR: Expected 72 tables, found $TABLES_COUNT"
+          exit 1
+        fi
+        
+        # Check views
+        VIEWS_COUNT=$(psql -h localhost -U postgres -d newsdb -t -c "SELECT count(*) FROM pg_views WHERE schemaname = 'public';")
+        echo "Public views count: $VIEWS_COUNT"
+        if [ "${VIEWS_COUNT//[[:space:]]/}" != "3" ]; then
+          echo "ERROR: Expected 3 views, found $VIEWS_COUNT"
+          exit 1
+        fi
+        echo "✓ Database schema verification passed!"
+
+    - name: Test quick backup execution
+      env:
+        DATABASE_URL: postgresql://postgres:bootstrap_test_xK9mQ2pL@localhost:5432/newsdb
+      run: |
+        npm run backup -- --quick

@@ -27,14 +27,8 @@ import { query } from '../src/routes/db.js';
 async function run() {
   console.log('[migrate_editorial_scoring] Starting…');
 
-  // ── New columns ──────────────────────────────────────────────────────────────
-  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS context_relevance_score INTEGER DEFAULT 0`);
-  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS context_depth_score     INTEGER DEFAULT 0`);
-  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS context_diversity_score INTEGER DEFAULT 0`);
-  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS context_coverage_score  INTEGER DEFAULT 0`);
-  await query(`ALTER TABLE story_clusters ADD COLUMN IF NOT EXISTS story_confidence        VARCHAR(10) DEFAULT 'low'`);
-
-  console.log('[migrate_editorial_scoring] Added 5 columns to story_clusters');
+  // DDL was split into scripts/create_story_scoring_columns.js
+  console.log('[migrate_editorial_scoring] (DDL part skipped — handled by create_story_scoring_columns.js)');
 
   // ── Backfill all non-stale, non-recurring stories in one CTE UPDATE ──────────
   const { rowCount } = await query(`
